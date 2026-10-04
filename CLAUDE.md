@@ -40,3 +40,7 @@
 能在这台 Mac 上执行命令，所以：
 - 服务只听 127.0.0.1；写的接口只认本机或同源 https 的 Origin
 - 放到外网只能经 Cloudflare Tunnel，而且前面必须挂 Cloudflare Access（只放行自己的邮箱）。不能撤掉 Access 只留隧道
+
+## 部署
+
+- 常驻：launchd `~/Library/LaunchAgents/com.mixer.server.plist`（PATH 里要有 `claude`、node、git），日志 `~/Library/Logs/mixer.log`。改了 server 代码后重启：`launchctl kickstart -k gui/$(id -u)/com.mixer.server`
