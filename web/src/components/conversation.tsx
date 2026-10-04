@@ -18,6 +18,7 @@ import { clock } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
 import { AssistantMessage, EventLine, Steps, UserMessage } from "./message";
+import { useRuns } from "./runs";
 
 type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
 
@@ -82,9 +83,13 @@ export function Conversation({ project, session, leaf, outlineOpen, setOutlineOp
 	const [fork, setFork] = useState<Extract<Node, { k: "user" }> | null>(null);
 	const bottom = useRef<HTMLDivElement>(null);
 	const first = useRef(true);
+	// 不能续接：正在 mixer 里跑，或者最近有写入而且不是 mixer 写的（可能在终端里开着）
+	const runs = useRuns();
+	const ours = runs.filter((r) => r.project === project && r.session === session);
+	const busy = ours.some((r) => r.status === "running") || (!!data?.meta.active && ours.length === 0);
 
 	const load = useCallback(() => {
-		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}`).then(setData, (e: Error) => setError(e.message));
+		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}`).then((d) => { setData(d); setError(null); }, (e: Error) => setError(e.message));
 	}, [project, session]);
 	useEffect(() => { setData(null); setError(null); first.current = true; load(); }, [load]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
@@ -168,7 +173,7 @@ export function Conversation({ project, session, leaf, outlineOpen, setOutlineOp
 						<div ref={bottom} />
 					</div>
 				</div>
-				<Composer project={project} session={session} active={data.meta.active} />
+				<Composer project={project} session={session} active={busy} />
 			</div>
 
 			<aside className="hidden w-72 shrink-0 flex-col border-l xl:flex">
@@ -237,7 +242,7 @@ function ForkSwitch({ f, best }: { f: { options: Node[]; index: number }; best: 
 	);
 }
 
-const PERMISSIONS = [
+export const PERMISSIONS = [
 	{ v: "default", label: "逐个确认" },
 	{ v: "acceptEdits", label: "改文件不问" },
 	{ v: "plan", label: "只做计划" },
@@ -262,7 +267,7 @@ function Composer({ project, session, active }: { project: string; session: stri
 	const [permission, setPermission] = useState("default");
 	const [busy, setBusy] = useState(false);
 	const [run, setRun] = useState<Run | null>(null);
-	useEffect(() => { if (active) setMode("fork"); }, [active]);
+	useEffect(() => setMode(active ? "fork" : "resume"), [active]);
 	useFollow(mode === "fork" ? run : null, project);
 	const send = async () => {
 		setBusy(true);
@@ -291,7 +296,7 @@ function Composer({ project, session, active }: { project: string; session: stri
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="resume" disabled={active}>续接{active ? "（它还在别处跑着）" : ""}</SelectItem>
+							<SelectItem value="resume" disabled={active}>续接{active ? "（它还在跑）" : ""}</SelectItem>
 							<SelectItem value="fork">分叉成新会话</SelectItem>
 						</SelectContent>
 					</Select>
@@ -376,8 +381,8 @@ function LiveRun({ project, session }: { project: string; session: string }) {
 	return (
 		<div className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
 			<div className="flex items-center gap-2 text-xs text-muted-foreground">
-				{run.status === "running" ? <Loader2 className="size-3.5 animate-spin" /> : <Badge variant="outline">{run.status}</Badge>}
-				<span>正在跑 · {clock(run.started)}</span>
+				{run.status === "running" && <Loader2 className="size-3.5 animate-spin" />}
+				<span>{run.status === "running" ? "正在跑" : "跑完了"} · {clock(run.started)}</span>
 				{tools.length > 0 && <span className="truncate">工具：{tools.slice(-4).join("、")}</span>}
 				{run.status === "running" && (
 					<Button variant="ghost" size="sm" className="ml-auto h-6 gap-1 px-2 text-[11px]" onClick={stop}>

@@ -1,6 +1,6 @@
 // mixer 的服务：127.0.0.1:4848（MIXER_PORT 可改），手机经 Cloudflare 隧道访问（前面必须有 Access，这个服务能在本机跑 claude）。
 //   读：项目、会话（显示节点树）、子 agent、工具的完整结果、会话里的图片；仓库的文件、内容、git 状态、改动、提交
-//   写：开始 / 续接 / 分叉一次运行、停止；回答权限确认
+//   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹
 //   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化
 // 写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）；MCP 工具发来的确认请求要带 MIXER_TOKEN。
 import { execFileSync } from "node:child_process";
@@ -8,6 +8,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watc
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, sep } from "node:path";
 import { gzipSync } from "node:zlib";
+import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session } from "./sessions.ts";
@@ -109,12 +110,19 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
+	[/^\/api\/dirs$/, (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
 ];
 const POST: [RegExp, Handler][] = [
 	[/^\/api\/runs$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
-		const r = await runs.start({ project: b.project, cwd: projectPath(b.project), session: b.session ?? null, mode: b.mode ?? "resume", at: b.at, prompt: String(b.prompt ?? ""), permission: b.permission ?? "default" });
+		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
+		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
+		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at, prompt: String(b.prompt ?? ""), permission: b.permission ?? "default" });
 		json(res, 200, r);
+	}],
+	[/^\/api\/dirs$/, async (req, res) => {
+		const b = JSON.parse(await body(req));
+		json(res, 200, dirs.create(String(b.parent ?? ""), String(b.name ?? "").trim()));
 	}],
 	[/^\/api\/runs\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
 	[/^\/api\/approvals\/([\w-]+)$/, async (req, res, m) => {

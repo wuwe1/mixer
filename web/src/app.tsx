@@ -1,5 +1,5 @@
 // 外框：左边侧栏（项目、会话列表），右边是当前会话的三个页签：对话、文件、改动。
-import { Activity, FolderGit2, ListTree, MessageSquare, Search, WifiOff } from "lucide-react";
+import { Activity, FolderGit2, ListTree, MessageSquare, Search, SquarePen, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Changes } from "@/components/changes";
 import { Conversation } from "@/components/conversation";
 import { Files } from "@/components/files";
+import { NewSession } from "@/components/new-session";
 import { Approvals, RunsSheet, useRuns } from "@/components/runs";
 import { api, enc, type Project, type SessionMeta } from "@/lib/api";
 import { useEvent, useOnline } from "@/lib/events";
@@ -26,7 +27,10 @@ const title = (s: SessionMeta) => s.title || s.first || s.id.slice(0, 8);
 
 function useProjects() {
 	const [list, setList] = useState<Project[] | null>(null);
-	useEffect(() => { api<Project[]>("/api/projects").then(setList, () => setList([])); }, []);
+	const load = useCallback(() => { api<Project[]>("/api/projects").then(setList, () => setList([])); }, []);
+	useEffect(load, [load]);
+	// 在新文件夹里开了会话：项目列表里还没有它，重新拉
+	useEvent("session", useCallback((e: { project: string }) => { if (list && !list.some((p) => p.id === e.project)) load(); }, [list, load]));
 	return list;
 }
 
@@ -59,7 +63,16 @@ function SessionLink({ s, r }: { s: SessionMeta; r: Route }) {
 	);
 }
 
-function Side({ r, projects, runs, openRuns }: { r: Route; projects: Project[] | null; runs: number; openRuns: () => void }) {
+function NewButton({ openNew }: { openNew: () => void }) {
+	const { setOpenMobile } = useSidebar();
+	return (
+		<Button variant="ghost" size="icon" className="size-7" onClick={() => { setOpenMobile(false); openNew(); }} aria-label="新会话">
+			<SquarePen className="size-4" />
+		</Button>
+	);
+}
+
+function Side({ r, projects, runs, openRuns, openNew }: { r: Route; projects: Project[] | null; runs: number; openRuns: () => void; openNew: () => void }) {
 	const sessions = useSessions(r.project);
 	const [q, setQ] = useState("");
 	const cur = projects?.find((p) => p.id === r.project);
@@ -74,6 +87,7 @@ function Side({ r, projects, runs, openRuns }: { r: Route; projects: Project[] |
 						运行
 						{runs > 0 && <Badge className="h-4 min-w-4 px-1 text-[10px]">{runs}</Badge>}
 					</Button>
+					<NewButton openNew={openNew} />
 				</div>
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
@@ -125,6 +139,7 @@ export function App() {
 	const online = useOnline();
 	const [runsOpen, setRunsOpen] = useState(false);
 	const [outline, setOutline] = useState(false);
+	const [newOpen, setNewOpen] = useState(false);
 	const sessions = useSessions(r.project);
 	const cur = useMemo(() => sessions?.find((s) => s.id === r.session), [sessions, r.session]);
 	const running = runs.filter((x) => x.status === "running").length;
@@ -135,7 +150,7 @@ export function App() {
 
 	return (
 		<SidebarProvider className="h-svh">
-			<Side r={r} projects={projects} runs={running} openRuns={() => setRunsOpen(true)} />
+			<Side r={r} projects={projects} runs={running} openRuns={() => setRunsOpen(true)} openNew={() => setNewOpen(true)} />
 			<SidebarInset className="min-w-0 overflow-hidden">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
 					<SidebarTrigger className="-ml-1" />
@@ -165,8 +180,12 @@ export function App() {
 									<MessageSquare />
 								</EmptyMedia>
 								<EmptyTitle>选一个会话</EmptyTitle>
-								<EmptyDescription>左边列着这个项目在 Claude Code 里的所有会话，按最近活动排。</EmptyDescription>
+								<EmptyDescription>左边列着这个项目在 Claude Code 里的所有会话，按最近活动排。也可以在任意文件夹开一个新的。</EmptyDescription>
 							</EmptyHeader>
+							<Button variant="outline" size="sm" className="gap-1.5" onClick={() => setNewOpen(true)}>
+								<SquarePen className="size-3.5" />
+								新会话
+							</Button>
 						</Empty>
 					) : r.tab === "files" ? (
 						<Files project={r.project} file={r.file} />
@@ -177,6 +196,7 @@ export function App() {
 					)}
 				</div>
 			</SidebarInset>
+			<NewSession open={newOpen} onOpenChange={setNewOpen} projects={projects ?? []} />
 			<RunsSheet open={runsOpen} onOpenChange={setRunsOpen} runs={runs} />
 			<Approvals runs={runs} />
 		</SidebarProvider>

@@ -2,7 +2,7 @@
 //   续接：claude -p --resume <id>            分叉：再加 --fork-session（新会话 id，原来的不动）
 //   从中间某条消息分叉（实验）：把原会话从开头到那条消息之前的记录复制成一个新会话文件，再续接它
 // 要确认的工具调用经 MCP 工具 mcp__mixer__approve 转到网页上（approvals）。
-// 同一个会话如果还在别处跑着（记录 90 秒内有写入），不许直接续接，只能分叉：免得两边同时往一个文件里写。
+// 同一个会话如果还在别处跑着（记录 90 秒内有写入，而且不是 mixer 自己跑完的），不许直接续接，只能分叉：免得两边同时往一个文件里写。
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -71,8 +71,13 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (!["default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
 	let resume = o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要续接哪个会话？");
-	if (o.mode === "resume" && resume && Date.now() - statSync(sessionFile(o.project, resume)).mtimeMs < 90_000) {
-		throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
+	if (o.mode === "resume" && resume) {
+		// 最近的写入是 mixer 自己的运行（已经跑完）就放行；否则 90 秒内有写入，说明可能在终端里开着
+		const ours = [...runs.values()].filter((r) => r.session === resume);
+		if (ours.some((r) => r.status === "running")) throw new Error("这个会话正在 mixer 里跑，等它跑完再续接");
+		if (!ours.length && Date.now() - statSync(sessionFile(o.project, resume)).mtimeMs < 90_000) {
+			throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
+		}
 	}
 	if (o.mode === "fork-at") {
 		if (!resume || !o.at) throw new Error("从哪条消息分叉？");

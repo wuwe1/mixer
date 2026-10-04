@@ -17,6 +17,7 @@ export type Run = {
 	id: string; project: string; cwd: string; from: string | null; session: string | null; mode: "new" | "resume" | "fork" | "fork-at";
 	prompt: string; permission: string; status: "running" | "done" | "error" | "stopped"; started: string; ended: string | null; error: string | null; events: number;
 };
+export type Dirs = { path: string; home: string; parent: string | null; git: boolean; entries: { name: string; path: string; git: boolean; project: boolean }[] };
 export type Approval = { id: string; run: string; tool: string; input: Record<string, unknown>; at: string };
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {
