@@ -133,3 +133,20 @@ test("同一个文件没变：直接用缓存", async () => {
 	assert.equal(a, b);
 	assert.equal(a.rev, b.rev);
 });
+
+test("网页缓存靠的：同一个 epoch 里节点只增不删；文件变短（重写）换 epoch", async () => {
+	const file = join(tmp, "epoch.jsonl");
+	const line = (r: object) => `${JSON.stringify(r)}\n`;
+	writeFileSync(file, line({ type: "user", uuid: "e1", parentUuid: null, timestamp: "t", message: { role: "user", content: "一" } }));
+	const a = await parse(file);
+	const { epoch } = a;
+	const before = a.nodes.map((n) => n.uuid);
+	appendFileSync(file, line({ type: "assistant", uuid: "e2", parentUuid: "e1", timestamp: "t", message: { id: "m", content: [{ type: "text", text: "二" }] } }));
+	const b = await parse(file);
+	assert.equal(b.epoch, epoch);
+	for (const u of before) assert.ok(b.nodes.some((n) => n.uuid === u));
+	writeFileSync(file, line({ type: "user", uuid: "f1", parentUuid: null, timestamp: "t", message: { role: "user", content: "重" } }));
+	const c = await parse(file);
+	assert.notEqual(c.epoch, epoch);
+	assert.deepEqual(c.nodes.map((n) => n.uuid), ["f1"]);
+});

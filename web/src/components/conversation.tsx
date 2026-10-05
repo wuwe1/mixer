@@ -19,7 +19,8 @@ import { AssistantMessage, EventLine, Steps, stable, UserMessage } from "./messa
 import { StatusIcon } from "./side";
 
 /** 跳到这条（目录里点的）；at 让同一条点两次也算 */
-export type Reveal = { uuid: string; at: number };
+/** 跳到一条：带 offset 是放回原处（切回会话时），不动画，让它的顶边离滚动区顶部 offset 像素 */
+export type Reveal = { uuid: string; at: number; offset?: number };
 
 const STEP = 60;
 
@@ -58,9 +59,20 @@ function useWindow(bs: Block[], scroller: RefObject<HTMLDivElement | null>, reve
 	const pending = useRef<string | null>(null);
 	const bsRef = useRef(bs);
 	bsRef.current = bs;
-	const scrollTo = (uuid: string) => requestAnimationFrame(() => document.getElementById(`n-${uuid}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+	const offset = useRef<number | undefined>(undefined);
+	const scrollTo = (uuid: string) => {
+		const at = offset.current;
+		requestAnimationFrame(() => {
+			const el = document.getElementById(`n-${uuid}`);
+			const box = scroller.current;
+			if (!el) return;
+			if (at === undefined || !box) return el.scrollIntoView({ behavior: "smooth", block: "start" });
+			box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - at;
+		});
+	};
 	useEffect(() => {
 		if (!reveal) return;
+		offset.current = reveal.offset;
 		const i = bsRef.current.findIndex((b) => headOf(b).uuid === reveal.uuid);
 		if (i < 0 || i >= firstRef.current) return void scrollTo(reveal.uuid);
 		pending.current = reveal.uuid;

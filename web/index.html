@@ -5,6 +5,8 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="apple-mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-title" content="mixer" />
+		<!-- 带 cookie 去拿：前面挂着 Cloudflare Access 时，不带会被转去登录页 -->
+		<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
 		<title>mixer</title>
 	</head>
 	<body>

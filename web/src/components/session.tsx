@@ -103,11 +103,27 @@ function merge(old: Session | null, d: Session): Session {
 	return { ...d, nodes };
 }
 
+// 切走再切回来不从空白开始：先画上次拿到的，再带着它的 version 去拉增量。
+// 失效全靠服务端的「epoch:rev」：同一个 epoch 里节点只增不删；文件重写、服务重启、缓存被挤掉都换 epoch，对不上就给全部、整份换掉。
+// 只在内存里，留最近用的 12 个；还记着离开时看到哪儿（贴在底部，或者最上面那条和它离顶部多远）
+const KEEP = 12;
+const kept = new Map<string, Session>();
+const spots = new Map<string, { uuid: string; offset: number } | null>();
+function keep(key: string, s: Session) {
+	kept.delete(key);
+	kept.set(key, s);
+	for (const k of kept.keys()) {
+		if (kept.size <= KEEP) break;
+		kept.delete(k);
+		spots.delete(k);
+	}
+}
+
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
 	const { status, queue, runs } = useLive();
 	const wide = useWide();
-	const [data, setData] = useState<Session | null>(null);
-	const cur = useRef<Session | null>(null);
+	const [data, setData] = useState<Session | null>(() => kept.get(`${project}/${session}`) ?? null);
+	const cur = useRef<Session | null>(data);
 	const [error, setError] = useState<string | null>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
@@ -133,6 +149,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			(d) => {
 				if (pulling.current?.key === key) {
 					cur.current = merge(cur.current, d);
+					keep(key, cur.current);
 					setData(cur.current);
 					setError(null);
 				}
@@ -141,7 +158,39 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			(e: Error) => { if (pulling.current?.key === key) setError(e.message); done(); },
 		);
 	}, [project, session]);
-	useEffect(() => { cur.current = null; setData(null); setError(null); first.current = true; load(); }, [load]);
+	useEffect(() => {
+		cur.current = kept.get(`${project}/${session}`) ?? null;
+		setData(cur.current);
+		setError(null);
+		first.current = true;
+		load();
+	}, [project, session, load]);
+
+	// 记下看到哪儿：停下来 0.15 秒再记，贴在底部记 null
+	useEffect(() => {
+		const el = scroller.current;
+		const inner = content.current;
+		if (!el || !inner) return;
+		const key = `${project}/${session}`;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const save = () => {
+			if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) return void spots.set(key, null);
+			const top = el.getBoundingClientRect().top;
+			for (const n of inner.querySelectorAll<HTMLElement>('[id^="n-"]')) {
+				const box = n.getBoundingClientRect();
+				if (box.bottom > top) return void spots.set(key, { uuid: n.id.slice(2), offset: box.top - top });
+			}
+		};
+		const onScroll = () => {
+			clearTimeout(timer);
+			timer = setTimeout(save, 150);
+		};
+		el.addEventListener("scroll", onScroll, { passive: true });
+		return () => {
+			clearTimeout(timer);
+			el.removeEventListener("scroll", onScroll);
+		};
+	}, [project, session]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
 	useEvent("reconnect", load);
 
@@ -161,13 +210,14 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		return () => document.removeEventListener("visibilitychange", mark);
 	}, [st, project, session]);
 
-	// 第一次打开：滚到最后，贴上
+	// 第一次打开：滚到最后，贴上；切回来的（离开时不在底部、那条还在这条路上）放回原处
 	useEffect(() => {
-		if (data && first.current) {
-			first.current = false;
-			requestAnimationFrame(() => toBottom());
-		}
-	}, [data, toBottom]);
+		if (!data || !w || !first.current) return;
+		first.current = false;
+		const spot = spots.get(`${project}/${session}`);
+		if (spot && w.path.some((n) => n.uuid === spot.uuid)) setReveal({ ...spot, at: Date.now() });
+		else requestAnimationFrame(() => toBottom());
+	}, [data, w, project, session, toBottom]);
 
 	// 刚发出去的话（排上队了，或者开始跑了）：不管刚才在哪，滚到最后贴上，让人看见
 	const queued = queue.filter((q) => q.session === session).length;

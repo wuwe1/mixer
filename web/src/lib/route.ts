@@ -20,7 +20,19 @@ function read(): Route {
 	};
 }
 
-const listeners = new Set<() => void>();
+// 主屏幕 App 打开时回到上次看的地方：iOS 添加到主屏幕记的是当时那个地址，不一定认 manifest 的 start_url。
+// 只管冷启动（navigate），刷新（reload，比如有新版本）留在原处
+const LAST = "mixer:route";
+const standalone = matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+if (standalone && nav?.type === "navigate") {
+	const last = localStorage.getItem(LAST);
+	if (last && last !== location.pathname + location.search) history.replaceState(null, "", last);
+}
+const remember = () => localStorage.setItem(LAST, location.pathname + location.search);
+remember();
+
+const listeners = new Set<() => void>([remember]);
 window.addEventListener("popstate", () => { for (const l of listeners) l(); });
 
 export function go(r: Partial<Route>, replace = false) {

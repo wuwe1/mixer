@@ -99,7 +99,7 @@ export function App() {
 									<MessageSquare />
 								</EmptyMedia>
 								<EmptyTitle>选择一个会话，或新建会话</EmptyTitle>
-								<EmptyDescription>左边按项目列出你在 Claude Code 里的会话，前面的标记是它当前的状态。</EmptyDescription>
+								<EmptyDescription>左边是你的工作区：放进来的文件夹和会话，右边的标记是它现在的状态。已有的会话从「浏览会话」里挑。</EmptyDescription>
 							</EmptyHeader>
 							<Button variant="outline" size="sm" className="gap-1.5" onClick={() => setNewOpen(true)}>
 								<SquarePen className="size-3.5" />

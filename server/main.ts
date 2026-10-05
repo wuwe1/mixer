@@ -83,7 +83,7 @@ function prune() {
 const TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
 	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".bmp": "image/bmp",
-	".woff2": "font/woff2", ".json": "application/json",
+	".woff2": "font/woff2", ".json": "application/json", ".webmanifest": "application/manifest+json",
 };
 /** 仓库里的文件原样给（/raw）：只有这几种图片能在页面里直接显示；别的（包括 SVG、HTML）一律当下载，还加上 sandbox 的 CSP，里面的脚本跑不起来 */
 const INLINE = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp"]);

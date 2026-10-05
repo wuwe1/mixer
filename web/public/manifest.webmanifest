@@ -1,0 +1,7 @@
+{
+	"name": "mixer",
+	"short_name": "mixer",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone"
+}
