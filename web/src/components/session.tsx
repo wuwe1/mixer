@@ -1,7 +1,7 @@
 // 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏从右边滑出来）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
 // 打开着的会话跑完了，就算看过了。
-import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, X } from "lucide-react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,12 +26,65 @@ export const PANELS: { v: Panel; label: string }[] = [
 /** 现在开着哪个面板：地址里没写时，宽屏开目录、窄屏不开 */
 export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? "outline" : null)));
 
+/**
+ * 贴底：停在底部附近时，新内容长出来就跟着滚到底；往上翻离开了就不跟，滚回底部又贴上。
+ * 手指按着的时候不动它，免得和手抢。离开底部之后有了新内容，「↓」上带个蓝点（没看过）
+ */
+function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject<HTMLDivElement | null>) {
+	const stick = useRef(true);
+	const touching = useRef(false);
+	const [away, setAway] = useState(false);
+	const [unseen, setUnseen] = useState(false);
+	const toBottom = useCallback((smooth = false) => {
+		const el = scroller.current;
+		if (!el) return;
+		stick.current = true;
+		setAway(false);
+		setUnseen(false);
+		el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+	}, [scroller]);
+	useEffect(() => {
+		const el = scroller.current;
+		const inner = content.current;
+		if (!el || !inner) return;
+		const onScroll = () => {
+			const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+			stick.current = near;
+			setAway(!near);
+			if (near) setUnseen(false);
+		};
+		const follow = () => { if (stick.current && !touching.current) el.scrollTop = el.scrollHeight; };
+		const grown = new ResizeObserver(() => (stick.current ? follow() : setUnseen(true)));
+		// 输入框变高、键盘弹起，看得见的区域变小了：贴着的也要跟着
+		const resized = new ResizeObserver(follow);
+		grown.observe(inner);
+		resized.observe(el);
+		const down = () => { touching.current = true; };
+		const up = () => { touching.current = false; };
+		el.addEventListener("scroll", onScroll, { passive: true });
+		el.addEventListener("touchstart", down, { passive: true });
+		el.addEventListener("touchend", up, { passive: true });
+		el.addEventListener("touchcancel", up, { passive: true });
+		return () => {
+			grown.disconnect();
+			resized.disconnect();
+			el.removeEventListener("scroll", onScroll);
+			el.removeEventListener("touchstart", down);
+			el.removeEventListener("touchend", up);
+			el.removeEventListener("touchcancel", up);
+		};
+	}, [scroller, content]);
+	return { away, unseen, toBottom };
+}
+
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
 	const { status, queue, runs } = useLive();
 	const wide = useWide();
 	const [data, setData] = useState<Session | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const bottom = useRef<HTMLDivElement>(null);
+	const scroller = useRef<HTMLDivElement>(null);
+	const content = useRef<HTMLDivElement>(null);
+	const { away, unseen, toBottom } = useStick(scroller, content);
 	const first = useRef(true);
 
 	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）
@@ -69,23 +122,23 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		return () => document.removeEventListener("visibilitychange", mark);
 	}, [st, project, session]);
 
-	// 第一次打开：滚到最后
+	// 第一次打开：滚到最后，贴上
 	useEffect(() => {
 		if (data && first.current) {
 			first.current = false;
-			requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: "end" }));
+			requestAnimationFrame(() => toBottom());
 		}
-	}, [data]);
+	}, [data, toBottom]);
 
-	// 刚发出去的话（排上队了，或者开始跑了）：滚到最后让人看见
+	// 刚发出去的话（排上队了，或者开始跑了）：不管刚才在哪，滚到最后贴上，让人看见
 	const queued = queue.filter((q) => q.session === session).length;
 	const running = runs.find((x) => x.session === session && x.status === "running")?.id;
 	const seen = useRef({ queued, running });
 	useEffect(() => {
 		const before = seen.current;
 		seen.current = { queued, running };
-		if (queued > before.queued || (running && running !== before.running)) requestAnimationFrame(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
-	}, [queued, running]);
+		if (queued > before.queued || (running && running !== before.running)) requestAnimationFrame(() => toBottom(true));
+	}, [queued, running, toBottom]);
 
 	const rel = useCallback((abs: string) => (root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null), [root]);
 	const touched = useMemo(() => {
@@ -133,16 +186,23 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	return (
 		<div className="flex min-h-0 flex-1">
 			<div className="flex min-w-0 flex-1 flex-col">
-				{/* 原生滚动：shadcn 的 ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
-				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-					<div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
-						{t && w ? (
-							<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} />
-						) : (
-							[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
-						)}
-						<div ref={bottom} />
+				<div className="relative flex min-h-0 flex-1 flex-col">
+					{/* 原生滚动：shadcn 的 ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
+					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
+							{t && w ? (
+								<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} />
+							) : (
+								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
+							)}
+						</div>
 					</div>
+					{away && (
+						<Button variant="outline" size="icon" className="absolute right-4 bottom-3 rounded-full shadow-md" onClick={() => toBottom(true)} aria-label="回到最新" title="回到最新">
+							<ArrowDown className="size-4" />
+							{unseen && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-unread" />}
+						</Button>
+					)}
 				</div>
 				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} />}
 			</div>

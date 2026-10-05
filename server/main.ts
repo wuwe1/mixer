@@ -112,6 +112,7 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/repo\/([\w.-]+)\/diff$/, (_q, res, m, url) => json(res, 200, { diff: repo.diff(projectPath(m[1]), url.searchParams.get("path") ?? "") })],
 	[/^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, (_q, res, m) => json(res, 200, { text: repo.commit(projectPath(m[1]), m[2]) })],
 	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
+	[/^\/api\/runs\/([\w-]+)\/tail$/, (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
 	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],

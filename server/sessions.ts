@@ -30,14 +30,17 @@ type Raw = Record<string, any>; // biome-ignore lint: 内部格式，没有类�
 
 /** 这条回复发出时上下文里有多少 token（输入 + 缓存读 + 缓存写），和用的模型：窗口多大按模型查 */
 type Ctx = { used: number; model: string };
+/** 「消息 id : 第几段」：和运行输出流里的同一段对得上，网页靠它把正在写的换成记录里的 */
+type Key = { key?: string };
 
 export type Node =
 	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number; queued?: boolean }
-	| { k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx }
-	| { k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx }
+	| ({ k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx } & Key)
+	| ({ k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx } & Key)
 	| {
 			k: "tool";
 			ctx?: Ctx;
+			key?: string;
 			uuid: string;
 			parent: string | null;
 			ts: string;
@@ -284,6 +287,8 @@ export async function parse(file: string): Promise<Parsed> {
 		return { k: "event", ...base(d), kind: "agent", text: r.body, agent: agentOf(r.from) };
 	};
 	let compact: Extract<Node, { k: "event" }> | null = null;
+	// 同一条消息的每一段各是一条 assistant 记录：按文件顺序数，第几条就是第几段（空的思考也算一段）
+	const blockNo = new Map<string, number>();
 
 	for (const d of order) {
 		const c = d.message?.content;
@@ -343,6 +348,10 @@ export async function parse(file: string): Promise<Parsed> {
 				tools.set(b.id, tool);
 				n = tool;
 			}
+			const mid = String(d.message?.id ?? "");
+			const no = blockNo.get(mid) ?? 0;
+			blockNo.set(mid, no + 1);
+			if (n && mid) n.key = `${mid}:${no}`;
 			const u = d.message?.usage;
 			const used = (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0);
 			if (n && used > 0 && typeof d.message.model === "string" && d.message.model !== "<synthetic>") n.ctx = { used, model: d.message.model };

@@ -10,7 +10,9 @@
 - **继续**：Claude 正在 mixer 里运行时发送的会排队，本次运行结束（或被中断）后一起发出，排队中的可以取消；看着旧版本、终端中打开时不行，输入框自动变成分叉，并写明原因
 - **版本**：一条消息在终端里编辑过（回退重写），那里有「第 i / n 版」切换。只是看，不产生新东西
 - **不是人和 Claude 说的话**：小结、上下文已压缩（点开看压缩前的摘要）、系统提示是分隔线；后台任务的通知是一行；子代理的回报是单独的卡片
-- **运行中**：正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来）；输入框那一排有时长和停止。虚线框只用在排队的消息上，意思是「还没发出」
+- **运行中**：你发的消息、正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样，刷新也还在；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来），什么都没在动时末尾留一个 ping 点；输入框那一排有时长和停止。虚线框只用在排队的消息上，意思是「还没发出」
+- **滚动**：停在底部时新内容长出来跟着滚，往上翻了就不跟；右下角「↓」回到最新，离开后有新内容带蓝点
+- **消息不丢**：输入框随打随存（这台设备上）；发出去的真写进会话记录才算数，没发出去的放回输入框
 - **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（手机上只有百分比）
 - **输入框底下**：权限、模型（选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、skill（打「/」或点按钮，选了在开头插入「/名字 」）、图片（选图或粘贴，点缩略图画箭头、随手画线）
 - **确认**：Claude 动手前请求确认。当前会话的出现在对话里；别的会话的浮在右下角
@@ -48,7 +50,9 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录 |
 | `web/` | Vite + React + Tailwind v4 + shadcn（radix-nova），组件在 `web/src/components/ui` |
 | `web/src/lib/live.tsx` | 全页面共用的项目树、运行、确认请求，和会话状态的算法 |
-| `useStream`（`conversation.tsx`） | 运行输出流里还没写进会话记录的几段；变成和记录里一样的节点接在对话末尾，记录里一有（文字按内容、工具按调用 id）就换成记录里的 |
+| `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端每次运行攒一份（`/api/runs/:id/tail` 是快照），网页先拿快照、再按序号接推送（`run-event` 带 `seq`），接不上就重新拿 |
+| `useStream`（`conversation.tsx`） | 还没写进会话记录的那几段变成和记录里一样的节点接在对话末尾；记录里有了同一段（「消息 id : 第几段」）就换成记录里的 |
+| `web/src/lib/outbox.ts` | 草稿随打随存；发件箱：发出去的写进记录才删，没发出去的放回输入框，其实发出去了的把输入框里原样的清掉 |
 
 ## 会话记录的坑（`server/sessions.ts`）
 
@@ -59,6 +63,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - `<task-notification>`、`<command-name>`、`<system-reminder>` 这类用户记录是系统插的，显示成事件，不当成人说的话
 - 运行中插进来的东西是 `attachment` 的 `queued_command`：可能是人在终端里打的，也可能是任务通知（`commandMode: task-notification`）或子代理的回报（`<agent-message from=…>`），要分开
 - 压缩：`system` 的 `compact_boundary` 的 `parentUuid` 是空的，`logicalParentUuid` 指向压缩之后的记录、靠不住；按文件顺序接在它前面最后一个显示节点上。紧跟着的 `isCompactSummary` 用户记录是摘要，不是人说的话
+- 一条 assistant 记录是一条消息里的一段：同一个 `message.id` 的记录按文件顺序数，第几条就是流里 `content_block` 的第几段（`index`），空的思考也算。`sessions.ts` 给节点标上 `key`「消息 id : 第几段」
 - 上下文用量：每条 assistant 记录的 `message.usage` 里 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`。窗口大小记录里没有，只有 `claude -p` 结束时 `result` 事件的 `modelUsage.<模型>.contextWindow` 有，按模型记进 `state.json`
 - 调 skill：先是一条 `<command-name>/名字</command-name><command-args>…` 的 user 记录，下一条 isMeta 的是 skill 正文（`Base directory for this skill:` 开头）。有正文的才是 skill，显示成人说的「/名字 参数」；`/clear`、`/model` 这类后面没有正文，不显示
 - 从工具调用分叉，`--resume-session-at` 要给工具结果那条 user 记录的 uuid；给工具调用那条，结果会丢

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
+import { counts, emptyTail, step, type Tail } from "../web/src/lib/tail.ts";
 
 export type RunStatus = "running" | "done" | "error" | "stopped";
 export type Run = {
@@ -34,7 +35,6 @@ export type Run = {
 	events: unknown[];
 };
 
-/** 排着队的「接着说」 */
 /** 消息里带的图片（base64） */
 export type Image = { media: string; data: string };
 
@@ -43,7 +43,9 @@ export type Queued = { id: string; project: string; cwd: string; session: string
 
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
-const runs = new Map<string, Run & { child?: ChildProcess }>();
+/** 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照） */
+type Live = Run & { child?: ChildProcess; tail: Tail };
+const runs = new Map<string, Live>();
 const approvals = new Map<string, Approval>();
 const queue: Queued[] = [];
 export const TOKEN = randomUUID();
@@ -53,8 +55,8 @@ type Emit = (type: string, data: unknown) => void;
 let emit: Emit = () => {};
 export const onEvent = (f: Emit) => { emit = f; };
 
-const view = (r: Run & { child?: ChildProcess }) => {
-	const { child: _c, events, ...rest } = r;
+const view = (r: Live) => {
+	const { child: _c, tail: _t, events, ...rest } = r;
 	return { ...rest, events: events.length };
 };
 export const list = () => [...runs.values()].map(view).sort((a, b) => b.started.localeCompare(a.started));
@@ -62,6 +64,8 @@ export const get = (id: string) => {
 	const r = runs.get(id);
 	return r ? { ...view(r), events: r.events } : null;
 };
+/** 正在写的那几段的快照；seq 之后的事件网页从推送里接 */
+export const tail = (id: string) => runs.get(id)?.tail ?? null;
 
 export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null }) {
 	const images = o.images ?? [];
@@ -99,7 +103,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (images.length) args.push("--input-format", "stream-json");
 	if (resume) args.push("--resume", resume);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
-	const run: Run & { child?: ChildProcess } = {
+	const run: Live = {
 		id,
 		project: o.project,
 		cwd: o.cwd,
@@ -115,6 +119,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 		ended: null,
 		error: null,
 		events: [],
+		tail: emptyTail(),
 	};
 	const child = spawn("claude", args, { cwd: o.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
 	run.child = child;
@@ -148,7 +153,11 @@ export async function start(o: { project: string; cwd: string; session: string |
 				for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
 			run.events.push(ev);
 			if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
-			emit("run-event", { id, event: ev });
+			// 网页只要流事件：带上序号推过去，网页按序号接在快照后面，接不上就重新拿快照
+			if (counts(ev)) {
+				run.tail = step(run.tail, ev, Date.now());
+				emit("run-event", { id, seq: run.tail.seq, event: ev });
+			}
 		}
 	});
 	let err = "";

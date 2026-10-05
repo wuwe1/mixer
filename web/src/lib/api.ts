@@ -8,11 +8,12 @@ export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] 
 type Base = { uuid: string; parent: string | null; ts: string };
 /** 这条回复发出时上下文里有多少 token，和用的模型 */
 export type Ctx = { used: number; model: string };
-export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: string | null; agent: string | null; ctx?: Ctx };
+/** key：「消息 id : 第几段」，和运行输出流里的同一段对得上 */
+export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: string | null; agent: string | null; ctx?: Ctx; key?: string };
 export type Node =
 	| (Base & { k: "user"; text: string; images: number; queued?: boolean })
-	| (Base & { k: "assistant"; text: string; ctx?: Ctx })
-	| (Base & { k: "thinking"; text: string; ctx?: Ctx })
+	| (Base & { k: "assistant"; text: string; ctx?: Ctx; key?: string })
+	| (Base & { k: "thinking"; text: string; ctx?: Ctx; key?: string })
 	| ToolNode
 	| (Base & { k: "event"; kind: "summary" | "compact" | "info" | "task" | "agent"; text: string; detail?: string; status?: string; agent?: string });
 /** windows：各模型的上下文窗口大小（mixer 跑过才知道） */

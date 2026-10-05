@@ -18,6 +18,8 @@ import { useEvent } from "@/lib/events";
 import { askNotify, type Status, useLive } from "@/lib/live";
 import { go } from "@/lib/route";
 import { defaultModel, family, lastCtx, MODELS, pretty, windowOf } from "@/lib/model";
+import { useDraft, useOutbox } from "@/lib/outbox";
+import { type Block as LiveBlock, emptyTail, step, type Tail } from "@/lib/tail";
 import { clock } from "@/lib/time";
 import { ApprovalCard } from "./approvals";
 import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
@@ -168,8 +170,11 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 	const busy = status === "running" || status === "waiting" || status === "terminal";
 	const tail = bs[bs.length - 1];
 	const last = busy && w.atLatest && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
-	const liveAt = (n: Node) => stream.blocks[Number(n.uuid.slice(5))]?.at ?? Date.now();
+	const liveAt = (n: Node) => stream.blocks.find((b) => `live:${b.key}` === n.uuid)?.at ?? Date.now();
 	const now = last && ((last.k === "tool" && !last.result) || (last.k === "thinking" && isLive(last))) ? { node: last, since: isLive(last) ? liveAt(last) : Date.parse(last.ts) } : null;
+	// 在跑，末尾却什么都没在动（等 Claude 开口、工具结果回来之后）：留一个 ping 点，知道它还活着
+	const writing = live.length > 0 && live[live.length - 1].k === "assistant";
+	const idle = !!stream.run && w.atLatest && !now && !writing && status !== "waiting";
 	// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线
 	const switched = new Map<string, string>();
 	let prev: string | null = null;
@@ -211,6 +216,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 					</div>
 				);
 			})}
+			{idle && <StatusIcon s="running" className="-mt-2" />}
 			<QueuedMessages session={session} />
 			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-waiting/50" />)}
 
@@ -323,8 +329,10 @@ function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<
 }
 
 export function Composer({ project, session, w, status, windows, chosen, stream }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; stream: Stream }) {
-	const { follow } = useLive();
-	const [text, setText] = useState("");
+	const { follow, runs, queue } = useLive();
+	const [text, setText] = useDraft(session);
+	// 发出去的先记着，真写进会话记录才算数；没发出去的放回输入框
+	const track = useOutbox(session, w.path, runs, queue, text, setText);
 	const why = noContinue(w, status);
 	const busyRun = status === "running" || status === "waiting";
 	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
@@ -345,12 +353,15 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 			// 分叉：在看旧版本就从看到的地方分；否则从最新处（不给分叉点）
 			const at = w.atLatest ? null : forkPoint(w.path);
 			const images = await Promise.all(shots.map(encode));
-			await start({ project, session, mode, at, prompt: text, images, permission, model: model || null }, follow);
+			const box = track(text, mode);
+			box.sent(await start({ project, session, mode, at, prompt: text, images, permission, model: model || null }, follow));
 			setText("");
 			for (const s of shots) URL.revokeObjectURL(s.url);
 			setShots([]);
 		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
+			// 连不上（断网、服务在重启）浏览器只给一句英文
+			const m = e instanceof TypeError ? "连不上 mixer" : e instanceof Error ? e.message : String(e);
+			toast.error(`没发出去：${m}。消息还在输入框里`);
 		} finally {
 			setBusy(false);
 		}
@@ -494,44 +505,46 @@ function QueuedMessages({ session }: { session: string }) {
 	);
 }
 
-type Ev = { type: string; event?: { type: string; delta?: { type: string; text?: string; thinking?: string; partial_json?: string }; content_block?: { type: string; name?: string; id?: string } } };
-
-/** 运行输出流里的一段：正在写的文字、思考，或者正在写参数的工具调用（at：这一段开始的时间） */
-type LiveBlock = ({ k: "text"; text: string } | { k: "thinking"; text: string } | { k: "tool"; id: string; name: string; json: string }) & { at: number };
 export type Stream = { run: Run | null; blocks: LiveBlock[] };
 
 /**
- * 这个会话上正在跑的那次运行，和它输出流里的各段。
- * 每段写完才写进会话记录；对话末尾先用流里的内容顶上，样子和写进记录之后一样，记录里一有就换成记录里的
+ * 这个会话上正在跑的那次运行，和它输出流里正在写的那几段。
+ * 服务端也攒着一份：打开（刷新、断线重连）时先拿快照，之后按序号接推送来的事件；中间漏了就重新拿快照。
+ * 每段写完才写进会话记录；对话末尾先用流里的顶上，样子和写进记录之后一样，记录里有了同一段（消息 id : 第几段）就换成记录里的
  */
 export function useStream(session: string): Stream {
 	const { runs } = useLive();
 	const run = runs.find((r) => r.session === session && r.status === "running") ?? null;
-	const [blocks, setBlocks] = useState<LiveBlock[]>([]);
-	useEffect(() => setBlocks([]), [run?.id]);
-	useEvent("run-event", useCallback((e: { id: string; event: Ev }) => {
-		if (!run || e.id !== run.id) return;
-		const ev = e.event.event;
-		if (e.event.type !== "stream_event" || !ev) return;
-		if (ev.type === "content_block_start") {
-			const b = ev.content_block;
-			const at = Date.now();
-			if (b?.type === "text") setBlocks((bs) => [...bs, { k: "text", text: "", at }]);
-			else if (b?.type === "thinking") setBlocks((bs) => [...bs, { k: "thinking", text: "", at }]);
-			else if (b?.type === "tool_use") setBlocks((bs) => [...bs, { k: "tool", id: b.id ?? "", name: b.name ?? "工具", json: "", at }]);
-		} else if (ev.type === "content_block_delta") {
-			const d = ev.delta;
-			const add = d?.type === "text_delta" ? d.text : d?.type === "thinking_delta" ? d.thinking : d?.type === "input_json_delta" ? d.partial_json : undefined;
-			if (!add) return;
-			setBlocks((bs) => {
-				const last = bs[bs.length - 1];
-				if (!last) return bs;
-				const next = last.k === "tool" ? { ...last, json: last.json + add } : { ...last, text: last.text + add };
-				return [...bs.slice(0, -1), next];
-			});
-		}
-	}, [run]));
-	return { run, blocks: run ? blocks : [] };
+	const id = run?.id ?? null;
+	const [tail, setTail] = useState<Tail>(emptyTail);
+	const cur = useRef<Tail>(tail);
+	/** 正在拿快照：这期间推来的事件先攒着，快照到了接在后面 */
+	const buffer = useRef<{ seq: number; event: unknown }[] | null>(null);
+	const put = (t: Tail) => { cur.current = t; setTail(t); };
+	const sync = useCallback(() => {
+		if (!id) return;
+		buffer.current = [];
+		api<Tail>(`/api/runs/${id}/tail`).then(
+			(t) => {
+				let next = t;
+				for (const e of buffer.current ?? []) if (e.seq === next.seq + 1) next = step(next, e.event as Record<string, unknown>, Date.now());
+				buffer.current = null;
+				put(next);
+			},
+			() => { buffer.current = null; },
+		);
+	}, [id]);
+	useEffect(() => { put(emptyTail()); sync(); }, [sync]);
+	useEvent("reconnect", sync);
+	useEvent("run-event", useCallback((e: { id: string; seq: number; event: Record<string, unknown> }) => {
+		if (e.id !== id) return;
+		if (buffer.current) return void buffer.current.push(e);
+		const t = cur.current;
+		if (e.seq <= t.seq) return;
+		if (e.seq === t.seq + 1) put(step(t, e.event, Date.now()));
+		else sync();
+	}, [id, sync]));
+	return { run, blocks: run ? tail.blocks : [] };
 }
 
 /** 工具参数还在写的时候的概览：能解析了就挑一个最能说明它在干什么的字段，还没写完就显示写了多少 */
@@ -550,21 +563,23 @@ function liveSummary(json: string) {
  * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
  */
 function liveNodes(stream: Stream, path: Node[]): Node[] {
-	const texts = new Set(path.flatMap((n) => (n.k === "assistant" || n.k === "thinking" ? [n.text.trim()] : [])));
-	const tools = new Set(path.flatMap((n) => (n.k === "tool" ? [n.id] : [])));
+	const keys = new Set(path.flatMap((n) => ("key" in n && n.key ? [n.key] : [])));
 	const ts = new Date().toISOString();
 	const r = stream.run;
 	const asked = r?.prompt.trim();
 	// 这次运行开始之后（给一分钟时钟误差）记录里有同样的一句，就是它已经写进去了
 	const written = !r || !asked || path.some((n) => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
 	const mine: Node[] = written ? [] : [{ k: "user", uuid: "live:user", parent: null, ts: r.started, text: r.prompt, images: 0 }];
-	return [...mine, ...stream.blocks.flatMap((b, i): Node[] => {
-		const base = { uuid: `live:${i}`, parent: null, ts };
-		if (b.k === "tool") return tools.has(b.id) ? [] : [{ k: "tool", ...base, id: b.id, name: b.name, summary: liveSummary(b.json), input: b.json, result: null, resultUuid: null, agent: null }];
-		if (texts.has(b.text.trim())) return [];
-		// 后面已经有别的段了：这段写完了。思考有时是不给看的（空的），记录里不会有它，不再显示
-		if (b.k === "thinking") return !b.text.trim() && i < stream.blocks.length - 1 ? [] : [{ k: "thinking", ...base, text: b.text }];
-		return b.text.trim() ? [{ k: "assistant", ...base, text: b.text }] : [];
-	})];
+	const blocks = stream.blocks.filter((b) => !keys.has(b.key));
+	return [
+		...mine,
+		...blocks.flatMap((b, i): Node[] => {
+			const base = { uuid: `live:${b.key}`, parent: null, ts, key: b.key };
+			if (b.k === "tool") return [{ k: "tool", ...base, id: b.id, name: b.name, summary: liveSummary(b.json), input: b.json, result: null, resultUuid: null, agent: null }];
+			// 思考有时是不给看的（空的）：记录里不会有能显示的节点，后面有了别的段就不再显示
+			if (b.k === "thinking") return !b.text.trim() && i < blocks.length - 1 ? [] : [{ k: "thinking", ...base, text: b.text }];
+			return b.text.trim() ? [{ k: "assistant", ...base, text: b.text }] : [];
+		}),
+	];
 }
 const isLive = (n: Node) => n.uuid.startsWith("live:");
