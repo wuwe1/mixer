@@ -222,6 +222,19 @@ export async function listSessions(project: string): Promise<SessionMeta[]> {
 	return [...metas, ...others].sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
+/**
+ * 侧栏里一个会话的那一行（会话文件变了，随通知推过去，侧栏不用整个工作区重拉）。
+ * parent 不算：一个会话从哪分出来，建好就定了（原会话总是一家里最早建的），侧栏留着原来的
+ */
+export async function row(project: string, id: string): Promise<SessionMeta | null> {
+	const cx = codex.find(id);
+	if (cx) return { ...(await codex.metaOf(cx)), unread: unread(id) };
+	const file = sessionFile(project, id);
+	if (!existsSync(file)) return null;
+	const m = await scanMeta(file);
+	return { ...m, active: Date.now() - Date.parse(m.mtime) < 90_000 && !ourLastWrite(m.id, Date.parse(m.mtime)), unread: unread(m.id) };
+}
+
 /** 所有项目和它们的会话（侧栏用） */
 export async function tree() {
 	return Promise.all(listProjects().map(async (p) => ({ ...p, sessions: await listSessions(p.id) })));

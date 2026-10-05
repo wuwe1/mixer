@@ -9,6 +9,7 @@
 //     web_search_call 和对应的 *_output（按 call_id 挂到调用上）
 //   compacted / context_compacted：上下文压缩；turn_aborted：被打断；token_count：上下文用量和窗口；turn_context：模型
 // 标题在 ~/.codex/session_index.jsonl（同一个 id 后写的算）。记录是一条直线（没有 Claude 那种 uuid 树），每个节点挂在上一个下面
+import { randomUUID } from "node:crypto";
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -172,6 +173,10 @@ type NoParent<T> = T extends unknown ? Omit<T, "parent"> : never;
 type Parsed = {
 	size: number;
 	mtime: number;
+	/** 增量（和 sessions.ts 一样的「epoch:rev」）：节点新出现、改过记一个递增的 rev；上一份里的节点这次没了（文件重写）换 epoch */
+	epoch: string;
+	rev: number;
+	revs: Map<string, number>;
 	nodes: Node[];
 	inputs: Map<string, string>;
 	results: Map<string, string>;
@@ -252,7 +257,7 @@ async function parse(file: string): Promise<Parsed> {
 	const meta = (recs[0]?.type === "session_meta" ? recs[0].payload : {}) as Raw;
 	const short = String(meta.id ?? "").slice(-8);
 	const modern = recs.some((r) => r.type === "event_msg" && r.payload?.type === "item_completed");
-	const p: Parsed = { size: st.size, mtime: st.mtimeMs, nodes: [], inputs: new Map(), results: new Map(), images: new Map(), turns: new Map(), ords: new Map(), windows: {}, meta: { first: null, last: null, fresh: null, prompts: 0, parent: null } };
+	const p: Parsed = { size: st.size, mtime: st.mtimeMs, epoch: "", rev: 0, revs: new Map(), nodes: [], inputs: new Map(), results: new Map(), images: new Map(), turns: new Map(), ords: new Map(), windows: {}, meta: { first: null, last: null, fresh: null, prompts: 0, parent: null } };
 
 	// 分叉：先接上原会话分叉点之前的
 	const from = typeof meta.forked_from_id === "string" ? byId.get(meta.forked_from_id) : undefined;
@@ -370,12 +375,22 @@ async function parse(file: string): Promise<Parsed> {
 			}
 		}
 	}
+	// 整个文件重读的，按 uuid 和上一份比：没变的留着原来的 rev，只有新的、改过的算增量
+	const ids = new Set(p.nodes.map((n) => n.uuid));
+	const prev = old && old.nodes.every((n) => ids.has(n.uuid)) ? old : null;
+	const was = new Map(prev?.nodes.map((n) => [n.uuid, n]));
+	p.epoch = prev?.epoch ?? randomUUID().slice(0, 8);
+	p.rev = prev?.rev ?? 0;
+	for (const n of p.nodes) {
+		const o = was.get(n.uuid);
+		p.revs.set(n.uuid, o && prev && JSON.stringify(o) === JSON.stringify(n) ? (prev.revs.get(n.uuid) ?? 0) : ++p.rev);
+	}
 	keep(file, p);
 	return p;
 }
 
 // —— 给 sessions.ts 的：和 Claude 的会话一样的样子 ——
-async function metaOf(i: Info) {
+export async function metaOf(i: Info) {
 	const st = statSync(i.file);
 	const p = await parse(i.file);
 	return {
@@ -416,12 +431,14 @@ export function projects() {
 export const list = async (project: string) =>
 	(await Promise.all(all().filter((i) => i.project === project).map((i) => metaOf(i).catch(() => null)))).filter((m) => m !== null);
 
-/** 一个会话。没变（version 对得上）就只回「没变」，不再发一遍 */
+/** 一个会话。since 是上次拿到的「epoch:rev」：对得上就只给之后新出现、改过的节点（跑的时候文件一直在变，不用每次整份发） */
 export async function session(i: Info, since?: string | null) {
 	const p = await parse(i.file);
-	const version = `codex:${p.size}:${p.mtime}`;
-	const same = since === version;
-	return { meta: await metaOf(i), nodes: same ? [] : p.nodes, delta: same, version, windows: p.windows, model: null };
+	const [epoch, rev] = (since ?? "").split(":");
+	const after = epoch === p.epoch ? Number(rev) : Number.NaN;
+	const delta = Number.isInteger(after) && after <= p.rev;
+	const nodes = delta ? p.nodes.filter((n) => (p.revs.get(n.uuid) ?? 0) > after) : p.nodes;
+	return { meta: await metaOf(i), nodes, delta, version: `${p.epoch}:${p.rev}`, windows: p.windows, model: null };
 }
 
 export async function toolDetail(i: Info, id: string) {

@@ -17,7 +17,7 @@ import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session, toolDetail, tree } from "./sessions.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, toolDetail, tree } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as tunnel from "./tunnel.ts";
 import * as workspace from "./workspace.ts";
@@ -155,12 +155,17 @@ const emit = (type: string, data: unknown) => { const m = sse(type, data); for (
 runs.onEvent(emit);
 setInterval(() => emit("ping", {}), 25_000).unref();
 
-// 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去
+// 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去。
+// 在工作区里的，带上侧栏那一行（meta），侧栏就地换掉，不用整个工作区重拉；正看着这个会话的页面自己带 version 拉增量
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const changed = (project: string, id: string) => {
 	const key = `${project}/${id}`;
 	if (timers.has(key)) return;
-	timers.set(key, setTimeout(() => { timers.delete(key); emit("session", { project, id }); }, 500));
+	timers.set(key, setTimeout(async () => {
+		timers.delete(key);
+		const meta = state.workspace()?.sessions[id] === project ? await row(project, id).catch(() => null) : null;
+		emit("session", meta ? { project, id, meta } : { project, id });
+	}, 500));
 };
 if (existsSync(PROJECTS)) {
 	watch(PROJECTS, { recursive: true }, (_, f) => {

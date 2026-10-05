@@ -66,7 +66,36 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	}, [putWorkspace, putRuns, putApprovals, putQueue]);
 	useEffect(loadAll, [loadAll]);
 	useEvent("reconnect", loadAll);
-	useEvent("session", loadWorkspace);
+	// 工作区里的会话文件变了：通知里带着侧栏那一行，就地换掉，不再整个重拉。跑的时候 0.5 秒一次，攒着 1.5 秒换一回（整页跟着重画）。
+	// parent 留原来的（服务端不算）；不在本地工作区里的不管（刚放进来的有 workspace 事件整个拉）
+	const rows = useRef(new Map<string, SessionMeta>());
+	const flush = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEvent("session", useCallback((e: { project: string; id: string; meta?: SessionMeta }) => {
+		if (!e.meta) return;
+		rows.current.set(e.id, e.meta);
+		flush.current ??= setTimeout(() => {
+			flush.current = null;
+			const got = rows.current;
+			rows.current = new Map();
+			setWorkspace((w) => {
+				if (!w) return w;
+				let changed = false;
+				const next = w.map((g) => {
+					if (!g.sessions.some((s) => got.has(s.id))) return g;
+					return { ...g, sessions: g.sessions.map((s) => {
+						const m = got.get(s.id);
+						if (!m) return s;
+						const n = { ...m, parent: s.parent };
+						if (JSON.stringify(n) === JSON.stringify(s)) return s;
+						changed = true;
+						return n;
+					}) };
+				});
+				return changed ? next : w;
+			});
+			setPulled((n) => n + 1);
+		}, 1500);
+	}, []));
 	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
 	useEffect(() => {
 		const left = (workspace ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());

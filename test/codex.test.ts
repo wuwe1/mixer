@@ -1,6 +1,6 @@
 // codex.ts：Codex 的会话记录（老格式按 response_item、新格式按 item_completed、分叉、内部会话）
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -111,4 +111,26 @@ test("shellInner / toolOf：记录里的 PascalCase 和流里的 camelCase 都�
 	assert.deepEqual(codex.toolOf({ type: "FileChange", changes: { "a.ts": {}, "b.ts": {} } }), { name: "apply_patch", input: { file_path: "a.ts", files: ["a.ts", "b.ts"] } });
 	assert.deepEqual(codex.toolOf({ type: "fileChange", changes: [{ path: "c.ts" }] }), { name: "apply_patch", input: { file_path: "c.ts" } });
 	assert.equal(codex.toolOf({ type: "AgentMessage" }), null);
+});
+
+test("增量（epoch:rev）：接着写只给新的、改过的节点；文件重写（之前的节点没了）换 epoch、整份给", async () => {
+	const ID = "55555555-5555-4555-8555-555555555555";
+	const rel = `2026/01/01/rollout-2026-01-01T00-00-00-${ID}.jsonl`;
+	const file = join(tmp, ".codex", "sessions", rel);
+	const all = readFileSync(join(FIX, "new.jsonl"), "utf8").replaceAll(NEW, ID).trimEnd().split("\n");
+	writeFileSync(file, `${all.slice(0, -1).join("\n")}\n`);
+	const i = codex.fromPath(rel);
+	assert.ok(i);
+	const a = await codex.session(i);
+	appendFileSync(file, `${all.at(-1)}\n`);
+	const b = await codex.session(i, a.version);
+	assert.equal(b.delta, true);
+	assert.ok(b.nodes.length > 0);
+	const before = new Map(a.nodes.map((n) => [n.uuid, JSON.stringify(n)]));
+	for (const n of b.nodes) assert.notEqual(before.get(n.uuid), JSON.stringify(n));
+	assert.deepEqual((await codex.session(i, b.version)).nodes, []);
+	writeFileSync(file, `${all.slice(0, 3).join("\n")}\n`);
+	const c = await codex.session(i, b.version);
+	assert.equal(c.delta, false);
+	assert.notEqual(c.version.split(":")[0], b.version.split(":")[0]);
 });
