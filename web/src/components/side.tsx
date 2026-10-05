@@ -155,8 +155,10 @@ function ProjectItem({ p, r, open, setOpen, q }: { p: ProjectTree; r: Route; ope
 
 /**
  * 手机上横着滑开关侧栏：往右滑打开，往左滑关上。
- * iOS Safari 从屏幕最左边往右滑是「返回上一页」，网页拦不住，所以离左边 EDGE 以内起手的不管，留给返回；
- * 加到主屏幕（全屏打开）没有这个返回手势，从边上滑也行。
+ * iOS 从屏幕最左边往右滑是「返回上一页」，Safari 里和加到主屏幕的 app 里都有，滑快了系统会抢先：
+ * - Safari 里离左边 EDGE 以内起手的不管，留给返回
+ * - 主屏幕 app 里没有地址栏、用不着它：这一条里一按下就拦掉，系统就不返回了，从边上滑也能开侧栏。
+ *   拦了 touchstart 浏览器就不再发 click，手指没动的点按自己补一个
  * 手指一动就定方向：横着的（而且是要开 / 关的方向）就拦下这次滑动，底下的内容不跟着上下滚；竖着的就放手，照常滚。
  */
 const EDGE = 24;
@@ -165,37 +167,50 @@ function useSwipe() {
 	useEffect(() => {
 		if (!isMobile) return;
 		const standalone = (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
-		let g: { x: number; y: number; dir: "h" | null } | null = null;
+		let g: { x: number; y: number; dir: "h" | null; track: boolean; tap: Element | null } | null = null;
 		const down = (e: TouchEvent) => {
 			g = null;
+			if (e.touches.length !== 1) return;
 			const t = e.touches[0];
-			if (e.touches.length !== 1 || (!openMobile && !standalone && t.clientX < EDGE)) return;
+			const edge = t.clientX < EDGE;
+			let tap: Element | null = null;
+			if (edge && standalone && e.cancelable) {
+				e.preventDefault();
+				tap = e.target as Element;
+			}
+			let track = openMobile || standalone || !edge;
 			// 在往右滚过的代码、表格上横滑，是在滚它
-			if (!openMobile) for (let el = e.target as Element | null; el; el = el.parentElement) if (el.scrollLeft > 0) return;
-			g = { x: t.clientX, y: t.clientY, dir: null };
+			if (track && !openMobile) for (let el = e.target as Element | null; el; el = el.parentElement) if (el.scrollLeft > 0) track = false;
+			g = { x: t.clientX, y: t.clientY, dir: null, track, tap };
 		};
 		const move = (e: TouchEvent) => {
-			if (!g) return;
+			if (!g?.track) return;
 			const t = e.touches[0];
 			const dx = t.clientX - g.x;
 			const dy = t.clientY - g.y;
 			if (!g.dir) {
 				if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
 				// 竖着为主，或者横着但不是要的方向：不管这次了
-				if (Math.abs(dy) >= Math.abs(dx) || (dx > 0) === openMobile) return void (g = null);
+				if (Math.abs(dy) >= Math.abs(dx) || (dx > 0) === openMobile) return void (g.track = false);
 				g.dir = "h";
 			}
 			if (e.cancelable) e.preventDefault();
 		};
 		const up = (e: TouchEvent) => {
-			if (!g?.dir) return void (g = null);
-			const dx = e.changedTouches[0].clientX - g.x;
+			if (!g) return;
+			const t = e.changedTouches[0];
+			const dx = t.clientX - g.x;
+			const dy = t.clientY - g.y;
+			const { dir, tap } = g;
 			g = null;
-			if (Math.abs(dx) < 50) return;
-			setOpenMobile(dx > 0);
+			if (tap && !dir && Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+				(tap.closest("input, textarea, select, [contenteditable]") as HTMLElement | null)?.focus();
+				tap.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+			}
+			if (dir && Math.abs(dx) >= 50) setOpenMobile(dx > 0);
 		};
 		const cancel = () => { g = null; };
-		document.addEventListener("touchstart", down, { passive: true });
+		document.addEventListener("touchstart", down, { passive: false });
 		document.addEventListener("touchmove", move, { passive: false });
 		document.addEventListener("touchend", up, { passive: true });
 		document.addEventListener("touchcancel", cancel, { passive: true });
