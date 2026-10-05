@@ -86,8 +86,8 @@ export function App() {
 								<EmptyMedia variant="icon">
 									<MessageSquare />
 								</EmptyMedia>
-								<EmptyTitle>选一个会话，或开一个新的</EmptyTitle>
-								<EmptyDescription>左边按项目列着你在 Claude Code 里开过的会话，前面的记号是它现在的状态。</EmptyDescription>
+								<EmptyTitle>选择一个会话，或新建会话</EmptyTitle>
+								<EmptyDescription>左边按项目列出你在 Claude Code 里的会话，前面的标记是它当前的状态。</EmptyDescription>
 							</EmptyHeader>
 							<Button variant="outline" size="sm" className="gap-1.5" onClick={() => setNewOpen(true)}>
 								<SquarePen className="size-3.5" />

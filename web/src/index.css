@@ -142,3 +142,36 @@
 	color: var(--muted-foreground); opacity: 0.55; user-select: none;
 }
 html, body, #root { height: 100%; }
+
+/*
+ * mixer 的设计 token。界面上只用这些，不直接写 amber-500、text-[13px] 这种具体值（规则也写在 CLAUDE.md「设计」一节）
+ * 状态色：waiting 琥珀 = 要你确认；unread 蓝 = 没看过；出错用 destructive；其余用 muted-foreground（中性）
+ * 改动色：added 新增 / removed 删除 / modified 修改 / renamed 重命名，git 工具的习惯配色，只用在文件改动上
+ * 字号：2xs 11px（时间、徽标、小按钮）、xs 12px（代码、diff）、md 13px（列表行、工具行）、sm 14px（消息正文）。
+ *   起成 t-shirt 名字是为了 cn（tailwind-merge）认得它是字号；叫 text-ui 之类会被当成颜色，和 text-muted-foreground 一起时被删掉
+ */
+:root {
+    --waiting: oklch(0.769 0.188 70.08);
+    --unread: oklch(0.623 0.214 259.815);
+    --added: oklch(0.596 0.145 163.225);
+    --removed: var(--destructive);
+    --modified: oklch(0.666 0.179 58.318);
+    --renamed: oklch(0.588 0.158 241.966);
+}
+.dark {
+    --added: oklch(0.765 0.177 163.223);
+    --modified: oklch(0.828 0.189 84.429);
+    --renamed: oklch(0.746 0.16 232.661);
+}
+@theme inline {
+    --color-waiting: var(--waiting);
+    --color-unread: var(--unread);
+    --color-added: var(--added);
+    --color-removed: var(--removed);
+    --color-modified: var(--modified);
+    --color-renamed: var(--renamed);
+    --text-2xs: 11px;
+    --text-2xs--line-height: 1.4;
+    --text-md: 13px;
+    --text-md--line-height: 1.5;
+}

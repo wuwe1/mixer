@@ -5,7 +5,7 @@ import { Code } from "./code";
 
 export function Markdown({ text }: { text: string }) {
 	return (
-		<div className="prose prose-sm prose-neutral max-w-none break-words dark:prose-invert prose-headings:font-semibold prose-headings:tracking-tight prose-a:underline-offset-4 prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0 prose-table:text-[13px]">
+		<div className="prose prose-sm prose-neutral max-w-none break-words dark:prose-invert prose-headings:font-semibold prose-headings:tracking-tight prose-a:underline-offset-4 prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0 prose-table:text-md">
 			<ReactMarkdown
 				remarkPlugins={[remarkGfm]}
 				components={{

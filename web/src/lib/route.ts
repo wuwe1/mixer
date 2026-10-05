@@ -24,7 +24,14 @@ const listeners = new Set<() => void>();
 window.addEventListener("popstate", () => { for (const l of listeners) l(); });
 
 export function go(r: Partial<Route>, replace = false) {
-	const next = { ...read(), ...r };
+	const cur = read();
+	const next = { ...cur, ...r };
+	// 换了项目：上一个项目的文件、版本选择都不算数了（这次明确给了的除外）；换了会话：版本选择不算数
+	if (next.project !== cur.project) {
+		if (!("file" in r)) next.file = null;
+		if (!("view" in r)) next.view = null;
+	}
+	if ((next.project !== cur.project || next.session !== cur.session) && !("leaf" in r)) next.leaf = null;
 	let path = next.project ? `/p/${encodeURIComponent(next.project)}` : "/";
 	if (next.project && next.session) path += `/s/${encodeURIComponent(next.session)}`;
 	const q = new URLSearchParams();

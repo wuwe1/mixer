@@ -17,7 +17,7 @@ export function ProjectHome({ p, r }: { p: Pick<ProjectTree, "id" | "path">; r: 
 						<h1 className="text-xl font-semibold tracking-tight">{projectName(p)}</h1>
 						<p className="truncate font-mono text-xs text-muted-foreground">{p.path}</p>
 					</div>
-					<StartBox target={{ project: p.id }} placeholder="开一个新会话：要 Claude 做什么……" />
+					<StartBox target={{ project: p.id }} placeholder="新会话：要 Claude 做什么……" />
 				</div>
 			</div>
 			<Tabs value={tab} onValueChange={(v) => go({ panel: v as "files" | "changes", file: null, view: null }, true)} className="flex min-h-0 flex-1 flex-col gap-0">

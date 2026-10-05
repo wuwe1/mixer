@@ -1,5 +1,5 @@
-// 改动：当前分支、没提交的改动（点开看 diff；在会话里时可以只看这个会话改过的文件）、最近的提交（点开看内容）。按容器宽度排，同 files.tsx。
-import { ChevronLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
+// 改动：当前分支、未提交的改动（点开看 diff；在会话里时可以只看这个会话改过的文件）、最近的提交（点开看内容）。按容器宽度排，同 files.tsx。
+import { ChevronLeft, GitBranch, GitCommitHorizontal, GitCompareArrows } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,29 +8,30 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, enc, type Status } from "@/lib/api";
 import { useEvent } from "@/lib/events";
-import { ago } from "@/lib/time";
+import { since } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { Placeholder } from "./placeholder";
 
 const CODE: Record<string, { label: string; cls: string }> = {
-	M: { label: "改", cls: "text-amber-600 dark:text-amber-400" },
-	A: { label: "加", cls: "text-emerald-600 dark:text-emerald-400" },
-	D: { label: "删", cls: "text-destructive" },
-	R: { label: "改名", cls: "text-sky-600 dark:text-sky-400" },
-	"?": { label: "新", cls: "text-emerald-600 dark:text-emerald-400" },
+	M: { label: "修改", cls: "text-modified" },
+	A: { label: "新增", cls: "text-added" },
+	D: { label: "删除", cls: "text-removed" },
+	R: { label: "重命名", cls: "text-renamed" },
+	"?": { label: "新文件", cls: "text-added" },
 };
 const kind = (code: string) => CODE[code.trim()[0] ?? "M"] ?? CODE.M;
 
 export function Diff({ text }: { text: string }) {
 	return (
-		<pre className="min-w-max py-2 font-mono text-[12px] leading-[1.6]">
+		<pre className="min-w-max py-2 font-mono text-xs leading-[1.6]">
 			{text.split("\n").map((l, i) => (
 				<div
 					key={i}
 					className={cn(
 						"px-4",
-						l.startsWith("+") && !l.startsWith("+++") && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-						l.startsWith("-") && !l.startsWith("---") && "bg-red-500/10 text-red-700 dark:text-red-300",
-						l.startsWith("@@") && "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+						l.startsWith("+") && !l.startsWith("+++") && "bg-added/10 text-added",
+						l.startsWith("-") && !l.startsWith("---") && "bg-removed/10 text-removed",
+						l.startsWith("@@") && "bg-muted text-muted-foreground",
 						/^(diff |index |\+\+\+|---)/.test(l) && "text-muted-foreground",
 					)}
 				>
@@ -57,7 +58,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 	}, [project, sel]);
 
 	if (!s) return <div className="flex flex-col gap-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-8" />)}</div>;
-	if (!s.git) return <p className="p-6 text-sm text-muted-foreground">这个目录不是 git 仓库。</p>;
+	if (!s.git) return <Placeholder icon={GitBranch} title="不是 git 仓库" text="这个目录不在 git 里，没有改动和提交可看。" />;
 	// 改名的那行是「旧 -> 新」，取新的
 	const shown = touched && only ? s.changes.filter((c) => touched.includes(c.path.split(" -> ").pop() as string)) : s.changes;
 	return (
@@ -65,39 +66,39 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 			<div className={cn("flex w-full shrink-0 flex-col @3xl/changes:w-80 @3xl/changes:border-r", sel && "@max-3xl/changes:hidden")}>
 				<ScrollArea className="min-h-0 flex-1">
 					<div className="flex flex-col gap-5 p-3">
-						<div className="flex items-center gap-2 text-[13px]">
+						<div className="flex items-center gap-2 text-md">
 							<GitBranch className="size-3.5 text-muted-foreground" />
 							<span className="truncate font-mono text-xs">{s.branch}</span>
 						</div>
 						<section className="flex flex-col gap-1">
 							<div className="flex items-center gap-2 px-1">
-								<h3 className="text-[11px] font-medium text-muted-foreground">没提交的改动 · {shown.length}</h3>
+								<h3 className="text-2xs font-medium text-muted-foreground">未提交的改动 · {shown.length}</h3>
 								{touched && (
 									<ToggleGroup type="single" size="sm" value={only ? "mine" : "all"} onValueChange={(v) => v && setOnly(v === "mine")} className="ml-auto">
-										<ToggleGroupItem value="mine" className="h-6 px-2 text-[11px]">本会话</ToggleGroupItem>
-										<ToggleGroupItem value="all" className="h-6 px-2 text-[11px]">全部</ToggleGroupItem>
+										<ToggleGroupItem value="mine" className="h-6 px-2 text-2xs">本会话</ToggleGroupItem>
+										<ToggleGroupItem value="all" className="h-6 px-2 text-2xs">全部</ToggleGroupItem>
 									</ToggleGroup>
 								)}
 							</div>
-							{shown.length === 0 && <p className="px-1 text-[13px] text-muted-foreground">{touched && only && s.changes.length ? `这个会话没改过文件（项目里另有 ${s.changes.length} 处改动）` : "干净"}</p>}
+							{shown.length === 0 && <p className="px-1 text-md text-muted-foreground">{touched && only && s.changes.length ? `这个会话没有改动文件（项目里另有 ${s.changes.length} 处改动）` : "没有未提交的改动"}</p>}
 							{shown.map((c) => {
 								const k = kind(c.code);
 								return (
 									<button key={c.path} type="button" onClick={() => setSel({ kind: "file", key: c.path, title: c.path })} className={cn("flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent", sel?.key === c.path && "bg-accent")}>
-										<span className={cn("w-7 shrink-0 text-[11px] font-medium", k.cls)}>{k.label}</span>
+										<span className={cn("w-10 shrink-0 text-2xs font-medium", k.cls)}>{k.label}</span>
 										<span className="truncate font-mono text-xs">{c.path}</span>
 									</button>
 								);
 							})}
 						</section>
 						<section className="flex flex-col gap-1">
-							<h3 className="px-1 text-[11px] font-medium text-muted-foreground">最近的提交</h3>
+							<h3 className="px-1 text-2xs font-medium text-muted-foreground">最近的提交</h3>
 							{s.log.map((c) => (
 								<button key={c.hash} type="button" onClick={() => setSel({ kind: "commit", key: c.hash, title: c.subject })} className={cn("flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent", sel?.key === c.hash && "bg-accent")}>
-									<span className="line-clamp-2 text-[13px] leading-snug">{c.subject}</span>
-									<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+									<span className="line-clamp-2 text-md leading-snug">{c.subject}</span>
+									<span className="flex items-center gap-1.5 text-2xs text-muted-foreground">
 										<GitCommitHorizontal className="size-3" />
-										<span className="font-mono">{c.hash}</span> · {ago(c.when)}
+										<span className="font-mono">{c.hash}</span> · {since(c.when)}
 									</span>
 								</button>
 							))}
@@ -109,7 +110,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 				{sel ? (
 					<>
 						<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-							<Button variant="ghost" size="icon" className="size-7 @3xl/changes:hidden" onClick={() => setSel(null)} aria-label="返回">
+							<Button variant="ghost" size="icon-sm" className="@3xl/changes:hidden" onClick={() => setSel(null)} aria-label="返回">
 								<ChevronLeft className="size-4" />
 							</Button>
 							<Badge variant="outline" className="shrink-0">{sel.kind === "file" ? "改动" : "提交"}</Badge>
@@ -118,7 +119,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 						<div className="min-h-0 flex-1 overflow-auto overscroll-contain">{text === null ? <Skeleton className="m-4 h-40" /> : <Diff text={text} />}</div>
 					</>
 				) : (
-					<div className="m-auto text-sm text-muted-foreground">选一个改动或提交</div>
+					<Placeholder icon={GitCompareArrows} text="选择一个改动或提交" />
 				)}
 			</div>
 		</div>

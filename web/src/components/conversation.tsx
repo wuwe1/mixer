@@ -1,8 +1,9 @@
 // 对话：把节点树走成一条路（默认走到最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
 // 最后是正在跑的那次运行（实时的字）、这个会话等你确认的请求、输入框。
-// 输入框只有两种做法：接着说（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
-// 能不能接着说看情况：在看旧版本、Claude 正在跑、终端里开着，都只能分叉。
-import { ChevronDown, ChevronLeft, ChevronRight, GitFork, Hand, ListChecks, Loader2, MessageSquareText, Send, Sparkles, Square } from "lucide-react";
+// 输入框只有两种发送方式：继续（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
+// Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
+// 从中间分叉：每条回复、每组工具调用的「⋯」→ 从这里分叉；每条你的消息的「⋯」→ 编辑并分叉。
+import { ChevronDown, ChevronLeft, ChevronRight, Clock, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -10,8 +11,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { type Agent, api, enc, type Node, type Run } from "@/lib/api";
+import { type Agent, api, enc, type Node, type Queued, type Run } from "@/lib/api";
 import { useEvent } from "@/lib/events";
 import { askNotify, type Status, useLive } from "@/lib/live";
 import { go } from "@/lib/route";
@@ -23,7 +25,6 @@ import { AssistantMessage, EventLine, Steps, UserMessage } from "./message";
 export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
 export type Walk = ReturnType<typeof walk>;
 type User = Extract<Node, { k: "user" }>;
-type Said = Extract<Node, { k: "assistant" }>;
 
 /** 子节点表；每个节点往下最新的那片叶子 */
 export function tree(nodes: Node[]): Tree {
@@ -76,12 +77,19 @@ export function blocks(path: Node[]): Block[] {
 	return out;
 }
 
-/** 分叉点：路上 before 之前（不含）最后一条 Claude 说的话。没有（在第一条消息上分叉）就是 null */
+/**
+ * 分叉点要的是一条记录的 uuid，新会话只带到它为止的上下文。
+ * 工具调用要用它结果那条记录：用调用本身，命令行带过去的上下文里就没有结果
+ */
+const pointOf = (n: Node) => (n.k === "tool" ? (n.resultUuid ?? n.uuid) : n.uuid);
+/** 路上 before 之前（不含）最后一条 Claude 的回复、思考或工具结果。没有（在第一条消息上分叉）就是 null */
 function forkPoint(path: Node[], before?: Node): string | null {
 	const upto = before ? path.slice(0, path.indexOf(before)) : path;
-	const said = [...upto].reverse().find((n) => n.k === "assistant") ?? [...upto].reverse().find((n) => n.k !== "user" && n.k !== "event");
-	return said?.uuid ?? null;
+	const last = [...upto].reverse().find((n) => n.k === "assistant" || n.k === "thinking" || n.k === "tool");
+	return last ? pointOf(last) : null;
 }
+
+type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
 
 type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
 
@@ -114,11 +122,11 @@ function OptionMenu({ title, options, value, onChange }: { title: string; option
 	);
 }
 
-// auto：Claude Code 的自动模式，由它判断，一般操作直接放行，危险的才拦下。「改文件不问」被它盖住了，不再单列
+// auto：Claude Code 的自动模式，由它判断，一般操作直接放行，有风险的才请求确认。「Accept edits」被它盖住了，不再单列
 const PERMISSIONS: Option[] = [
-	{ v: "auto", icon: Sparkles, label: "自动", desc: "读文件、改文件、跑命令直接做，Claude 觉得危险的才停下来问你" },
-	{ v: "default", icon: Hand, label: "都问", desc: "改文件、跑命令前都先问你（只读的命令不问）" },
-	{ v: "plan", icon: ListChecks, label: "只出计划", desc: "只看不动手，写出打算怎么做" },
+	{ v: "auto", icon: Sparkles, label: "自动", desc: "读写文件、运行命令直接执行，Claude 判断有风险的才请求确认" },
+	{ v: "default", icon: Hand, label: "每次询问", desc: "修改文件、运行命令前都请求确认（只读命令除外）" },
+	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先写出计划" },
 ];
 
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -128,7 +136,7 @@ export function PermissionSelect({ value, onChange }: { value: string; onChange:
 export function Conversation({ project, session, w, t, onFile }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void }) {
 	const { approvals, runs } = useLive();
 	const [agent, setAgent] = useState<Agent | null>(null);
-	const [fork, setFork] = useState<{ kind: "edit"; n: User } | { kind: "after"; n: Said } | null>(null);
+	const [fork, setFork] = useState<ForkTarget | null>(null);
 	const bs = blocks(w.path);
 	const mine = approvals.filter((a) => runs.some((r) => r.id === a.run && r.session === session));
 
@@ -149,24 +157,25 @@ export function Conversation({ project, session, w, t, onFile }: { project: stri
 					<div key={head.uuid} className="flex flex-col gap-2">
 						{v && <VersionSwitch v={v} best={t.best} />}
 						{b.kind === "steps" ? (
-							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} />
+							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} onFork={(ns) => setFork({ kind: "at", at: pointOf(ns[ns.length - 1]), what: "这几步工具调用" })} />
 						) : b.n.k === "user" ? (
 							<UserMessage n={b.n} project={project} session={session} onFork={(n) => setFork({ kind: "edit", n })} />
 						) : b.n.k === "assistant" ? (
-							<AssistantMessage n={b.n} onFork={(n) => setFork({ kind: "after", n })} />
+							<AssistantMessage n={b.n} onFork={(n) => setFork({ kind: "at", at: n.uuid, what: "这条回复" })} />
 						) : b.n.k === "event" ? (
-							<EventLine n={b.n} />
+							<EventLine n={b.n} onAgent={openAgent} />
 						) : null}
 					</div>
 				);
 			})}
-			<LiveRun session={session} />
-			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-primary/40" />)}
+			<LiveRun session={session} written={[...w.path].reverse().find((n) => n.k === "assistant")?.text ?? null} />
+			<QueuedMessages session={session} />
+			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-waiting/50" />)}
 
 			<Sheet open={!!agent} onOpenChange={(o) => !o && setAgent(null)}>
 				<SheetContent side="right" className="w-full p-0 sm:max-w-2xl">
 					<SheetHeader className="border-b">
-						<SheetTitle>子 agent：{agent?.info.agentType ?? agent?.id}</SheetTitle>
+						<SheetTitle>子代理：{agent?.info.agentType ?? agent?.id}</SheetTitle>
 						<SheetDescription>{agent?.info.description}</SheetDescription>
 					</SheetHeader>
 					<ScrollArea className="min-h-0 flex-1">
@@ -178,7 +187,7 @@ export function Conversation({ project, session, w, t, onFile }: { project: stri
 									) : b.n.k === "assistant" ? (
 										<AssistantMessage key={b.n.uuid} n={b.n} />
 									) : b.n.k === "user" ? (
-										<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-[13px] whitespace-pre-wrap">{b.n.text}</div>
+										<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-md whitespace-pre-wrap">{b.n.text}</div>
 									) : null,
 								)}
 						</div>
@@ -197,12 +206,12 @@ function VersionSwitch({ v, best }: { v: { options: Node[]; index: number }; bes
 		go({ leaf: (best.get(n.uuid) ?? n).uuid }, true);
 	};
 	return (
-		<div className="flex items-center gap-1 self-end text-xs text-muted-foreground" title="这条消息改写过，每个版本后面的对话不一样">
-			<Button variant="ghost" size="icon" className="size-6" onClick={() => to(v.index - 1)} aria-label="上一个版本">
+		<div className="flex items-center gap-1 self-end text-xs text-muted-foreground" title="这条消息编辑过，每个版本之后的对话不同">
+			<Button variant="ghost" size="icon-xs" onClick={() => to(v.index - 1)} aria-label="上一个版本">
 				<ChevronLeft className="size-3.5" />
 			</Button>
 			<span className="tabular-nums">第 {v.index + 1} / {v.options.length} 版</span>
-			<Button variant="ghost" size="icon" className="size-6" onClick={() => to(v.index + 1)} aria-label="下一个版本">
+			<Button variant="ghost" size="icon-xs" onClick={() => to(v.index + 1)} aria-label="下一个版本">
 				<ChevronRight className="size-3.5" />
 			</Button>
 		</div>
@@ -211,9 +220,10 @@ function VersionSwitch({ v, best }: { v: { options: Node[]; index: number }; bes
 
 async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
 	askNotify();
-	const r = await api<Run>("/api/runs", body);
+	const r = await api<Run | { queued: Queued }>("/api/runs", body);
+	if ("queued" in r) return r;
 	if (body.mode === "fork") {
-		toast.success("分叉出新会话：建好就跳过去");
+		toast.success("正在分叉，新会话建好后自动打开");
 		follow(r);
 	}
 	return r;
@@ -221,9 +231,8 @@ async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
 
 /** 为什么只能分叉；能接着说就是 null */
 function noContinue(w: Walk, status: Status): string | null {
-	if (!w.atLatest) return "你在看旧版本：发出去会从这里分叉出一个新会话";
-	if (status === "running" || status === "waiting") return "Claude 正在跑：发出去会分叉出一个新会话";
-	if (status === "terminal") return "这个会话在终端里开着：发出去会分叉出一个新会话";
+	if (!w.atLatest) return "你在看旧版本：发送后会从这里分叉出新会话";
+	if (status === "terminal") return "这个会话在终端中打开：发送后会分叉出新会话";
 	return null;
 }
 
@@ -231,6 +240,7 @@ export function Composer({ project, session, w, status }: { project: string; ses
 	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const why = noContinue(w, status);
+	const busyRun = status === "running" || status === "waiting";
 	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
 	const [permission, setPermission] = useState("auto");
 	const [busy, setBusy] = useState(false);
@@ -256,22 +266,22 @@ export function Composer({ project, session, w, status }: { project: string; ses
 					value={text}
 					onChange={(e) => setText(e.target.value)}
 					onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-					placeholder={why ?? (mode === "resume" ? "接着说……" : "分叉出一个新会话，从最新处接着说……")}
+					placeholder={why ?? (mode === "fork" ? "分叉出新会话，从最新处继续……" : busyRun ? "Claude 正在运行：发送后排队，运行结束后发出……" : "继续……")}
 					className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 				/>
 				<div className="flex items-center gap-1.5">
 					<OptionMenu
-						title="发到哪"
+						title="发送方式"
 						value={mode}
 						onChange={(v) => setMode(v as "resume" | "fork")}
 						options={[
-							{ v: "resume", icon: MessageSquareText, label: "接着说", desc: why ? `现在不行：${why.split("：")[0]}` : "接在这个会话最新处说", disabled: !!why },
-							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开一个新会话，带着到最新处为止的对话；原会话不动" : "开一个新会话，带着到你看的这里为止的对话；原会话不动" },
+							{ v: "resume", icon: MessageSquareText, label: "继续", desc: why ? `现在不可用：${why.split("：")[0]}` : busyRun ? "Claude 正在运行：先排队，本次运行结束后发送" : "在这个会话的最新处继续", disabled: !!why },
+							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开一个新会话，带着到最新处为止的对话；原会话不变" : "开一个新会话，带着到你正在看的地方为止的对话；原会话不变" },
 						]}
 					/>
 					<PermissionSelect value={permission} onChange={setPermission} />
-					<Button size="icon" className="ml-auto size-8 rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="发送">
-						{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+					<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="发送">
+						{busy ? <Spinner /> : <Send className="size-4" />}
 					</Button>
 				</div>
 			</div>
@@ -279,7 +289,7 @@ export function Composer({ project, session, w, status }: { project: string; ses
 	);
 }
 
-function ForkDialog({ project, session, w, target, onClose }: { project: string; session: string; w: Walk; target: { kind: "edit"; n: User } | { kind: "after"; n: Said } | null; onClose: () => void }) {
+function ForkDialog({ project, session, w, target, onClose }: { project: string; session: string; w: Walk; target: ForkTarget | null; onClose: () => void }) {
 	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
@@ -287,7 +297,7 @@ function ForkDialog({ project, session, w, target, onClose }: { project: string;
 	const send = async () => {
 		if (!target || !text.trim()) return;
 		try {
-			const at = target.kind === "after" ? target.n.uuid : forkPoint(w.path, target.n);
+			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
 			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
 			await start(at ? { project, session, mode: "fork", at, prompt: text, permission } : { project, mode: "new", prompt: text, permission }, follow);
 			onClose();
@@ -301,10 +311,10 @@ function ForkDialog({ project, session, w, target, onClose }: { project: string;
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">
 						<GitFork className="size-4" />
-						{target?.kind === "edit" ? "改写这条消息，分叉出新会话" : "从这条回答之后分叉"}
+						{target?.kind === "edit" ? "编辑并分叉" : "从这里分叉"}
 					</DialogTitle>
 					<DialogDescription>
-						{target?.kind === "edit" ? "带着这条消息之前的对话开一个新会话，把这条换成下面的内容。" : "带着到这里为止的对话开一个新会话，接着问下面的内容。"}原会话不动。
+						{target?.kind === "edit" ? "带着这条消息之前的对话开一个新会话，这条换成下面的内容。" : `带着到${target?.what ?? "这里"}为止的对话开一个新会话，接着发送下面的内容。`}原会话不变。
 					</DialogDescription>
 				</DialogHeader>
 				<Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} className="min-h-32" autoFocus />
@@ -320,10 +330,44 @@ function ForkDialog({ project, session, w, target, onClose }: { project: string;
 	);
 }
 
+/** 这个会话排着队的话：这次跑完一起发。可以撤回，也可以停下当前的马上发 */
+function QueuedMessages({ session }: { session: string }) {
+	const { queue, runs } = useLive();
+	const mine = queue.filter((q) => q.session === session);
+	if (!mine.length) return null;
+	const run = runs.find((r) => r.session === session && r.status === "running");
+	return (
+		<div className="flex flex-col items-end gap-2">
+			{mine.map((q) => (
+				<div key={q.id} className="group flex max-w-[88%] flex-col items-end gap-1">
+					<div className="rounded-2xl rounded-br-md border border-dashed bg-secondary/50 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">{q.prompt}</div>
+					<div className="flex items-center gap-1 px-1 text-2xs text-muted-foreground">
+						<Clock className="size-3" />
+						<span>排队中，本次运行结束后发送</span>
+						<Button variant="ghost" size="xs" className="px-1.5 text-2xs" onClick={() => api(`/api/queue/${q.id}/cancel`, {}).catch(() => {})}>
+							<X className="size-3" />
+							取消
+						</Button>
+						{run && (
+							<Button variant="ghost" size="xs" className="px-1.5 text-2xs" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})}>
+								<Square className="size-3" />
+								中断并发送
+							</Button>
+						)}
+					</div>
+				</div>
+			))}
+		</div>
+	);
+}
+
 type Ev = { type: string; event?: { type: string; delta?: { type: string; text?: string }; content_block?: { type: string; name?: string } } };
 
-/** 这个会话上正在跑的那次运行：实时显示 Claude 正在写的字、正在调的工具 */
-function LiveRun({ session }: { session: string }) {
+/**
+ * 这个会话上正在跑的那次运行：实时显示 Claude 正在写的这一段、调过的工具。
+ * 写完的段落、工具调用会写进会话记录，0.5 秒左右出现在上面的对话里；这一段已经出现在记录里（written）就不再重复显示
+ */
+function LiveRun({ session, written }: { session: string; written: string | null }) {
 	const { runs } = useLive();
 	const run = runs.find((r) => r.session === session && r.status === "running") ?? null;
 	const [text, setText] = useState("");
@@ -333,7 +377,7 @@ function LiveRun({ session }: { session: string }) {
 		if (!run || e.id !== run.id) return;
 		const ev = e.event;
 		if (ev.type !== "stream_event") return;
-		if (ev.event?.type === "message_start") setText("");
+		if (ev.event?.type === "content_block_start" && ev.event.content_block?.type === "text") setText("");
 		if (ev.event?.type === "content_block_delta" && ev.event.delta?.type === "text_delta") setText((t) => t + (ev.event?.delta?.text ?? ""));
 		if (ev.event?.type === "content_block_start" && ev.event.content_block?.type === "tool_use") setTools((ts) => [...ts, ev.event?.content_block?.name ?? "?"]);
 	}, [run]));
@@ -341,15 +385,15 @@ function LiveRun({ session }: { session: string }) {
 	return (
 		<div className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
 			<div className="flex items-center gap-2 text-xs text-muted-foreground">
-				<Loader2 className="size-3.5 animate-spin" />
-				<span>在跑 · {clock(run.started)}</span>
+				<Spinner className="size-3.5" />
+				<span>运行中 · {clock(run.started)}</span>
 				{tools.length > 0 && <span className="truncate">{tools.slice(-4).join("、")}</span>}
-				<Button variant="ghost" size="sm" className="ml-auto h-6 gap-1 px-2 text-[11px]" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})}>
+				<Button variant="ghost" size="sm" className="ml-auto h-6 gap-1 px-2 text-2xs" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})}>
 					<Square className="size-3" />
-					停
+					停止
 				</Button>
 			</div>
-			{text && <Markdown text={text} />}
+			{text && text.trim() !== written?.trim() && <Markdown text={text} />}
 		</div>
 	);
 }

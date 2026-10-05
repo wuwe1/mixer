@@ -13,7 +13,9 @@ import { go } from "@/lib/route";
 import { bytes } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Code, langOf } from "./code";
+import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
+import { Placeholder } from "./placeholder";
 
 type Dir = { name: string; path: string; dirs: Map<string, Dir>; files: string[] };
 
@@ -43,7 +45,7 @@ function TreeView({ dir, depth, open, toggle, current }: { dir: Dir; depth: numb
 				const o = open.has(d.path);
 				return (
 					<div key={d.path}>
-						<button type="button" onClick={() => toggle(d.path)} className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[13px] hover:bg-accent" style={{ paddingLeft: 8 + depth * 14 }}>
+						<button type="button" onClick={() => toggle(d.path)} className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-md hover:bg-accent" style={{ paddingLeft: 8 + depth * 14 }}>
 							<ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", o && "rotate-90")} />
 							{o ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" /> : <Folder className="size-3.5 shrink-0 text-muted-foreground" />}
 							<span className="truncate">{d.name}</span>
@@ -57,7 +59,7 @@ function TreeView({ dir, depth, open, toggle, current }: { dir: Dir; depth: numb
 					key={f}
 					type="button"
 					onClick={() => go({ file: f }, false)}
-					className={cn("flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[13px] hover:bg-accent", current === f && "bg-accent font-medium")}
+					className={cn("flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-md hover:bg-accent", current === f && "bg-accent font-medium")}
 					style={{ paddingLeft: 8 + depth * 14 + 15 }}
 				>
 					<File className="size-3.5 shrink-0 text-muted-foreground" />
@@ -92,7 +94,7 @@ export function Files({ project, file, view }: { project: string; file: string |
 			<div className={cn("flex w-full shrink-0 flex-col @3xl/files:w-72 @3xl/files:border-r", file && "@max-3xl/files:hidden")}>
 				<div className="relative border-b p-2">
 					<Search className="pointer-events-none absolute top-1/2 left-4 size-3.5 -translate-y-1/2 text-muted-foreground" />
-					<Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="筛选文件" className="h-8 pl-7 text-[13px]" />
+					<Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="筛选文件" className="h-8 pl-7 text-md" />
 				</div>
 				<ScrollArea className="min-h-0 flex-1">
 					<div className="p-1.5">
@@ -100,17 +102,17 @@ export function Files({ project, file, view }: { project: string; file: string |
 						{list && filtering &&
 							shown.slice(0, 300).map((f) => (
 								<button key={f} type="button" onClick={() => go({ file: f })} className={cn("flex w-full flex-col rounded-md px-2 py-1 text-left hover:bg-accent", file === f && "bg-accent")}>
-									<span className="truncate text-[13px]">{f.split("/").pop()}</span>
-									<span className="truncate text-[11px] text-muted-foreground">{f}</span>
+									<span className="truncate text-md">{f.split("/").pop()}</span>
+									<span className="truncate text-2xs text-muted-foreground">{f}</span>
 								</button>
 							))}
 						{list && !filtering && <TreeView dir={root} depth={0} open={open} toggle={toggle} current={file} />}
 					</div>
 				</ScrollArea>
-				{list && <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">{list.length} 个文件</div>}
+				{list && <div className="border-t px-3 py-1.5 text-2xs text-muted-foreground tabular-nums">{list.length} 个文件</div>}
 			</div>
 			<div className={cn("flex min-w-0 flex-1 flex-col", !file && "@max-3xl/files:hidden")}>
-				{file ? <Viewer project={project} path={file} view={view} /> : <div className="m-auto text-sm text-muted-foreground">选一个文件</div>}
+				{file ? <Viewer project={project} path={file} view={view} /> : <Placeholder icon={File} text="选择一个文件" />}
 			</div>
 		</div>
 	);
@@ -137,15 +139,15 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 	return (
 		<>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-				<Button variant="ghost" size="icon" className="size-7 @3xl/files:hidden" onClick={() => go({ file: null, view: null })} aria-label="返回">
+				<Button variant="ghost" size="icon-sm" className="@3xl/files:hidden" onClick={() => go({ file: null, view: null })} aria-label="返回">
 					<ChevronLeft className="size-4" />
 				</Button>
 				<span className="min-w-0 truncate font-mono text-xs">{path}</span>
-				{f && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{bytes(f.size)}</span>}
+				{f && <span className="shrink-0 text-2xs text-muted-foreground tabular-nums">{bytes(f.size)}</span>}
 				{(f?.kind === "text" || mode === "diff") && (
 					<ToggleGroup type="single" size="sm" value={mode} onValueChange={(v) => v && setMode(v as typeof mode)} className="ml-auto">
 						{isMd && <ToggleGroupItem value="preview" className="h-7 px-2 text-xs">预览</ToggleGroupItem>}
-						<ToggleGroupItem value="source" className="h-7 px-2 text-xs">原文</ToggleGroupItem>
+						<ToggleGroupItem value="source" className="h-7 px-2 text-xs">源码</ToggleGroupItem>
 						<ToggleGroupItem value="diff" className="h-7 px-2 text-xs">改动</ToggleGroupItem>
 					</ToggleGroup>
 				)}
@@ -153,12 +155,12 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 			{/* 原生滚动：ScrollArea 只有竖的滚动条，长行没法往右滑 */}
 			<div className="min-h-0 flex-1 overflow-auto overscroll-contain">
 				{mode === "diff" ? (
-					diff === null ? <Skeleton className="m-4 h-40" /> : diff ? <Diff text={diff} /> : <p className="p-4 text-sm text-muted-foreground">这个文件没有没提交的改动。</p>
+					diff === null ? <Skeleton className="m-4 h-40" /> : diff ? <Diff text={diff} /> : <p className="p-4 text-sm text-muted-foreground">这个文件没有未提交的改动。</p>
 				) : (
 				<>
 				{err && <p className="p-4 text-sm text-destructive">{err}</p>}
 				{!f && !err && <div className="flex flex-col gap-2 p-4">{[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-4" style={{ width: `${40 + ((i * 37) % 55)}%` }} />)}</div>}
-				{f?.kind === "image" && <img src={raw} alt="" className="m-4 max-w-[calc(100%-2rem)] rounded-lg border" />}
+				{f?.kind === "image" && <Images srcs={[raw]} className="m-4" imgClassName="max-h-none" />}
 				{(f?.kind === "binary" || f?.kind === "large") && <p className="p-4 text-sm text-muted-foreground">{f.kind === "binary" ? "二进制文件" : "文件太大"}，不显示。<a href={raw} className="underline">下载</a></p>}
 				{f?.kind === "text" && (mode === "preview" ? (
 					<div className="mx-auto max-w-3xl p-6"><Markdown text={f.text} /></div>

@@ -6,13 +6,13 @@ export type SessionMeta = {
 };
 export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] };
 type Base = { uuid: string; parent: string | null; ts: string };
-export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; agent: string | null };
+export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: string | null; agent: string | null };
 export type Node =
 	| (Base & { k: "user"; text: string; images: number; queued?: boolean })
 	| (Base & { k: "assistant"; text: string })
 	| (Base & { k: "thinking"; text: string })
 	| ToolNode
-	| (Base & { k: "event"; kind: "summary" | "compact" | "notice"; text: string });
+	| (Base & { k: "event"; kind: "summary" | "compact" | "info" | "task" | "agent"; text: string; detail?: string; status?: string; agent?: string });
 export type Session = { meta: SessionMeta; nodes: Node[] };
 export type Agent = { id: string; info: { agentType?: string; description?: string }; nodes: Node[] };
 export type RepoFile = { kind: "text"; size: number; text: string } | { kind: "image" | "binary" | "large"; size: number };
@@ -22,6 +22,8 @@ export type Run = {
 	prompt: string; permission: string; status: "running" | "done" | "error" | "stopped"; started: string; ended: string | null; error: string | null; events: number;
 };
 export type Dirs = { path: string; home: string; parent: string | null; git: boolean; entries: { name: string; path: string; git: boolean; project: boolean }[] };
+/** 会话在跑时发的「接着说」：排着，这次跑完一起发 */
+export type Queued = { id: string; project: string; session: string; prompt: string; permission: string; at: string };
 export type Approval = { id: string; run: string; tool: string; input: Record<string, unknown>; at: string };
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {

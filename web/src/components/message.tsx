@@ -1,13 +1,16 @@
-// 一条一条消息怎么画：你的话（右边的气泡）、Claude 的话（Markdown）、连在一起的工具调用和思考（收成一组，点开看）、事件（分隔线）。
-// 分叉的按钮平时藏着：电脑上鼠标移上去、手机上点一下这条消息才出来。
-import { Bot, Brain, ChevronRight, FileDiff, FileText, Globe, GitFork, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
+// 一条一条消息怎么画：你的消息（右边的气泡）、Claude 的回复（Markdown）、连在一起的工具调用和思考（收成一组，点开看）、
+// 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
+// 每条消息、每组工具调用后面常驻几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。图片点了在当前页面放大。
+import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { api, enc, type Node, type ToolNode } from "@/lib/api";
 import { clock } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
 
 const ICON: Record<string, typeof Wrench> = {
@@ -17,30 +20,40 @@ const ICON: Record<string, typeof Wrench> = {
 const toolIcon = (name: string) => ICON[name] ?? (name.startsWith("mcp__") ? Globe : Wrench);
 const toolName = (name: string) => name.replace(/^mcp__[^_]+__/, "");
 
+/** 消息后面的小图标按钮 */
+function Action({ icon: I, label, onClick }: { icon: typeof Wrench; label: string; onClick: () => void }) {
+	return (
+		<Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={onClick} aria-label={label} title={label}>
+			<I className="size-3.5" />
+		</Button>
+	);
+}
+
+/** 复制：成功了图标变成对勾，一会儿变回来 */
+function CopyAction({ text }: { text: string }) {
+	const [done, setDone] = useState(false);
+	const copy = () =>
+		navigator.clipboard.writeText(text).then(
+			() => { setDone(true); setTimeout(() => setDone(false), 1500); },
+			() => toast.error("复制失败"),
+		);
+	return <Action icon={done ? Check : Copy} label={done ? "已复制" : "复制"} onClick={copy} />;
+}
+
 export function UserMessage({ n, project, session, onFork }: { n: Extract<Node, { k: "user" }>; project: string; session: string; onFork?: (n: Extract<Node, { k: "user" }>) => void }) {
 	return (
 		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col items-end gap-1.5 outline-none">
-			<div className="max-w-[88%] rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">
+			<div className="max-w-[88%] rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">
 				{n.text || (n.images ? "" : "（空）")}
-				{n.images > 0 && (
-					<div className="mt-2 flex flex-wrap gap-2">
-						{Array.from({ length: n.images }, (_, i) => (
-							<a key={i} href={`/api/sessions/${enc(project)}/${enc(session)}/image/${n.uuid}/${i}`} target="_blank" rel="noreferrer">
-								<img src={`/api/sessions/${enc(project)}/${enc(session)}/image/${n.uuid}/${i}`} alt="" loading="lazy" className="max-h-48 rounded-lg border object-cover" />
-							</a>
-						))}
-					</div>
-				)}
+				{n.images > 0 && <Images className="mt-2" srcs={Array.from({ length: n.images }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${n.uuid}/${i}`)} />}
 			</div>
-			<div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-[10px]">中途发的</Badge>}
+			<div className="flex items-center gap-2 px-1 text-2xs text-muted-foreground">
+				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-2xs" title="Claude 运行中发送，排队后插入">排队</Badge>}
 				<span className="tabular-nums">{clock(n.ts)}</span>
-				{onFork && (
-					<Button variant="ghost" size="sm" onClick={() => onFork(n)} className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-						<GitFork className="size-3" />
-						改写后分叉
-					</Button>
-				)}
+				<span className="flex items-center">
+					<CopyAction text={n.text} />
+					{onFork && <Action icon={Pencil} label="编辑并分叉" onClick={() => onFork(n)} />}
+				</span>
 			</div>
 		</div>
 	);
@@ -50,22 +63,98 @@ export function AssistantMessage({ n, onFork }: { n: Extract<Node, { k: "assista
 	return (
 		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col gap-1 outline-none">
 			<Markdown text={n.text} />
-			{onFork && (
-				<Button variant="ghost" size="sm" onClick={() => onFork(n)} className="h-6 gap-1 self-start px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-					<GitFork className="size-3" />
-					从这里分叉
-				</Button>
-			)}
+			<div className="-my-1 flex items-center self-end">
+				<CopyAction text={n.text} />
+				{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(n)} />}
+			</div>
 		</div>
 	);
 }
 
-export function EventLine({ n }: { n: Extract<Node, { k: "event" }> }) {
+type Ev = Extract<Node, { k: "event" }>;
+const TASK_STATUS: Record<string, string> = { completed: "完成", failed: "失败", killed: "已停止" };
+
+const AgentButton = ({ id, onAgent, className }: { id?: string; onAgent?: (id: string) => void; className?: string }) =>
+	id && onAgent ? (
+		<Button variant="outline" size="sm" className={cn("h-6 shrink-0 gap-1 px-2 text-2xs", className)} onClick={() => onAgent(id)}>
+			<Bot className="size-3" />
+			子代理对话
+		</Button>
+	) : null;
+
+/** 事件：小结、上下文压缩、系统提示画成分隔线（压缩的能点开看摘要）；后台任务、子代理回报单独画 */
+export function EventLine({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
+	if (n.kind === "task") return <TaskNotice n={n} onAgent={onAgent} />;
+	if (n.kind === "agent") return <AgentReport n={n} onAgent={onAgent} />;
+	const I = n.kind === "compact" ? Layers : n.kind === "info" ? Info : null;
+	const line = (
+		<>
+			<span className="h-px flex-1 bg-border" />
+			<span className="flex max-w-[80%] items-center gap-1.5 text-center">
+				{I && <I className="size-3.5 shrink-0" />}
+				<span>{n.kind === "summary" ? `小结：${n.text}` : n.text}</span>
+				{n.detail && <ChevronRight className="size-3 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90" />}
+			</span>
+			<span className="h-px flex-1 bg-border" />
+		</>
+	);
+	if (!n.detail) return <div id={`n-${n.uuid}`} className="flex items-center gap-3 py-1 text-xs text-muted-foreground">{line}</div>;
 	return (
-		<div id={`n-${n.uuid}`} className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
-			<span className="h-px flex-1 bg-border" />
-			<span className="max-w-[80%] text-center">{n.kind === "summary" ? `离开时的小结：${n.text}` : n.text}</span>
-			<span className="h-px flex-1 bg-border" />
+		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+			<CollapsibleTrigger className="flex w-full items-center gap-3 py-1 text-xs text-muted-foreground hover:text-foreground" title="点开看摘要">{line}</CollapsibleTrigger>
+			<CollapsibleContent className="mt-2 max-h-96 overflow-auto rounded-lg border bg-muted/30 p-3">
+				<Markdown text={n.detail} />
+			</CollapsibleContent>
+		</Collapsible>
+	);
+}
+
+/** 后台任务（子代理、后台命令）的通知：一行，点开看结果 */
+function TaskNotice({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
+	const ok = n.status === "completed";
+	const bad = n.status === "failed" || n.status === "killed";
+	const I = ok ? CircleCheck : bad ? CircleX : Bell;
+	return (
+		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+			<div className="flex items-center gap-2 text-xs text-muted-foreground">
+				<CollapsibleTrigger disabled={!n.detail} className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left enabled:hover:text-foreground">
+					<I className={cn("size-3.5 shrink-0", bad && "text-destructive")} />
+					<span className="shrink-0 font-medium">后台任务{n.status ? ` · ${TASK_STATUS[n.status] ?? n.status}` : ""}</span>
+					<span className="truncate">{n.text}</span>
+					{n.detail && <ChevronRight className="size-3 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90" />}
+				</CollapsibleTrigger>
+				<AgentButton id={n.agent} onAgent={onAgent} />
+			</div>
+			{n.detail && (
+				<CollapsibleContent className="mt-1 ml-5.5 max-h-96 overflow-auto rounded-lg border bg-muted/30 p-3">
+					<Markdown text={n.detail} />
+				</CollapsibleContent>
+			)}
+		</Collapsible>
+	);
+}
+
+/** 子代理发回来的回报：一张卡片，标明是子代理说的；长的先收着 */
+function AgentReport({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
+	const long = n.text.length > 600 || n.text.split("\n").length > 12;
+	const [open, setOpen] = useState(false);
+	return (
+		<div id={`n-${n.uuid}`} className="overflow-hidden rounded-xl border bg-card">
+			<div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
+				<Bot className="size-3.5" />
+				<span className="font-medium">子代理回报</span>
+				<span className="tabular-nums">{clock(n.ts)}</span>
+				<AgentButton id={n.agent} onAgent={onAgent} className="ml-auto" />
+			</div>
+			<div className={cn("relative px-3 py-2", long && !open && "max-h-48 overflow-hidden")}>
+				<Markdown text={n.text} />
+				{long && !open && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-linear-to-t from-card" />}
+			</div>
+			{long && (
+				<button type="button" onClick={() => setOpen((o) => !o)} className="w-full border-t px-3 py-1.5 text-left text-2xs text-muted-foreground hover:text-foreground">
+					{open ? "收起" : "展开全部"}
+				</button>
+			)}
 		</div>
 	);
 }
@@ -73,30 +162,19 @@ export function EventLine({ n }: { n: Extract<Node, { k: "event" }> }) {
 /** 连在一起的工具调用、思考：收成一组，默认只显示一行概览 */
 type OnFile = (path: string, diff: boolean) => void;
 
-/** 工具结果里的图片（读图片文件、截图）：点开看原图 */
+/** 工具结果里的图片（读图片文件、截图） */
 const resultImages = (t: ToolNode, project: string, session: string, agent?: string) =>
 	Array.from({ length: t.result?.images ?? 0 }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${t.id}/${i}${agent ? `?agent=${agent}` : ""}`);
 
-function Thumbs({ srcs, className }: { srcs: string[]; className?: string }) {
-	return (
-		<div className={cn("flex flex-wrap gap-2", className)}>
-			{srcs.map((src) => (
-				<a key={src} href={src} target="_blank" rel="noreferrer">
-					<img src={src} alt="" loading="lazy" className="max-h-48 max-w-full rounded-lg border object-contain" />
-				</a>
-			))}
-		</div>
-	);
-}
-
-export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile }) {
+export function Steps({ nodes, project, session, agent, onAgent, onFile, onFork }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void }) {
 	const tools = nodes.filter((n): n is ToolNode => n.k === "tool");
 	const errors = tools.filter((t) => t.result?.error).length;
 	const names = [...new Set(tools.map((t) => toolName(t.name)))];
 	const imgs = tools.flatMap((t) => resultImages(t, project, session, agent));
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
-			<CollapsibleTrigger className="group/steps flex w-full items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+			<div className="flex items-center gap-1">
+			<CollapsibleTrigger className="group/steps flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
 				<ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/steps:rotate-90" />
 				<span className="flex -space-x-1">
 					{names.slice(0, 5).map((nm) => {
@@ -114,8 +192,10 @@ export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nod
 				</span>
 				{errors > 0 && <span className="flex items-center gap-1 text-destructive"><TriangleAlert className="size-3" />{errors}</span>}
 			</CollapsibleTrigger>
+			{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />}
+			</div>
 			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}
-			{imgs.length > 0 && <Thumbs srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
+			{imgs.length > 0 && <Images srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
@@ -126,7 +206,7 @@ export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nod
 								<Brain className="size-3.5" />
 								思考
 							</CollapsibleTrigger>
-							<CollapsibleContent className="pb-2 pl-5 text-[13px] leading-relaxed whitespace-pre-wrap text-muted-foreground">{n.text}</CollapsibleContent>
+							<CollapsibleContent className="pb-2 pl-5 text-md leading-relaxed whitespace-pre-wrap text-muted-foreground">{n.text}</CollapsibleContent>
 						</Collapsible>
 					) : null,
 				)}
@@ -159,34 +239,34 @@ function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode
 	return (
 		<Collapsible>
 			<div className="flex items-center gap-2">
-				<CollapsibleTrigger className="group/tool flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-[13px] hover:text-foreground">
+				<CollapsibleTrigger className="group/tool flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-md hover:text-foreground">
 					<I className={cn("size-3.5 shrink-0", t.result?.error ? "text-destructive" : "text-muted-foreground")} />
 					<span className="shrink-0 font-medium">{toolName(t.name)}</span>
 					<span className="truncate font-mono text-xs text-muted-foreground">{t.summary}</span>
 				</CollapsibleTrigger>
 				{file && onFile && (
-					<Button variant="ghost" size="icon" className="size-6 shrink-0 text-muted-foreground" onClick={() => onFile(file, EDITS.has(t.name))} aria-label={EDITS.has(t.name) ? "看改动" : "看文件"} title={EDITS.has(t.name) ? "在右边看这个文件的改动" : "在右边打开这个文件"}>
+					<Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={() => onFile(file, EDITS.has(t.name))} aria-label={EDITS.has(t.name) ? "查看改动" : "查看文件"} title={EDITS.has(t.name) ? "在右边看这个文件的改动" : "在右边打开这个文件"}>
 						{EDITS.has(t.name) ? <FileDiff className="size-3.5" /> : <FileText className="size-3.5" />}
 					</Button>
 				)}
 				{t.agent && onAgent && (
-					<Button variant="outline" size="sm" className="h-6 shrink-0 gap-1 px-2 text-[11px]" onClick={() => onAgent(t.agent as string)}>
+					<Button variant="outline" size="xs" className="shrink-0 text-2xs" onClick={() => onAgent(t.agent as string)}>
 						<Bot className="size-3" />
-						子 agent 对话
+						子代理对话
 					</Button>
 				)}
 			</div>
-			{imgs.length > 0 && <Thumbs srcs={imgs} className="mb-2 pl-5.5" />}
+			{imgs.length > 0 && <Images srcs={imgs} className="mb-2 pl-5.5" />}
 			<CollapsibleContent className="mb-2 flex flex-col gap-2 pl-5">
-				<pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-all">{t.input}</pre>
+				<pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-2xs leading-relaxed whitespace-pre-wrap break-all">{t.input}</pre>
 				{t.result && !onlyImages && (
 					<div className="flex flex-col gap-1">
-						<pre className={cn("max-h-96 overflow-auto rounded-md border p-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-all", t.result.error ? "border-destructive/40 bg-destructive/5" : "bg-background")}>
+						<pre className={cn("max-h-96 overflow-auto rounded-md border p-2.5 font-mono text-2xs leading-relaxed whitespace-pre-wrap break-all", t.result.error ? "border-destructive/40 bg-destructive/5" : "bg-background")}>
 							{full ?? t.result.text}
 						</pre>
 						{t.result.cut && full === null && (
-							<Button variant="ghost" size="sm" className="h-6 self-start px-2 text-[11px]" onClick={more}>
-								结果太长，只显示了开头：看完整的
+							<Button variant="ghost" size="xs" className="self-start text-2xs" onClick={more}>
+								显示完整结果
 							</Button>
 						)}
 					</div>

@@ -1,8 +1,8 @@
-// 整个页面共用的实时状态：所有项目和会话（侧栏）、mixer 里的运行、等人确认的请求。
+// 整个页面共用的实时状态：所有项目和会话（侧栏）、mixer 里的运行、等人确认的请求、排着队的话。
 // 会话的「状态」由这三样合起来算：等你确认 > 在跑 > 跑完了没看 / 出错了 > 终端里开着。
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type Approval, type ProjectTree, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type ProjectTree, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
 
@@ -12,6 +12,7 @@ type Live = {
 	tree: ProjectTree[] | null;
 	runs: Run[];
 	approvals: Approval[];
+	queue: Queued[];
 	/** 会话现在怎样 */
 	status: (s: Pick<SessionMeta, "id" | "active" | "unread">) => Status;
 	/** 这次运行的会话 id 一出来就打开它（新会话、分叉） */
@@ -30,6 +31,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	const [tree, setTree] = useState<ProjectTree[] | null>(null);
 	const [runs, setRuns] = useState<Run[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
+	const [queue, setQueue] = useState<Queued[]>([]);
 	const following = useRef(new Set<string>());
 
 	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次
@@ -45,6 +47,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		api<ProjectTree[]>("/api/tree").then(setTree, () => setTree((t) => t ?? []));
 		api<Run[]>("/api/runs").then(setRuns, () => {});
 		api<Approval[]>("/api/approvals").then(setApprovals, () => {});
+		api<Queued[]>("/api/queue").then(setQueue, () => {});
 	}, []);
 	useEffect(loadAll, [loadAll]);
 	useEvent("reconnect", loadAll);
@@ -53,7 +56,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
 	useEvent("run", useCallback((r: Run) => {
 		setRuns((rs) => [r, ...rs.filter((x) => x.id !== r.id)].sort((a, b) => b.started.localeCompare(a.started)));
-		if (r.status === "error" && !r.session) toast.error(`没跑起来：${r.error ?? ""}`.slice(0, 300));
+		if (r.status === "error" && !r.session) toast.error(`启动失败：${r.error ?? ""}`.slice(0, 300));
 		if (r.session && following.current.has(r.id)) {
 			following.current.delete(r.id);
 			openSession(r.project, r.session);
@@ -64,6 +67,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		setApprovals((l) => [...l.filter((x) => x.id !== a.id), a]);
 		navigator.vibrate?.(80);
 	}, []));
+	useEvent("queue", setQueue);
+	useEvent("queue-error", useCallback((e: { error: string }) => toast.error(`排队消息发送失败：${e.error}`.slice(0, 300)), []));
 	useEvent("approval-done", useCallback((d: { id: string }) => setApprovals((l) => l.filter((a) => a.id !== d.id)), []));
 
 	const value = useMemo<Live>(() => {
@@ -79,8 +84,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			if (run.session && run.mode !== "resume") openSession(run.project, run.session);
 			else following.current.add(run.id);
 		};
-		return { tree, runs, approvals, status, follow, reload: loadAll };
-	}, [tree, runs, approvals, loadAll]);
+		return { tree, runs, approvals, queue, status, follow, reload: loadAll };
+	}, [tree, runs, approvals, queue, loadAll]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

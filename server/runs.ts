@@ -4,6 +4,7 @@
 //   分叉：再加 --fork-session（新会话 id，原来的不动）；从中间某条 Claude 的消息分叉，再加 --resume-session-at <那条记录的 uuid>（只带到它为止的上下文）
 // 要确认的工具调用经 MCP 工具 mcp__mixer__approve 转到网页上（approvals）。
 // 同一个会话如果还在别处跑着（记录 90 秒内有写入，而且不是 mixer 自己跑完的），不许直接续接，只能分叉：免得两边同时往一个文件里写。
+// 正在 mixer 里跑的会话再「接着说」就排队：这次运行一结束（跑完、出错、被停），排着的话合成一条续接发出去。
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -31,10 +32,14 @@ export type Run = {
 	events: unknown[];
 };
 
+/** 排着队的「接着说」 */
+export type Queued = { id: string; project: string; cwd: string; session: string; prompt: string; permission: string; at: string };
+
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
 const runs = new Map<string, Run & { child?: ChildProcess }>();
 const approvals = new Map<string, Approval>();
+const queue: Queued[] = [];
 export const TOKEN = randomUUID();
 const MCP = join(dirname(new URL(import.meta.url).pathname), "..", "mcp", "approve.ts");
 
@@ -62,7 +67,12 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (o.mode === "resume" && resume) {
 		// 最近的写入是 mixer 自己的运行（已经跑完）就放行；否则 90 秒内有写入，说明可能在终端里开着
 		const ours = [...runs.values()].filter((r) => r.session === resume);
-		if (ours.some((r) => r.status === "running")) throw new Error("这个会话正在 mixer 里跑，等它跑完再续接");
+		if (ours.some((r) => r.status === "running")) {
+			const q: Queued = { id: randomUUID().slice(0, 8), project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, permission: o.permission, at: new Date().toISOString() };
+			queue.push(q);
+			emit("queue", queue);
+			return { queued: q };
+		}
 		const mtime = statSync(sessionFile(o.project, resume)).mtimeMs;
 		if (!ours.length && Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
 			throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
@@ -123,9 +133,31 @@ export async function start(o: { project: string; cwd: string; session: string |
 		// 这次运行的确认请求一律作废
 		for (const a of approvals.values()) if (a.run === id) { a.resolve({ allow: false, message: "运行已结束" }); approvals.delete(a.id); }
 		emit("run", view(run));
+		if (run.session) drain(run.session);
 	});
 	emit("run", view(run));
 	return view(run);
+}
+
+export const queued = () => queue;
+
+export function unqueue(id: string) {
+	const i = queue.findIndex((q) => q.id === id);
+	if (i < 0) return false;
+	queue.splice(i, 1);
+	emit("queue", queue);
+	return true;
+}
+
+/** 这个会话的运行结束了：排着的话按顺序合成一条，续接 */
+function drain(session: string) {
+	const items = queue.filter((q) => q.session === session);
+	if (!items.length) return;
+	for (const q of items) queue.splice(queue.indexOf(q), 1);
+	emit("queue", queue);
+	const last = items[items.length - 1];
+	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).join("\n\n"), permission: last.permission })
+		.catch((e: Error) => emit("queue-error", { session, error: e.message }));
 }
 
 export function stop(id: string) {

@@ -1,6 +1,6 @@
-// 侧栏：项目 → 会话。每个会话前面一个状态：等你确认、在跑、跑完了没看、出错了、终端里开着。分叉出来的会话挂在原会话下面。
+// 侧栏：项目 → 会话。每个会话前面一个状态：待确认、运行中、已完成未读、出错未读、终端中打开。分叉出来的会话挂在原会话下面。
 // 有状态的项目自动展开；其余的照人上次的开合（存在这台设备上）。
-import { ChevronRight, CircleAlert, CircleX, Folder, GitFork, Loader2, Search, SquarePen, SquareTerminal, WifiOff } from "lucide-react";
+import { ChevronRight, Folder, GitFork, Search, SquarePen, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -8,6 +8,7 @@ import {
 	Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInput, SidebarMenu, SidebarMenuAction,
 	SidebarMenuButton, SidebarMenuItem, SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, useSidebar,
 } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProjectTree, SessionMeta } from "@/lib/api";
 import { useOnline } from "@/lib/events";
@@ -16,15 +17,24 @@ import { go, openSession, type Route } from "@/lib/route";
 import { since } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
-const STATUS_LABEL: Record<Exclude<Status, null>, string> = { waiting: "等你确认", running: "在跑", done: "跑完了，还没看", error: "出错了，还没看", terminal: "终端里开着" };
+const STATUS_LABEL: Record<Exclude<Status, null>, string> = { waiting: "待确认", running: "运行中", done: "已完成，未读", error: "出错，未读", terminal: "终端中打开" };
 
+/**
+ * 状态标记，全站一套：点 = 要你注意（琥珀待确认，带一圈扩散；蓝已完成未读；红出错未读）；转圈 = 运行中；灰色空心圈 = 终端中打开。
+ * 颜色只有这几种意思：琥珀要你确认，红出错，蓝没看过，灰中性
+ */
 export function StatusIcon({ s, className }: { s: Status; className?: string }) {
 	const icon =
-		s === "waiting" ? <CircleAlert className="size-3.5 text-amber-500" />
-		: s === "running" ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-		: s === "done" ? <span className="size-2 rounded-full bg-primary" />
-		: s === "error" ? <CircleX className="size-3.5 text-destructive" />
-		: s === "terminal" ? <SquareTerminal className="size-3.5 text-muted-foreground" />
+		s === "waiting" ? (
+			<span className="relative flex size-2">
+				<span className="absolute inset-0 animate-ping rounded-full bg-waiting opacity-60" />
+				<span className="relative size-2 rounded-full bg-waiting" />
+			</span>
+		)
+		: s === "running" ? <Spinner className="size-3.5 text-muted-foreground" />
+		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
+		: s === "error" ? <span className="size-2 rounded-full bg-destructive" />
+		: s === "terminal" ? <span className="size-2 rounded-full border border-muted-foreground" />
 		: null;
 	return (
 		<span className={cn("flex size-4 shrink-0 items-center justify-center", className)} title={s ? STATUS_LABEL[s] : undefined}>
@@ -79,9 +89,13 @@ function SessionRow({ s, r, kid }: { s: SessionMeta; r: Route; kid?: boolean }) 
 		<SidebarMenuSubItem>
 			<SidebarMenuSubButton asChild isActive={r.session === s.id} className={cn("h-8 w-full gap-1.5 text-left", kid && "pl-5")}>
 				<button type="button" onClick={() => { openSession(r.project as string, s.id); setOpenMobile(false); }}>
-					{st ? <StatusIcon s={st} /> : kid ? <GitFork className="size-3! text-muted-foreground" /> : <StatusIcon s={null} />}
-					<span className={cn("min-w-0 flex-1 truncate text-[13px]", st === "done" || st === "error" || st === "waiting" ? "font-medium" : "")}>{sessionTitle(s)}</span>
-					<span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{since(s.mtime)}</span>
+					{kid && <GitFork className="size-3! text-muted-foreground" />}
+					<span className={cn("min-w-0 flex-1 truncate text-md", st === "done" || st === "error" || st === "waiting" ? "font-medium" : "")}>{sessionTitle(s)}</span>
+					{/* 右边：时间，最右一格是状态标记（每行都留着这一格，时间才对得齐）。正在发生的（运行中、待确认、终端中打开）时间总是「刚刚」，不写 */}
+					<span className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground tabular-nums">
+						{(!st || st === "done" || st === "error") && since(s.mtime)}
+						<StatusIcon s={st} />
+					</span>
 				</button>
 			</SidebarMenuSubButton>
 		</SidebarMenuSubItem>
@@ -96,12 +110,10 @@ function ProjectItem({ p, r, open, setOpen, q }: { p: ProjectTree; r: Route; ope
 	const busy = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
 	const shown = q ? fams : all ? fams : fams.filter((f, i) => i < SHOWN || busy(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
 	const counts = useMemo(() => {
-		const c = { waiting: 0, running: 0, unread: 0 };
+		const c = { waiting: 0, running: 0, done: 0, error: 0 };
 		for (const s of p.sessions) {
 			const st = status(s);
-			if (st === "waiting") c.waiting++;
-			else if (st === "running") c.running++;
-			else if (st === "done" || st === "error") c.unread++;
+			if (st === "waiting" || st === "running" || st === "done" || st === "error") c[st]++;
 		}
 		return c;
 	}, [p.sessions, status]);
@@ -119,10 +131,8 @@ function ProjectItem({ p, r, open, setOpen, q }: { p: ProjectTree; r: Route; ope
 						<TooltipContent side="right">{p.path}</TooltipContent>
 					</Tooltip>
 					{!open && (
-						<span className="flex shrink-0 items-center gap-1.5">
-							{counts.waiting > 0 && <StatusIcon s="waiting" />}
-							{counts.running > 0 && <StatusIcon s="running" />}
-							{counts.unread > 0 && <StatusIcon s="done" />}
+						<span className="flex shrink-0 items-center gap-0.5">
+							{(["waiting", "running", "error", "done"] as const).map((k) => counts[k] > 0 && <StatusIcon key={k} s={k} />)}
 						</span>
 					)}
 				</SidebarMenuButton>
@@ -171,6 +181,8 @@ function useSwipe() {
 		const down = (e: TouchEvent) => {
 			g = null;
 			if (e.touches.length !== 1) return;
+			// 开着别的对话框（看大图、分叉）时不管
+			if (!openMobile && document.querySelector('[role="dialog"]')) return;
 			const t = e.touches[0];
 			const edge = t.clientX < EDGE;
 			let tap: Element | null = null;
@@ -249,16 +261,16 @@ export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
 		<Sidebar>
 			<SidebarHeader className="gap-2">
 				<div className="flex items-center gap-1 px-1 pt-1">
-					<span className="text-[15px] font-semibold tracking-tight">mixer</span>
-					{!online && <WifiOff className="ml-1.5 size-3.5 text-destructive" aria-label="连不上服务" />}
+					<span className="text-base font-semibold tracking-tight">mixer</span>
+					{!online && <WifiOff className="ml-1.5 size-3.5 text-destructive" aria-label="无法连接服务" />}
 					{/* 不用 Tooltip：手机上抽屉一打开焦点落在它上面，提示会自己弹出来 */}
-					<Button variant="ghost" size="icon" className="ml-auto size-7" onClick={() => { setOpenMobile(false); openNew(); }} aria-label="新会话" title="新会话">
+					<Button variant="ghost" size="icon-sm" className="ml-auto" onClick={() => { setOpenMobile(false); openNew(); }} aria-label="新会话" title="新会话">
 						<SquarePen className="size-4" />
 					</Button>
 				</div>
 				<div className="relative">
 					<Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-					<SidebarInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="找会话" className="pl-8" />
+					<SidebarInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索会话" className="pl-8" />
 				</div>
 			</SidebarHeader>
 			<SidebarContent>
@@ -274,7 +286,7 @@ export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
 									</SidebarMenuButton>
 								</SidebarMenuItem>
 							)}
-							{projects?.length === 0 && <p className="px-2 py-4 text-[13px] text-muted-foreground">{q ? "没找到" : "还没有会话"}</p>}
+							{projects?.length === 0 && <p className="px-2 py-4 text-md text-muted-foreground">{q ? "没有匹配的会话" : "还没有会话"}</p>}
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>

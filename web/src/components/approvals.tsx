@@ -1,5 +1,5 @@
-// 确认请求：Claude 要执行命令、改文件时问你。当前会话的请求出现在对话里（前面就是 Claude 的思路）；别的会话的浮在右下角，带「去看」。
-import { Check, ShieldQuestion, X } from "lucide-react";
+// 确认请求：Claude 要执行命令、改文件时问你。当前会话的请求出现在对话里（前面就是 Claude 的思路）；别的会话的浮在右下角，带「查看」。
+import { Check, ChevronRight, ShieldQuestion, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -31,21 +31,24 @@ export function ApprovalCard({ a, run, elsewhere, className }: { a: Approval; ru
 		<Card className={cn("gap-3 py-4", className)}>
 			<CardHeader className="px-4">
 				<CardTitle className="flex items-center gap-2 text-sm">
-					<ShieldQuestion className="size-4 text-primary" />
-					Claude 想用 {a.tool.replace(/^mcp__[^_]+__/, "")}
+					<ShieldQuestion className="size-4 text-waiting" />
+					Claude 请求使用 {a.tool.replace(/^mcp__[^_]+__/, "")}
 				</CardTitle>
 				{elsewhere && run?.session && (
-					<button type="button" onClick={() => openSession(run.project, run.session as string)} className="truncate text-left text-[11px] text-muted-foreground hover:text-foreground">
-						{elsewhere} · 去看
+					<button type="button" onClick={() => openSession(run.project, run.session as string)} className="truncate text-left text-2xs text-muted-foreground hover:text-foreground">
+						{elsewhere} · 查看
 					</button>
 				)}
 			</CardHeader>
 			<CardContent className="flex flex-col gap-2 px-4">
-				{w && <pre className="max-h-32 overflow-auto rounded-md bg-muted px-2.5 py-2 font-mono text-[12px] whitespace-pre-wrap break-all">{w}</pre>}
+				{w && <pre className="max-h-32 overflow-auto rounded-md bg-muted px-2.5 py-2 font-mono text-xs whitespace-pre-wrap break-all">{w}</pre>}
 				<Collapsible>
-					<CollapsibleTrigger className="text-[11px] text-muted-foreground underline-offset-4 hover:underline">完整参数</CollapsibleTrigger>
+					<CollapsibleTrigger className="group/args flex items-center gap-1 text-2xs text-muted-foreground hover:text-foreground">
+						<ChevronRight className="size-3 transition-transform group-data-[state=open]/args:rotate-90" />
+						完整参数
+					</CollapsibleTrigger>
 					<CollapsibleContent>
-						<pre className="mt-1 max-h-48 overflow-auto rounded-md border p-2 font-mono text-[11px] whitespace-pre-wrap break-all">{JSON.stringify(a.input, null, 2)}</pre>
+						<pre className="mt-1 max-h-48 overflow-auto rounded-md border p-2 font-mono text-2xs whitespace-pre-wrap break-all">{JSON.stringify(a.input, null, 2)}</pre>
 					</CollapsibleContent>
 				</Collapsible>
 			</CardContent>
@@ -79,13 +82,13 @@ export function FloatingApprovals({ current }: { current: string | null }) {
 		for (const { a } of list) {
 			if (notified.current.has(a.id)) continue;
 			notified.current.add(a.id);
-			if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") new Notification("Claude 要你确认", { body: `${a.tool}：${what(a)}` });
+			if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") new Notification("Claude 请求确认", { body: `${a.tool}：${what(a)}` });
 		}
 	}, [list]);
 	if (list.length === 0) return null;
 	return (
 		<div className="fixed inset-x-3 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:w-[26rem]">
-			{list.map(({ a, run }) => <ApprovalCard key={a.id} a={a} run={run} elsewhere={title(run?.session)} className="shadow-lg ring-1 ring-ring/20" />)}
+			{list.map(({ a, run }) => <ApprovalCard key={a.id} a={a} run={run} elsewhere={title(run?.session)} className="border-waiting/50 shadow-lg" />)}
 		</div>
 	);
 }

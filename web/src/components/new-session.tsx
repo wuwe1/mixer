@@ -1,5 +1,5 @@
 // 新会话：先选文件夹（从家目录开始，上面列着最近的项目；没开过会话的也行，可以当场新建），再写第一句话。会话一建好就跳过去。
-import { ChevronLeft, Folder, FolderGit2, FolderPlus, History, Loader2, MessageSquare, Send } from "lucide-react";
+import { ChevronLeft, Folder, FolderGit2, FolderPlus, History, MessageSquare, Send } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,7 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type ProjectTree, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
@@ -62,7 +63,7 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 			toast.error(e instanceof Error ? e.message : String(e));
 		}
 	};
-	if (!d) return <div className="flex h-80 items-center justify-center"><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>;
+	if (!d) return <div className="flex h-80 items-center justify-center"><Spinner className="text-muted-foreground" /></div>;
 	const name = q.trim();
 	const exact = d.entries.some((e) => e.name === name);
 	const recent = d.path === d.home && !name ? projects.filter((p) => p.path?.startsWith(`${d.home}/`)).slice(0, 5) : [];
@@ -77,13 +78,13 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 					placeholder="筛选，或输入名字新建文件夹"
 				/>
 				<CommandList className="max-h-[min(20rem,45svh)]">
-					<CommandEmpty className="py-5 text-[13px] text-muted-foreground">{name ? "没有匹配的文件夹" : "这里没有子文件夹"}</CommandEmpty>
+					<CommandEmpty className="py-5 text-md text-muted-foreground">{name ? "没有匹配的文件夹" : "这里没有子文件夹"}</CommandEmpty>
 					{recent.length > 0 && (
 						<CommandGroup heading="最近的项目">
 							{recent.map((p) => (
 								<CommandItem key={p.id} value={`recent ${p.path}`} onSelect={() => pick(p.path!)}>
 									<History className="text-muted-foreground" />
-									<span className="min-w-0 flex-1 truncate font-mono text-[13px]">{tilde(p.path!, d.home)}</span>
+									<span className="min-w-0 flex-1 truncate font-mono text-md">{tilde(p.path!, d.home)}</span>
 								</CommandItem>
 							))}
 						</CommandGroup>
@@ -92,7 +93,7 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 						{d.entries.map((e) => (
 							<CommandItem key={e.path} value={e.name} onSelect={() => open(e.path)}>
 								{e.git ? <FolderGit2 className="text-muted-foreground" /> : <Folder className="text-muted-foreground" />}
-								<span className="min-w-0 flex-1 truncate text-[13px]">{e.name}</span>
+								<span className="min-w-0 flex-1 truncate text-md">{e.name}</span>
 								{e.project && <MessageSquare className="size-3.5! text-muted-foreground" aria-label="有会话" />}
 							</CommandItem>
 						))}
@@ -108,7 +109,7 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 			)}
 			<div className="flex items-center justify-end gap-2">
 				{d.git && <Badge variant="outline">git</Badge>}
-				<Button size="sm" onClick={() => pick(d.path)}>在这里开</Button>
+				<Button size="sm" onClick={() => pick(d.path)}>选择此文件夹</Button>
 			</div>
 		</div>
 	);
@@ -128,7 +129,7 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission });
 			follow(r);
 			setText("");
-			toast.success("开始了：会话一建好就跳过去");
+			toast.success("已开始，会话建好后自动打开");
 			onStarted?.();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -148,8 +149,8 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 			/>
 			<div className="flex items-center gap-1.5">
 				<PermissionSelect value={permission} onChange={setPermission} />
-				<Button size="icon" className="ml-auto size-8 rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
-					{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+				<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
+					{busy ? <Spinner /> : <Send className="size-4" />}
 				</Button>
 			</div>
 		</div>
@@ -166,12 +167,12 @@ export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange
 			<DialogContent className="top-[max(1rem,env(safe-area-inset-top))] translate-y-0 gap-4 sm:top-[12vh] sm:max-w-lg">
 				<DialogHeader>
 					<DialogTitle>新会话</DialogTitle>
-					<DialogDescription className="sr-only">选一个文件夹，Claude 在那里开一个新会话</DialogDescription>
+					<DialogDescription className="sr-only">选择一个文件夹，Claude 在那里开始新会话</DialogDescription>
 				</DialogHeader>
 				{cwd ? (
 					<div className="flex flex-col gap-3">
 						<div className="flex min-w-0 items-center gap-1">
-							<Button variant="ghost" size="icon" className="-ml-1.5 size-7 shrink-0" onClick={() => { setLast(cwd); setCwd(null); }} aria-label="换文件夹">
+							<Button variant="ghost" size="icon-sm" className="-ml-1.5 shrink-0" onClick={() => { setLast(cwd); setCwd(null); }} aria-label="换文件夹">
 								<ChevronLeft className="size-4" />
 							</Button>
 							<span className="truncate font-mono text-xs text-muted-foreground">{cwd}</span>

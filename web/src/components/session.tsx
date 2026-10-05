@@ -1,4 +1,4 @@
-// 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏从右边滑出来）：目录（你问过的问题）、文件、改动（默认只看这个会话改过的）。
+// 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏从右边滑出来）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
 // 打开着的会话跑完了，就算看过了。
 import { X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -27,15 +27,29 @@ export const PANELS: { v: Panel; label: string }[] = [
 export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? "outline" : null)));
 
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
-	const { status } = useLive();
+	const { status, queue, runs } = useLive();
 	const wide = useWide();
 	const [data, setData] = useState<Session | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const bottom = useRef<HTMLDivElement>(null);
 	const first = useRef(true);
 
+	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）
+	const pulling = useRef<{ key: string; again: boolean } | null>(null);
 	const load = useCallback(() => {
-		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}`).then((d) => { setData(d); setError(null); }, (e: Error) => setError(e.message));
+		const key = `${project}/${session}`;
+		if (pulling.current?.key === key) return void (pulling.current.again = true);
+		pulling.current = { key, again: false };
+		const done = () => {
+			const p = pulling.current;
+			if (p?.key !== key) return;
+			pulling.current = null;
+			if (p.again) load();
+		};
+		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}`).then(
+			(d) => { if (pulling.current?.key === key) { setData(d); setError(null); } done(); },
+			(e: Error) => { if (pulling.current?.key === key) setError(e.message); done(); },
+		);
 	}, [project, session]);
 	useEffect(() => { setData(null); setError(null); first.current = true; load(); }, [load]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
@@ -61,6 +75,16 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: "end" }));
 		}
 	}, [data]);
+
+	// 刚发出去的话（排上队了，或者开始跑了）：滚到最后让人看见
+	const queued = queue.filter((q) => q.session === session).length;
+	const running = runs.find((x) => x.session === session && x.status === "running")?.id;
+	const seen = useRef({ queued, running });
+	useEffect(() => {
+		const before = seen.current;
+		seen.current = { queued, running };
+		if (queued > before.queued || (running && running !== before.running)) requestAnimationFrame(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
+	}, [queued, running]);
 
 	const rel = useCallback((abs: string) => (root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null), [root]);
 	const touched = useMemo(() => {
@@ -91,8 +115,8 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			<ScrollArea className="min-h-0 flex-1">
 				<nav className="flex flex-col gap-0.5 p-2">
 					{prompts.map((p, i) => (
-						<button key={p.uuid} type="button" onClick={() => jump(p.uuid)} className="flex gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-accent">
-							<span className="w-5 shrink-0 pt-px text-right text-[11px] text-muted-foreground tabular-nums">{i + 1}</span>
+						<button key={p.uuid} type="button" onClick={() => jump(p.uuid)} className="flex gap-2.5 rounded-md px-2 py-1.5 text-left text-md transition-colors hover:bg-accent">
+							<span className="w-5 shrink-0 pt-px text-right text-2xs text-muted-foreground tabular-nums">{i + 1}</span>
 							<span className="line-clamp-2 min-w-0 flex-1 leading-snug">{p.text || "（图片）"}</span>
 						</button>
 					))}
@@ -103,7 +127,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		) : panel === "changes" ? (
 			<Changes project={project} touched={touched} />
 		) : null;
-	const title = panel === "outline" ? `你问过的 ${prompts.length} 个问题` : PANELS.find((p) => p.v === panel)?.label;
+	const title = panel === "outline" ? `你的 ${prompts.length} 条消息` : PANELS.find((p) => p.v === panel)?.label;
 
 	return (
 		<div className="flex min-h-0 flex-1">
@@ -126,7 +150,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				<aside className={cn("flex shrink-0 flex-col border-l", panel === "outline" ? "w-72" : "w-[min(44rem,45vw)]")}>
 					<div className="flex h-11 shrink-0 items-center gap-2 border-b pr-1.5 pl-4 text-xs font-medium text-muted-foreground">
 						<span className="flex-1">{title}</span>
-						<Button variant="ghost" size="icon" className="size-7" onClick={() => go({ panel: "none" })} aria-label="关掉面板">
+						<Button variant="ghost" size="icon-sm" onClick={() => go({ panel: "none" })} aria-label="关掉面板">
 							<X className="size-3.5" />
 						</Button>
 					</div>

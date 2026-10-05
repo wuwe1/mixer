@@ -67,15 +67,15 @@ const emit = (type: string, data: unknown) => { for (const c of clients) c.write
 runs.onEvent(emit);
 setInterval(() => { for (const c of clients) c.write(": keepalive\n\n"); }, 25_000).unref();
 
-// 会话文件有变化：告诉页面（同一个文件 1 秒内合成一次）
+// 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 if (existsSync(PROJECTS)) {
 	watch(PROJECTS, { recursive: true }, (_, f) => {
 		const m = /^([^/]+)\/([0-9a-f-]{36})\.jsonl$/.exec(String(f ?? "").split(sep).join("/"));
 		if (!m) return;
 		const key = `${m[1]}/${m[2]}`;
-		clearTimeout(timers.get(key));
-		timers.set(key, setTimeout(() => emit("session", { project: m[1], id: m[2] }), 1000));
+		if (timers.has(key)) return;
+		timers.set(key, setTimeout(() => { timers.delete(key); emit("session", { project: m[1], id: m[2] }); }, 500));
 	});
 }
 
@@ -112,6 +112,7 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
+	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
 	[/^\/api\/dirs$/, (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
 ];
 const POST: [RegExp, Handler][] = [
@@ -133,6 +134,7 @@ const POST: [RegExp, Handler][] = [
 		json(res, 200, { ok: true });
 	}],
 	[/^\/api\/runs\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
+	[/^\/api\/queue\/([\w-]+)\/cancel$/, (_q, res, m) => json(res, 200, { ok: runs.unqueue(m[1]) })],
 	[/^\/api\/approvals\/([\w-]+)$/, async (req, res, m) => {
 		const b = JSON.parse(await body(req));
 		json(res, 200, { ok: runs.answer(m[1], !!b.allow, b.message) });

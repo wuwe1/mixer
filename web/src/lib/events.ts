@@ -1,4 +1,4 @@
-// 服务推来的事件（SSE）：运行的输出、运行状态、确认请求、会话文件有变化。整个页面共用一条连接。
+// 服务推来的事件（SSE）：运行的输出、运行状态、确认请求、排队、会话文件有变化。整个页面共用一条连接。
 import { useEffect, useState } from "react";
 
 type Handler = (data: any) => void; // biome-ignore lint: 各种事件的数据不一样
@@ -10,7 +10,7 @@ const upListeners = new Set<(u: boolean) => void>();
 function connect() {
 	if (es) return;
 	es = new EventSource("/api/events");
-	for (const type of ["run", "run-event", "approval", "approval-done", "session", "state"]) {
+	for (const type of ["run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state"]) {
 		es.addEventListener(type, (m) => { for (const h of handlers.get(type) ?? []) h(JSON.parse((m as MessageEvent).data)); });
 	}
 	es.onopen = () => { up = true; for (const l of upListeners) l(true); for (const h of handlers.get("reconnect") ?? []) h(null); };

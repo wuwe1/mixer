@@ -42,9 +42,25 @@ export type Node =
 			summary: string;
 			input: string;
 			result: { text: string; error: boolean; cut: boolean; images: number } | null;
+			/** 结果所在那条 user 记录：从这一步分叉要用它（用工具调用那条，结果就丢了） */
+			resultUuid: string | null;
 			agent: string | null;
 	  }
-	| { k: "event"; uuid: string; parent: string | null; ts: string; kind: "summary" | "compact" | "notice"; text: string };
+	| {
+			k: "event";
+			uuid: string;
+			parent: string | null;
+			ts: string;
+			/** summary 离开时的小结；compact 上下文压缩；info 系统提示（比如用量到了）；task 后台任务（子代理、后台命令）的通知；agent 子代理发回来的回报 */
+			kind: "summary" | "compact" | "info" | "task" | "agent";
+			text: string;
+			/** 点开才看的：压缩前的摘要、任务的结果 */
+			detail?: string;
+			/** 任务的状态：completed / failed / killed …… */
+			status?: string;
+			/** 对应的子代理（有它的记录才给），能打开看它的对话 */
+			agent?: string;
+	  };
 
 export type SessionMeta = {
 	id: string;
@@ -182,8 +198,22 @@ const SYSTEM = /^\s*<(task-notification|command-name|command-message|local-comma
 
 /** 用户真正说的话；不是就返回 null */
 function promptText(d: Raw): string | null {
+	if (d.isCompactSummary) return null;
 	const t = userText(d);
 	return t === null || SYSTEM.test(t) ? null : t;
+}
+
+const tag = (t: string, name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(t)?.[1]?.trim();
+/** 1234567 → 123.5 万 */
+const wan = (n: number) => (n >= 10_000 ? `${(n / 10_000).toFixed(1)} 万` : String(n));
+
+/** 子代理发回来的回报（<agent-message from="…">）：去掉外面那层说明，只留回报本身 */
+function agentReport(t: string) {
+	const from = /<agent-message from="([^"]+)"/.exec(t)?.[1];
+	let body = t.replace(/^\s*<agent-message[^>]*>\s*/, "").replace(/\s*<\/agent-message>\s*$/, "");
+	const i = body.indexOf("The report follows:");
+	if (i >= 0) body = body.slice(i + "The report follows:".length);
+	return { from, body: body.split("\n").map((l) => l.replace(/^ {2}/, "")).join("\n").trim() };
 }
 
 const resultText = (c: unknown): string => {
@@ -223,6 +253,17 @@ export async function parse(file: string): Promise<Parsed> {
 	const results = new Map<string, string>();
 	const nodes: Node[] = [];
 	const base = (d: Raw) => ({ uuid: d.uuid as string, parent: null as string | null, ts: d.timestamp as string });
+	// 子代理的记录在 <会话>/subagents/agent-<id>.jsonl；有才给 id，网页上能点开看
+	const agentOf = (id: string | undefined) => (id && /^[\w-]+$/.test(id) && existsSync(join(file.replace(/\.jsonl$/, ""), "subagents", `agent-${id}.jsonl`)) ? id : undefined);
+	const task = (d: Raw, t: string): Node => {
+		const detail = tag(t, "result");
+		return { k: "event", ...base(d), kind: "task", text: tag(t, "summary") ?? tag(t, "status") ?? "后台任务有了结果", status: tag(t, "status"), detail, agent: agentOf(tag(t, "task-id")) };
+	};
+	const report = (d: Raw, t: string): Node => {
+		const r = agentReport(t);
+		return { k: "event", ...base(d), kind: "agent", text: r.body, agent: agentOf(r.from) };
+	};
+	let compact: Extract<Node, { k: "event" }> | null = null;
 
 	for (const d of order) {
 		const c = d.message?.content;
@@ -233,11 +274,13 @@ export async function parse(file: string): Promise<Parsed> {
 				const imgs = Array.isArray(c) ? c.filter((b) => b?.type === "image" && b.source?.type === "base64") : [];
 				if (imgs.length) images.set(d.uuid, imgs.map((b) => ({ media: b.source.media_type, data: b.source.data })));
 				n = { k: "user", ...base(d), text: t, images: imgs.length };
+			} else if (d.isCompactSummary) {
+				// 压缩后接上的摘要：挂到刚才那条「上下文已压缩」上，点开看
+				if (compact) compact.detail = userText({ ...d, isMeta: false }) ?? undefined;
 			} else if (SYSTEM.test(userText(d) ?? "")) {
-				// 后台任务完成的通知：一条事件，写它的 summary
+				// 后台任务的通知：一条事件；命令输出、提醒不显示
 				const t = userText(d) ?? "";
-				const summary = /<summary>([\s\S]*?)<\/summary>/.exec(t)?.[1] ?? /<status>([\s\S]*?)<\/status>/.exec(t)?.[1];
-				if (t.includes("<task-notification>")) n = { k: "event", ...base(d), kind: "notice", text: `后台任务：${(summary ?? "有了结果").trim().slice(0, 200)}` };
+				if (t.includes("<task-notification>")) n = task(d, t);
 			} else if (Array.isArray(c)) {
 				// 工具结果：挂到对应的调用上，不单独成节点
 				for (const b of c) {
@@ -251,6 +294,7 @@ export async function parse(file: string): Promise<Parsed> {
 					if (tool) {
 						const { text: t2, cut: cutted } = cut(text);
 						tool.result = { text: t2, error: !!b.is_error, cut: cutted, images: imgs.length };
+						tool.resultUuid = d.uuid;
 						const m = /agentId: (a[0-9a-f]+)/.exec(text);
 						if (m) tool.agent = m[1];
 					}
@@ -271,6 +315,7 @@ export async function parse(file: string): Promise<Parsed> {
 					summary: summarize(b.input ?? {}),
 					input: cut(input).text,
 					result: null,
+					resultUuid: null,
 					agent: null,
 				};
 				tools.set(b.id, tool);
@@ -278,13 +323,22 @@ export async function parse(file: string): Promise<Parsed> {
 			}
 		} else if (d.type === "system") {
 			if (d.subtype === "away_summary" && d.content) n = { k: "event", ...base(d), kind: "summary", text: String(d.content) };
-			else if (d.subtype === "compact_boundary") n = { k: "event", ...base(d), kind: "compact", text: "上下文压缩" };
+			else if (d.subtype === "compact_boundary") {
+				const m = d.compactMetadata;
+				const how = m ? `（${m.trigger === "auto" ? "自动" : "手动"}${m.preTokens && m.postTokens ? ` · ${wan(m.preTokens)} → ${wan(m.postTokens)} token` : ""}）` : "";
+				n = compact = { k: "event", ...base(d), kind: "compact", text: `上下文已压缩${how}` };
+			} else if (d.subtype === "informational" && d.content) n = { k: "event", ...base(d), kind: "info", text: String(d.content) };
 		} else if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.prompt) {
-			n = { k: "user", ...base(d), text: String(d.attachment.prompt), images: 0, queued: true };
+			// 跑的过程中插进来的：可能是人在终端里打的，也可能是任务通知、子代理的回报
+			const t = String(d.attachment.prompt);
+			if (d.attachment.commandMode === "task-notification" || t.trimStart().startsWith("<task-notification>")) n = task(d, t);
+			else if (t.trimStart().startsWith("<agent-message")) n = report(d, t);
+			else n = { k: "user", ...base(d), text: t, images: 0, queued: true };
 		}
 		if (!n) continue;
 		// parent：沿 parentUuid 往上找最近的显示节点
-		let p = d.parentUuid as string | null;
+		// 压缩那条的 parentUuid 是空的（logicalParentUuid 指的是压缩之后的记录，靠不住）：压缩发生在当时那条分支的末尾，接在它前面最后一个显示节点上
+		let p = (d.parentUuid ?? (d.subtype === "compact_boundary" ? nodes[nodes.length - 1]?.uuid : null) ?? null) as string | null;
 		for (let hops = 0; p && !shown.has(p) && hops < 100_000; hops++) p = raw.get(p)?.parentUuid ?? null;
 		n.parent = p;
 		shown.set(n.uuid, n);
