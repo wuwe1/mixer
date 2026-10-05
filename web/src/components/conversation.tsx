@@ -202,7 +202,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 						{b.kind === "steps" ? (
 							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : (ns) => setFork({ kind: "at", at: pointOf(ns[ns.length - 1]), what: "这几步工具调用" })} />
 						) : b.n.k === "user" ? (
-							<UserMessage n={b.n} project={project} session={session} onFork={(n) => setFork({ kind: "edit", n })} />
+							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : (n) => setFork({ kind: "edit", n })} />
 						) : b.n.k === "assistant" ? (
 							<AssistantMessage n={b.n} onFork={isLive(b.n) ? undefined : (n) => setFork({ kind: "at", at: n.uuid, what: "这条回复" })} />
 						) : b.n.k === "event" ? (
@@ -545,18 +545,26 @@ function liveSummary(json: string) {
 	}
 }
 
-/** 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾 */
+/**
+ * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
+ * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
+ */
 function liveNodes(stream: Stream, path: Node[]): Node[] {
 	const texts = new Set(path.flatMap((n) => (n.k === "assistant" || n.k === "thinking" ? [n.text.trim()] : [])));
 	const tools = new Set(path.flatMap((n) => (n.k === "tool" ? [n.id] : [])));
 	const ts = new Date().toISOString();
-	return stream.blocks.flatMap((b, i): Node[] => {
+	const r = stream.run;
+	const asked = r?.prompt.trim();
+	// 这次运行开始之后（给一分钟时钟误差）记录里有同样的一句，就是它已经写进去了
+	const written = !r || !asked || path.some((n) => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
+	const mine: Node[] = written ? [] : [{ k: "user", uuid: "live:user", parent: null, ts: r.started, text: r.prompt, images: 0 }];
+	return [...mine, ...stream.blocks.flatMap((b, i): Node[] => {
 		const base = { uuid: `live:${i}`, parent: null, ts };
 		if (b.k === "tool") return tools.has(b.id) ? [] : [{ k: "tool", ...base, id: b.id, name: b.name, summary: liveSummary(b.json), input: b.json, result: null, resultUuid: null, agent: null }];
 		if (texts.has(b.text.trim())) return [];
 		// 后面已经有别的段了：这段写完了。思考有时是不给看的（空的），记录里不会有它，不再显示
 		if (b.k === "thinking") return !b.text.trim() && i < stream.blocks.length - 1 ? [] : [{ k: "thinking", ...base, text: b.text }];
 		return b.text.trim() ? [{ k: "assistant", ...base, text: b.text }] : [];
-	});
+	})];
 }
 const isLive = (n: Node) => n.uuid.startsWith("live:");
