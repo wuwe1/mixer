@@ -141,6 +141,9 @@
 	counter-increment: line; content: counter(line); display: inline-block; width: 3.2em; margin-right: 1.2em; text-align: right;
 	color: var(--muted-foreground); opacity: 0.55; user-select: none;
 }
+/* diff 一行一行拼的词，颜色放在 --shiki-light / --shiki-dark 里（diff.tsx） */
+.diff span[style] { color: var(--shiki-light); }
+.dark .diff span[style] { color: var(--shiki-dark); }
 html, body, #root { height: 100%; }
 
 /*

@@ -10,7 +10,7 @@ const upListeners = new Set<(u: boolean) => void>();
 function connect() {
 	if (es) return;
 	es = new EventSource("/api/events");
-	for (const type of ["run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state"]) {
+	for (const type of ["run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state", "limits", "workspace"]) {
 		es.addEventListener(type, (m) => { for (const h of handlers.get(type) ?? []) h(JSON.parse((m as MessageEvent).data)); });
 	}
 	es.onopen = () => { up = true; for (const l of upListeners) l(true); for (const h of handlers.get("reconnect") ?? []) h(null); };

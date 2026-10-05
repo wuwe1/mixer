@@ -97,7 +97,8 @@ export async function start(o: { project: string; cwd: string; session: string |
 	mkdirSync(dir, { recursive: true });
 	const cfg = join(dir, `mcp-${id}.json`);
 	writeFileSync(cfg, JSON.stringify({ mcpServers: { mixer: { command: process.execPath, args: [MCP], env: { MIXER_URL: `http://127.0.0.1:${process.env.MIXER_PORT ?? 4848}`, MIXER_TOKEN: TOKEN, MIXER_RUN: id } } } }));
-	const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", o.permission, "--permission-prompt-tool", "mcp__mixer__approve", "--mcp-config", cfg];
+	// --thinking-display summarized：思考给摘要（流里有、也写进记录）。不加的话 -p 下大多只有签名、没有文字。帮助里没写，试过可用
+	const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--thinking-display", "summarized", "--permission-mode", o.permission, "--permission-prompt-tool", "mcp__mixer__approve", "--mcp-config", cfg];
 	if (model) args.push("--model", model);
 	// 带图片：stdin 改成一条 stream-json 的 user 消息（文字 + 图片块）
 	if (images.length) args.push("--input-format", "stream-json");
@@ -147,10 +148,19 @@ export async function start(o: { project: string; cwd: string; session: string |
 					emit("run", view(run));
 				}
 				if (run.model) state.chooseModel(run.session, run.model);
+				// 在 mixer 里跑过的会话放进工作区（新会话、分叉的文件夹放到最上面）
+				if (state.addToWorkspace(run.project, run.cwd, run.session)) emit("workspace", null);
 				if (Array.isArray(ev.skills)) state.learnCaps(run.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
 			}
 			if (ev.type === "result" && ev.modelUsage && typeof ev.modelUsage === "object")
 				for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
+			if (ev.type === "rate_limit_event") {
+				const w = (ev.rate_limit_info as { unifiedWindows?: unknown } | undefined)?.unifiedWindows;
+				if (w && typeof w === "object") {
+					state.learnLimits(w as Record<string, unknown>);
+					emit("limits", state.limits());
+				}
+			}
 			run.events.push(ev);
 			if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
 			// 网页只要流事件：带上序号推过去，网页按序号接在快照后面，接不上就重新拿快照
@@ -180,6 +190,8 @@ export async function start(o: { project: string; cwd: string; session: string |
 /** 给网页的：图片只给张数 */
 const queueView = (q: Queued) => ({ ...q, images: q.images.length });
 export const queued = () => queue.map(queueView);
+/** 排着队的消息里的图片：网页上显示缩略图 */
+export const queuedImage = (id: string, i: number) => queue.find((q) => q.id === id)?.images[i] ?? null;
 
 export function unqueue(id: string) {
 	const i = queue.findIndex((q) => q.id === id);
@@ -233,5 +245,8 @@ export function answer(id: string, allow: boolean, message?: string) {
 	emit("approval-done", { id, allow });
 	return true;
 }
+
+/** mixer 里没在干活：没有运行、排队的消息、待确认（这时重启不会打断谁、也不会丢东西） */
+export const idle = () => ![...runs.values()].some((r) => r.status === "running") && !queue.length && !approvals.size;
 
 export const pending = () => [...approvals.values()].map(({ resolve: _r, ...a }) => a);

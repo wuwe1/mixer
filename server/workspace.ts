@@ -1,0 +1,27 @@
+// 工作区（侧栏）：放进来的文件夹（人拖的顺序）和会话，带上侧栏要的会话信息（标题、时间、状态）。
+// 第一次打开时还没有工作区：把有状态的会话（运行中、待确认、跑完没看）放进去，其余的从「浏览会话」里找。
+// 在 mixer 里跑过的会话（新会话、分叉、续接）自动放进来（runs.ts）
+import * as runs from "./runs.ts";
+import { listProjects, listSessions } from "./sessions.ts";
+import * as state from "./state.ts";
+
+export async function view() {
+	let w = state.workspace();
+	if (!w) {
+		const busy = [...runs.list().flatMap((r) => (r.status === "running" && r.session ? [{ id: r.session, project: r.project }] : [])), ...state.unreadSessions()];
+		w = { groups: [], sessions: {} };
+		for (const s of busy) {
+			if (!w.groups.some((g) => g.id === s.project)) w.groups.push({ id: s.project, path: null });
+			w.sessions[s.id] ??= s.project;
+		}
+		state.setWorkspace(w);
+	}
+	// 不知道路径的文件夹（建工作区时、从会话记录里来的）：从会话记录里找一次
+	if (w.groups.some((g) => !g.path)) {
+		const paths = new Map(listProjects().map((p) => [p.id, p.path]));
+		for (const g of w.groups) g.path ??= paths.get(g.id) ?? null;
+		state.setWorkspace(w);
+	}
+	const sessions = w.sessions;
+	return Promise.all(w.groups.map(async (g) => ({ ...g, sessions: (await listSessions(g.id)).filter((s) => sessions[s.id] === g.id) })));
+}

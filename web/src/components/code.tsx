@@ -10,24 +10,27 @@ const EXT: Record<string, string> = {
 };
 export const langOf = (path: string) => EXT[path.split(".").pop()?.toLowerCase() ?? ""] ?? "text";
 
-type Job = { code: string; lang: string; done: (html: string | null) => void };
+/** 一行的词：[文字, 浅色主题的颜色, 深色主题的颜色] */
+export type Token = [string, string, string];
+type Out = string | Token[][] | null;
+type Job = { code: string; lang: string; tokens: boolean; done: (out: Out) => void };
 let worker: Worker | null = null;
 let running: Job | null = null;
 const queue: Job[] = [];
 // 最近高亮过的，再打开同一个文件不用重跑
-const cache = new Map<string, string>();
-const keyOf = (code: string, lang: string) => `${lang}\0${code}`;
+const cache = new Map<string, Exclude<Out, null>>();
+const keyOf = (code: string, lang: string, tokens: boolean) => `${lang}\0${tokens ? "t" : "h"}\0${code}`;
 
 function pump() {
 	if (running || !queue.length) return;
 	running = queue.shift()!;
 	if (!worker) {
 		worker = new Worker(new URL("../lib/highlight-worker.ts", import.meta.url), { type: "module" });
-		worker.onmessage = (e: MessageEvent<string | null>) => {
+		worker.onmessage = (e: MessageEvent<Out>) => {
 			const j = running!;
 			running = null;
 			if (e.data !== null) {
-				cache.set(keyOf(j.code, j.lang), e.data);
+				cache.set(keyOf(j.code, j.lang, j.tokens), e.data);
 				if (cache.size > 30) cache.delete(cache.keys().next().value!);
 			}
 			j.done(e.data);
@@ -40,12 +43,17 @@ function pump() {
 			pump();
 		};
 	}
-	worker.postMessage({ code: running.code, lang: running.lang });
+	worker.postMessage({ code: running.code, lang: running.lang, tokens: running.tokens });
 }
 
 /** 排队高亮；返回的函数撤销（还没开始跑的就不跑了） */
-function highlight(code: string, lang: string, done: (html: string | null) => void) {
-	const job: Job = { code, lang, done };
+function run(code: string, lang: string, tokens: boolean, done: (out: Out) => void) {
+	const hit = cache.get(keyOf(code, lang, tokens));
+	if (hit) {
+		done(hit);
+		return () => {};
+	}
+	const job: Job = { code, lang, tokens, done };
 	queue.push(job);
 	pump();
 	return () => {
@@ -54,13 +62,14 @@ function highlight(code: string, lang: string, done: (html: string | null) => vo
 		if (i >= 0) queue.splice(i, 1);
 	};
 }
+const highlight = (code: string, lang: string, done: (html: string | null) => void) => run(code, lang, false, done as (out: Out) => void);
+/** 分好词、上好色的每一行（diff 用）；失败给 null */
+export const tokenize = (code: string, lang: string, done: (lines: Token[][] | null) => void) => run(code, lang, true, done as (out: Out) => void);
 
 export function Code({ code, lang = "text", lines = false, className }: { code: string; lang?: string; lines?: boolean; className?: string }) {
 	const [html, setHtml] = useState<string | null>(null);
 	useEffect(() => {
 		if (lang === "text" || code.length > 400_000) return setHtml(null);
-		const hit = cache.get(keyOf(code, lang));
-		if (hit) return setHtml(hit);
 		setHtml(null);
 		return highlight(code, lang, setHtml);
 	}, [code, lang]);

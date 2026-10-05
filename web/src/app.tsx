@@ -1,6 +1,6 @@
 // 外框：左边侧栏（项目 → 会话，带状态）；右边是当前的页面：会话、项目页（开新会话、看文件和改动），或者什么都没选。
 // 开 agent 只有两种办法：选一个文件夹开新会话（侧栏的新会话、项目页的输入框），或者从一个会话分叉。
-import { ChevronRight, FolderTree, GitCompareArrows, GitFork, ListTree, MessageSquare, SquarePen } from "lucide-react";
+import { ChevronRight, FolderTree, GitCompareArrows, GitFork, ListTree, MessageSquare, Pin, PinOff, SquarePen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -20,10 +20,10 @@ const PANEL_ICON: Record<Panel, typeof ListTree> = { outline: ListTree, files: F
 
 export function App() {
 	const r = useRoute();
-	const { tree, status } = useLive();
+	const { workspace, status, inWorkspace, change } = useLive();
 	const wide = useWide();
 	const [newOpen, setNewOpen] = useState(false);
-	const p = tree?.find((x) => x.id === r.project);
+	const p = workspace?.find((x) => x.id === r.project);
 	const meta = p?.sessions.find((s) => s.id === r.session);
 	const st = meta ? status(meta) : null;
 	const parent = meta?.parent ? p?.sessions.find((s) => s.id === meta.parent) : undefined;
@@ -57,6 +57,19 @@ export function App() {
 							</button>
 						)}
 					</div>
+					{/* 这个会话在不在侧栏（工作区）里：手机上没有指着才出现的按钮，在这里放进、移出 */}
+					{r.project && r.session && (
+						<Button
+							variant="ghost"
+							size="icon"
+							className="text-muted-foreground"
+							onClick={() => change(inWorkspace(r.session as string) ? { op: "remove", project: r.project as string, session: r.session as string } : { op: "add", project: r.project as string, path: p?.path ?? null, session: r.session as string })}
+							aria-label={inWorkspace(r.session) ? "移出工作区" : "放进工作区"}
+							title={inWorkspace(r.session) ? "移出工作区" : "放进工作区"}
+						>
+							{inWorkspace(r.session) ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+						</Button>
+					)}
 					{r.session && (
 						<ToggleGroup type="single" size="sm" value={panelOf(r, wide) ?? ""} onValueChange={(v) => go({ panel: (v || "none") as Route["panel"] })}>
 							{PANELS.map(({ v, label }) => {

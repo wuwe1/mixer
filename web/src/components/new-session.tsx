@@ -9,14 +9,14 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { api, type Dirs, type ProjectTree, type Run } from "@/lib/api";
+import { api, type Dirs, type Project, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
 import { ModelSelect, PermissionSelect } from "./conversation";
 
 const tilde = (p: string, home: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
 
 /** 按名字的子串筛（开头对上的排前面），不用 cmdk 默认的模糊匹配：打 repos 不该匹配到别的 */
-const match = (value: string, search: string) => {
+export const match = (value: string, search: string) => {
 	const v = value.toLowerCase();
 	const q = search.toLowerCase().trim();
 	return v.startsWith(q) ? 1 : v.includes(q) ? 0.5 : 0;
@@ -47,7 +47,7 @@ function Crumbs({ d, open }: { d: Dirs; open: (p: string) => void }) {
 	);
 }
 
-function Picker({ start, projects, pick }: { start: string | null; projects: ProjectTree[]; pick: (path: string) => void }) {
+function Picker({ start, projects, pick }: { start: string | null; projects: Project[]; pick: (path: string) => void }) {
 	const [d, setD] = useState<Dirs | null>(null);
 	const [q, setQ] = useState("");
 	const open = useCallback((path: string) => {
@@ -130,7 +130,7 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission, model: model || null });
 			follow(r);
 			setText("");
-			toast.success("已开始，会话建好后自动打开");
+			toast.success("已开始，建好后自动打开");
 			onStarted?.();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -160,10 +160,16 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 }
 
 export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-	const { tree } = useLive();
 	const [cwd, setCwd] = useState<string | null>(null);
 	const [last, setLast] = useState<string | null>(null);
-	useEffect(() => { if (open) { setCwd(null); setLast(null); } }, [open]);
+	// 最近的项目：有会话记录的文件夹，按最近修改排（不用扫会话，快）
+	const [projects, setProjects] = useState<Project[]>([]);
+	useEffect(() => {
+		if (!open) return;
+		setCwd(null);
+		setLast(null);
+		api<Project[]>("/api/projects").then(setProjects, () => {});
+	}, [open]);
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="top-[max(1rem,env(safe-area-inset-top))] translate-y-0 gap-4 sm:top-[12vh] sm:max-w-lg">
@@ -182,7 +188,7 @@ export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange
 						<StartBox target={{ cwd }} autoFocus onStarted={() => onOpenChange(false)} />
 					</div>
 				) : (
-					<Picker start={last} projects={tree ?? []} pick={setCwd} />
+					<Picker start={last} projects={projects} pick={setCwd} />
 				)}
 			</DialogContent>
 		</Dialog>

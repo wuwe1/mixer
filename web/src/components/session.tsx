@@ -13,7 +13,7 @@ import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { Changes } from "./changes";
-import { Composer, Conversation, tree, useStream, walk } from "./conversation";
+import { Composer, Conversation, type Reveal, tree, useStream, walk } from "./conversation";
 import { Files } from "./files";
 import { edited } from "./message";
 
@@ -47,14 +47,23 @@ function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject
 		const el = scroller.current;
 		const inner = content.current;
 		if (!el || !inner) return;
+		// 看得见的区域下面还有多高：只有它变高了才算有新内容（往上接更早的对话不算）
+		const below = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+		let last = below();
 		const onScroll = () => {
-			const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+			last = below();
+			const near = last < 48;
 			stick.current = near;
 			setAway(!near);
 			if (near) setUnseen(false);
 		};
 		const follow = () => { if (stick.current && !touching.current) el.scrollTop = el.scrollHeight; };
-		const grown = new ResizeObserver(() => (stick.current ? follow() : setUnseen(true)));
+		const grown = new ResizeObserver(() => {
+			if (stick.current) return follow();
+			const b = below();
+			if (b > last + 1) setUnseen(true);
+			last = b;
+		});
 		// 输入框变高、键盘弹起，看得见的区域变小了：贴着的也要跟着
 		const resized = new ResizeObserver(follow);
 		grown.observe(inner);
@@ -77,17 +86,34 @@ function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject
 	return { away, unseen, toBottom };
 }
 
+/** 拉回来的是增量：改过的节点按 uuid 换掉，新的接在后面；没变的原样留着（消息组件按对象认，不用重画） */
+function merge(old: Session | null, d: Session): Session {
+	if (!d.delta || !old) return d;
+	if (!d.nodes.length) return { ...d, nodes: old.nodes };
+	const at = new Map(old.nodes.map((n, i) => [n.uuid, i]));
+	const nodes = old.nodes.slice();
+	for (const n of d.nodes) {
+		const i = at.get(n.uuid);
+		if (i === undefined) nodes.push(n);
+		else nodes[i] = n;
+	}
+	return { ...d, nodes };
+}
+
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
 	const { status, queue, runs } = useLive();
 	const wide = useWide();
 	const [data, setData] = useState<Session | null>(null);
+	const cur = useRef<Session | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
 	const { away, unseen, toBottom } = useStick(scroller, content);
+	const [reveal, setReveal] = useState<Reveal | null>(null);
 	const first = useRef(true);
 
-	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）
+	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）。
+	// 拿到过就只要之后变了的
 	const pulling = useRef<{ key: string; again: boolean } | null>(null);
 	const load = useCallback(() => {
 		const key = `${project}/${session}`;
@@ -99,20 +125,30 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			pulling.current = null;
 			if (p.again) load();
 		};
-		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}`).then(
-			(d) => { if (pulling.current?.key === key) { setData(d); setError(null); } done(); },
+		const since = cur.current ? `?since=${enc(cur.current.version)}` : "";
+		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}${since}`).then(
+			(d) => {
+				if (pulling.current?.key === key) {
+					cur.current = merge(cur.current, d);
+					setData(cur.current);
+					setError(null);
+				}
+				done();
+			},
 			(e: Error) => { if (pulling.current?.key === key) setError(e.message); done(); },
 		);
 	}, [project, session]);
-	useEffect(() => { setData(null); setError(null); first.current = true; load(); }, [load]);
+	useEffect(() => { cur.current = null; setData(null); setError(null); first.current = true; load(); }, [load]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
 	useEvent("reconnect", load);
 
 	const stream = useStream(session);
-	const t = useMemo(() => (data ? tree(data.nodes) : null), [data]);
+	const nodes = data?.nodes;
+	const t = useMemo(() => (nodes ? tree(nodes) : null), [nodes]);
 	const w = useMemo(() => (t ? walk(t, r.leaf) : null), [t, r.leaf]);
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
 	const st = status(meta ?? data?.meta ?? { id: session, active: false, unread: null });
+	const codex = (meta ?? data?.meta)?.agent === "codex";
 
 	// 开着的会话跑完了（页面在前台）：算看过了
 	useEffect(() => {
@@ -143,25 +179,25 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const rel = useCallback((abs: string) => (root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null), [root]);
 	const touched = useMemo(() => {
 		const set = new Set<string>();
-		for (const n of data?.nodes ?? []) {
+		for (const n of nodes ?? []) {
 			const p = n.k === "tool" ? edited(n as ToolNode) : null;
 			const r2 = p ? rel(p) : null;
 			if (r2) set.add(r2);
 		}
 		return [...set];
-	}, [data, rel]);
-	const onFile = (abs: string, diff: boolean) => {
+	}, [nodes, rel]);
+	const onFile = useCallback((abs: string, diff: boolean) => {
 		const p = rel(abs);
 		if (!p) return void toast(`不在这个项目里：${abs}`);
 		go({ panel: "files", file: p, view: diff ? "diff" : null });
-	};
+	}, [rel]);
 
 	if (error) return <p className="p-6 text-sm text-destructive">{error}</p>;
 	const panel = panelOf(r, wide);
 	const prompts = w?.path.filter((n): n is Extract<Node, { k: "user" }> => n.k === "user") ?? [];
 	const jump = (uuid: string) => {
 		if (!wide) go({ panel: "none" });
-		requestAnimationFrame(() => document.getElementById(`n-${uuid}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+		setReveal({ uuid, at: Date.now() });
 	};
 
 	const body =
@@ -191,7 +227,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
 							{t && w ? (
-								<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} />
+								<Conversation key={session} project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} readOnly={codex} />
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
 							)}
@@ -204,7 +240,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} />}
+				{codex ? (
+					<p className="border-t px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-center text-xs text-muted-foreground">Codex 的会话现在只能在这里看；继续、分叉要回到 Codex 里</p>
+				) : (
+					w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} />
+				)}
 			</div>
 
 			{wide && panel && (

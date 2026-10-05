@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { App } from "./app";
+import { Gate } from "./components/login";
 import { LiveProvider } from "./lib/live";
 import "./index.css";
 
@@ -15,9 +16,11 @@ theme();
 createRoot(document.getElementById("root") as HTMLElement).render(
 	<StrictMode>
 		<TooltipProvider>
-			<LiveProvider>
-				<App />
-			</LiveProvider>
+			<Gate>
+				<LiveProvider>
+					<App />
+				</LiveProvider>
+			</Gate>
 			<Toaster position="top-center" />
 		</TooltipProvider>
 	</StrictMode>,

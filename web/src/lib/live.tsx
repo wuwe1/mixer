@@ -1,15 +1,22 @@
-// 整个页面共用的实时状态：所有项目和会话（侧栏）、mixer 里的运行、等人确认的请求、排着队的话。
+// 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话。
 // 会话的「状态」由这三样合起来算：等你确认 > 在跑 > 跑完了没看 / 出错了 > 终端里开着。
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type Approval, type ProjectTree, type Queued, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type Group, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
 
 export type Status = "waiting" | "running" | "done" | "error" | "terminal" | null;
 
+/** 工作区的改动：放进来（不给 session 就只放文件夹）、移出去（不给 session 就是整个文件夹）、文件夹的新顺序 */
+export type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
+
 type Live = {
-	tree: ProjectTree[] | null;
+	workspace: Group[] | null;
+	/** 这个会话在不在工作区里 */
+	inWorkspace: (session: string) => boolean;
+	/** 改工作区：先改本地（拖完马上就是新顺序），再告诉服务端；失败了重新拉 */
+	change: (op: WorkspaceOp) => Promise<void>;
 	runs: Run[];
 	approvals: Approval[];
 	queue: Queued[];
@@ -28,7 +35,7 @@ export const useLive = () => {
 };
 
 export function LiveProvider({ children }: { children: ReactNode }) {
-	const [tree, setTree] = useState<ProjectTree[] | null>(null);
+	const [workspace, setWorkspace] = useState<Group[] | null>(null);
 	const [runs, setRuns] = useState<Run[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
@@ -36,30 +43,31 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
 	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const loadTree = useCallback(() => {
+	const loadWorkspace = useCallback(() => {
 		if (timer.current) return;
 		timer.current = setTimeout(() => {
 			timer.current = null;
-			api<ProjectTree[]>("/api/tree").then(setTree, () => {});
+			api<Group[]>("/api/workspace").then(setWorkspace, () => {});
 		}, 1500);
 	}, []);
 	const loadAll = useCallback(() => {
-		api<ProjectTree[]>("/api/tree").then(setTree, () => setTree((t) => t ?? []));
+		api<Group[]>("/api/workspace").then(setWorkspace, () => setWorkspace((w) => w ?? []));
 		api<Run[]>("/api/runs").then(setRuns, () => {});
 		api<Approval[]>("/api/approvals").then(setApprovals, () => {});
 		api<Queued[]>("/api/queue").then(setQueue, () => {});
 	}, []);
 	useEffect(loadAll, [loadAll]);
 	useEvent("reconnect", loadAll);
-	useEvent("session", loadTree);
+	useEvent("session", loadWorkspace);
 	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
 	useEffect(() => {
-		const left = (tree ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());
+		const left = (workspace ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());
 		if (!left.length) return;
-		const t = setTimeout(loadTree, Math.max(0, Math.min(...left)) + 1000);
+		const t = setTimeout(loadWorkspace, Math.max(0, Math.min(...left)) + 1000);
 		return () => clearTimeout(t);
-	}, [tree, loadTree]);
-	useEvent("state", loadTree);
+	}, [workspace, loadWorkspace]);
+	useEvent("state", loadWorkspace);
+	useEvent("workspace", useCallback(() => { api<Group[]>("/api/workspace").then(setWorkspace, () => {}); }, []));
 
 	useEvent("run", useCallback((r: Run) => {
 		setRuns((rs) => [r, ...rs.filter((x) => x.id !== r.id)].sort((a, b) => b.started.localeCompare(a.started)));
@@ -68,8 +76,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			following.current.delete(r.id);
 			openSession(r.project, r.session);
 		}
-		if (r.status !== "running") loadTree();
-	}, [loadTree]));
+		if (r.status !== "running") loadWorkspace();
+	}, [loadWorkspace]));
 	useEvent("approval", useCallback((a: Approval) => {
 		setApprovals((l) => [...l.filter((x) => x.id !== a.id), a]);
 		navigator.vibrate?.(80);
@@ -91,8 +99,19 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			if (run.session && run.mode !== "resume") openSession(run.project, run.session);
 			else following.current.add(run.id);
 		};
-		return { tree, runs, approvals, queue, status, follow, reload: loadAll };
-	}, [tree, runs, approvals, queue, loadAll]);
+		const ids = new Set((workspace ?? []).flatMap((g) => g.sessions.map((s) => s.id)));
+		const change = async (op: WorkspaceOp) => {
+			if (op.op === "order") setWorkspace((w) => w && op.order.flatMap((id) => w.filter((g) => g.id === id)));
+			if (op.op === "remove") setWorkspace((w) => w && (op.session ? w.map((g) => (g.id === op.project ? { ...g, sessions: g.sessions.filter((s) => s.id !== op.session) } : g)) : w.filter((g) => g.id !== op.project)));
+			try {
+				await api("/api/workspace", op);
+			} catch (e) {
+				toast.error(e instanceof Error ? e.message : String(e));
+				loadAll();
+			}
+		};
+		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, status, follow, reload: loadAll };
+	}, [workspace, runs, approvals, queue, loadAll]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

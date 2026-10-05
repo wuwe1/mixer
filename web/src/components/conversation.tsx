@@ -4,7 +4,7 @@
 // Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
 // 从中间分叉：每条回复、每组工具调用的「⋯」→ 从这里分叉；每条你的消息的「⋯」→ 编辑并分叉。
 import { Bot, ChevronDown, ChevronLeft, ChevronRight, Clock, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, X } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -23,10 +23,11 @@ import { type Block as LiveBlock, emptyTail, step, type Tail } from "@/lib/tail"
 import { clock } from "@/lib/time";
 import { ApprovalCard } from "./approvals";
 import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
+import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
 import { StatusIcon } from "./side";
 import { SkillButton, SkillPicker, withSkill } from "./skills";
-import { AssistantMessage, Elapsed, EventLine, Steps, UserMessage } from "./message";
+import { AssistantMessage, Elapsed, EventLine, Steps, stable, UserMessage } from "./message";
 
 export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
 export type Walk = ReturnType<typeof walk>;
@@ -61,7 +62,8 @@ export function walk(t: Tree, leaf: string | null) {
 	const latest = roots.map((r) => t.best.get(r.uuid) ?? r).sort((a, b) => b.ts.localeCompare(a.ts))[0];
 	const end = (leaf ? t.byId.get(leaf) : undefined) ?? latest;
 	const path: Node[] = [];
-	for (let n: Node | undefined = end; n; n = n.parent ? t.byId.get(n.parent) : undefined) path.unshift(n);
+	for (let n: Node | undefined = end; n; n = n.parent ? t.byId.get(n.parent) : undefined) path.push(n);
+	path.reverse();
 	const versions = new Map<string, { options: Node[]; index: number }>();
 	for (const n of path) {
 		const siblings = t.kids.get(n.parent && t.byId.has(n.parent) ? n.parent : null) ?? [];
@@ -83,6 +85,19 @@ export function blocks(path: Node[]): Block[] {
 	return out;
 }
 
+/** 接上正在写的那几段：只换最后一块，前面的块原样留着（消息组件是 memo 的，每来一个字不用全部重画） */
+function append(bs: Block[], live: Node[]): Block[] {
+	if (!live.length) return bs;
+	const out = bs.slice();
+	for (const n of live) {
+		const last = out[out.length - 1];
+		if (n.k !== "tool" && n.k !== "thinking") out.push({ kind: "one", n });
+		else if (last?.kind === "steps") out[out.length - 1] = { kind: "steps", nodes: [...last.nodes, n] };
+		else out.push({ kind: "steps", nodes: [n] });
+	}
+	return out;
+}
+
 /**
  * 分叉点要的是一条记录的 uuid，新会话只带到它为止的上下文。
  * 工具调用要用它结果那条记录：用调用本身，命令行带过去的上下文里就没有结果
@@ -96,6 +111,90 @@ function forkPoint(path: Node[], before?: Node): string | null {
 }
 
 type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
+
+/** 跳到这条（目录里点的）；at 让同一条点两次也算 */
+export type Reveal = { uuid: string; at: number };
+
+const STEP = 60;
+const headOf = (b: Block) => (b.kind === "one" ? b.n : b.nodes[0]);
+
+/**
+ * 长对话只画最后一段：一开始画最后 STEP 块，往上滚到离顶不远时再往前接一段，接上之后保持看到的位置不动。
+ * 起点只往前挪、不往后：新内容接在末尾时上面的不会被拿掉，往上翻着看的位置不跳。
+ * 目录里跳到还没画的那条：先从那里画起，再滚过去
+ */
+function useWindow(bs: Block[], scroller: RefObject<HTMLDivElement | null>, reveal: Reveal | null) {
+	const [start, setStart] = useState(() => Math.max(0, bs.length - STEP));
+	// 换了版本、路变短了：至少还画最后 STEP 块
+	const first = Math.min(start, Math.max(0, bs.length - STEP));
+	const firstRef = useRef(first);
+	firstRef.current = first;
+	/** 往前接之前离底部多远：接上之后照这个把位置放回去 */
+	const keep = useRef<number | null>(null);
+	useEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const check = () => {
+			if (firstRef.current === 0 || keep.current !== null || el.scrollTop > 1500) return;
+			keep.current = el.scrollHeight - el.scrollTop;
+			setStart(Math.max(0, firstRef.current - STEP));
+		};
+		el.addEventListener("scroll", check, { passive: true });
+		return () => el.removeEventListener("scroll", check);
+	}, [scroller]);
+	useLayoutEffect(() => {
+		const el = scroller.current;
+		if (keep.current === null || !el) return;
+		// 改 scrollTop 会再来一次 scroll：还离顶不远就接着往前接
+		el.scrollTop = el.scrollHeight - keep.current;
+		keep.current = null;
+	}, [first, scroller]);
+
+	const pending = useRef<string | null>(null);
+	const bsRef = useRef(bs);
+	bsRef.current = bs;
+	const scrollTo = (uuid: string) => requestAnimationFrame(() => document.getElementById(`n-${uuid}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+	useEffect(() => {
+		if (!reveal) return;
+		const i = bsRef.current.findIndex((b) => headOf(b).uuid === reveal.uuid);
+		if (i < 0 || i >= firstRef.current) return void scrollTo(reveal.uuid);
+		pending.current = reveal.uuid;
+		setStart(i);
+	}, [reveal]);
+	useLayoutEffect(() => {
+		const u = pending.current;
+		if (u && document.getElementById(`n-${u}`)) {
+			pending.current = null;
+			scrollTo(u);
+		}
+	});
+	return first;
+}
+
+/**
+ * 每一块的 React key：正在写的那几段换成记录里的时，key 不变，不重新挂载（点开的不收起，往上翻着看的位置不跳）。
+ *   回复、思考、工具：「消息 id : 第几段」（stable）
+ *   一组工具调用：跟着前面那一块认。组里第一段可能会变：不给看的空思考，后面来了别的段就不显示了
+ *   你发的那条：记录里出现之前是 live:user:<运行>，出现之后记录里那条沿用这个 key
+ */
+function useIds(bs: Block[], run: Run | null, path: Node[]) {
+	/** 记录里那条的 uuid → 它写进去之前用的 key */
+	const alias = useRef(new Map<string, string>());
+	/** 画过「还没写进记录」的那条的运行 */
+	const drawn = useRef<string | null>(null);
+	const live = liveUser(run);
+	if (run && live && bs.some((b) => b.kind === "one" && b.n.uuid === live)) drawn.current = run.id;
+	else if (run && live && drawn.current === run.id) {
+		const got = sentNode(run, path);
+		if (got) alias.current.set(got.uuid, live);
+	}
+	const ids: string[] = [];
+	for (const b of bs) {
+		const prev = ids[ids.length - 1];
+		ids.push(b.kind === "steps" ? `steps:${prev ?? ""}` : b.n.k === "user" ? (alias.current.get(b.n.uuid) ?? b.n.uuid) : stable(b.n));
+	}
+	return ids;
+}
 
 type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
 
@@ -131,9 +230,9 @@ function OptionMenu({ title, options, value, onChange, text }: { title: string; 
 
 // auto：Claude Code 的自动模式，由它判断，一般操作直接放行，有风险的才请求确认。「Accept edits」被它盖住了，不再单列
 const PERMISSIONS: Option[] = [
-	{ v: "auto", icon: Sparkles, label: "自动", desc: "读写文件、运行命令直接执行，Claude 判断有风险的才请求确认" },
-	{ v: "default", icon: Hand, label: "每次询问", desc: "修改文件、运行命令前都请求确认（只读命令除外）" },
-	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先写出计划" },
+	{ v: "auto", icon: Sparkles, label: "自动", desc: "直接执行，有风险的才请求确认" },
+	{ v: "default", icon: Hand, label: "每次询问", desc: "改文件、跑命令前都请求确认" },
+	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先出计划" },
 ];
 
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -146,7 +245,7 @@ export function PermissionSelect({ value, onChange }: { value: string; onChange:
  */
 export function ModelSelect({ value, onChange, current }: { value: string; onChange: (v: string) => void; current?: string | null }) {
 	const options: Option[] = [
-		{ v: "", icon: Bot, label: "默认", desc: "Claude Code 里设的默认模型" },
+		{ v: "", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
 		...MODELS.map((m) => ({ v: m.v as string, icon: Bot, label: m.label, desc: current && family(current) === m.v ? `现在用的是 ${pretty(current)}` : `最新的 ${m.label}` })),
 	];
 	const full = current && (!value || family(current) === value) ? pretty(current) : value ? pretty(value) : "默认";
@@ -159,13 +258,18 @@ export function ModelSelect({ value, onChange, current }: { value: string; onCha
 	return <OptionMenu title="模型" options={options} value={value} onChange={onChange} text={text} />;
 }
 
-export function Conversation({ project, session, w, t, onFile, chosen, stream, status }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status }) {
+/** readOnly：只能看（Codex 的会话），不给分叉 */
+export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, readOnly }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; readOnly?: boolean }) {
 	const { approvals, runs } = useLive();
 	const [agent, setAgent] = useState<Agent | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
 	// 看的是最新处：正在写的接在末尾
-	const live = w.atLatest ? liveNodes(stream, w.path) : [];
-	const bs = blocks([...w.path, ...live]);
+	const keys = useMemo(() => new Set(w.path.flatMap((n) => ("key" in n && n.key ? [n.key] : []))), [w.path]);
+	const live = w.atLatest ? liveNodes(stream, w.path, keys) : [];
+	const written = useMemo(() => blocks(w.path), [w.path]);
+	const bs = append(written, live);
+	const first = useWindow(bs, scroller, reveal);
+	const ids = useIds(bs, stream.run, w.path);
 	// 还在跑（mixer 里、或者终端里开着）：最后一组里还没结果的工具、正在写的那一步，带上 ping 点和耗时
 	const busy = status === "running" || status === "waiting" || status === "terminal";
 	const tail = bs[bs.length - 1];
@@ -185,31 +289,44 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 		if (prev && m !== prev) switched.set((b.kind === "one" ? b.n : b.nodes[0]).uuid, m);
 		prev = m;
 	}
+	// 每条回复用了多久：从这一轮开头（你的消息，或者后台任务的通知把 Claude 叫起来）算起
+	const spent = new Map<string, number>();
+	let turn: number | null = null;
+	for (const b of bs) {
+		for (const n of b.kind === "one" ? [b.n] : b.nodes) {
+			if (n.k === "user" || (n.k === "event" && n.kind === "task")) turn = Date.parse(n.ts);
+			else if (n.k === "assistant" && turn !== null && !isLive(n)) spent.set(n.uuid, Date.parse(n.ts) - turn);
+		}
+	}
 	const mine = approvals.filter((a) => runs.some((r) => r.id === a.run && r.session === session));
 
-	const openAgent = async (id: string) => {
+	const openAgent = useCallback(async (id: string) => {
 		try {
 			setAgent(await api<Agent>(`/api/sessions/${enc(project)}/${enc(session)}/agents/${id}`));
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
 		}
-	};
+	}, [project, session]);
+	// 不变的回调：消息组件是 memo 的
+	const forkEdit = useCallback((n: User) => setFork({ kind: "edit", n }), []);
+	const forkReply = useCallback((n: Node) => setFork({ kind: "at", at: n.uuid, what: "这条回复" }), []);
+	const forkSteps = useCallback((ns: Node[]) => setFork({ kind: "at", at: pointOf(ns[ns.length - 1]), what: "这几步工具调用" }), []);
 
 	return (
 		<>
-			{bs.map((b) => {
-				const head = b.kind === "one" ? b.n : b.nodes[0];
+			{(first ? bs.slice(first) : bs).map((b, i) => {
+				const head = headOf(b);
 				const v = w.versions.get(head.uuid);
 				return (
-					<div key={head.uuid} className="flex flex-col gap-2">
+					<div key={ids[first + i]} className="flex flex-col gap-2">
 						{v && <VersionSwitch v={v} best={t.best} />}
 						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
 						{b.kind === "steps" ? (
-							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : (ns) => setFork({ kind: "at", at: pointOf(ns[ns.length - 1]), what: "这几步工具调用" })} />
+							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={readOnly || b.nodes.some(isLive) ? undefined : forkSteps} />
 						) : b.n.k === "user" ? (
-							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : (n) => setFork({ kind: "edit", n })} />
+							<UserMessage n={b.n} project={project} session={session} onFork={readOnly || isLive(b.n) ? undefined : forkEdit} />
 						) : b.n.k === "assistant" ? (
-							<AssistantMessage n={b.n} onFork={isLive(b.n) ? undefined : (n) => setFork({ kind: "at", at: n.uuid, what: "这条回复" })} />
+							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={readOnly || isLive(b.n) ? undefined : forkReply} />
 						) : b.n.k === "event" ? (
 							<EventLine n={b.n} onAgent={openAgent} />
 						) : null}
@@ -271,16 +388,16 @@ async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
 	const r = await api<Run | { queued: Queued }>("/api/runs", body);
 	if ("queued" in r) return r;
 	if (body.mode === "fork") {
-		toast.success("正在分叉，新会话建好后自动打开");
+		toast.success("正在分叉，建好后自动打开");
 		follow(r);
 	}
 	return r;
 }
 
-/** 为什么只能分叉；能接着说就是 null */
-function noContinue(w: Walk, status: Status): string | null {
-	if (!w.atLatest) return "你在看旧版本：发送后会从这里分叉出新会话";
-	if (status === "terminal") return "这个会话在终端中打开：发送后会分叉出新会话";
+/** 为什么只能分叉（输入框里写的那句）；能继续就是 null */
+function noContinue(w: Walk, status: Status): { reason: string; hint: string } | null {
+	if (!w.atLatest) return { reason: "在看旧版本", hint: "在看旧版本，发送后从这里分叉" };
+	if (status === "terminal") return { reason: "终端中打开", hint: "终端中打开着，发送后分叉" };
 	return null;
 }
 
@@ -300,7 +417,7 @@ function RunStatus({ run, stream, waiting, path }: { run: Run; stream: Stream; w
 		<span className="flex min-w-0 shrink items-center gap-1 text-2xs text-muted-foreground">
 			<span className="hidden min-w-0 truncate md:inline">运行中 · {doing} ·</span>
 			<Elapsed since={Date.parse(run.started)} className="shrink-0" />
-			<Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止这次运行">
+			<Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止运行">
 				<Square className="size-3 fill-current" />
 			</Button>
 		</span>
@@ -361,7 +478,7 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 		} catch (e) {
 			// 连不上（断网、服务在重启）浏览器只给一句英文
 			const m = e instanceof TypeError ? "连不上 mixer" : e instanceof Error ? e.message : String(e);
-			toast.error(`没发出去：${m}。消息还在输入框里`);
+			toast.error(`没发出去：${m}，消息还在输入框里`);
 		} finally {
 			setBusy(false);
 		}
@@ -383,7 +500,7 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 						const s = toShots(e.clipboardData.files);
 						if (s.length) { e.preventDefault(); setShots((x) => [...x, ...s]); }
 					}}
-					placeholder={why ?? (mode === "fork" ? "分叉出新会话，从最新处继续……" : busyRun ? "Claude 正在运行：发送后排队，运行结束后发出……" : "继续……")}
+					placeholder={why?.hint ?? (mode === "fork" ? "分叉出新会话…" : busyRun ? "运行中，发送后排队…" : "继续…")}
 					className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 				/>
 				<div className="flex items-center gap-1.5">
@@ -392,8 +509,8 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 						value={mode}
 						onChange={(v) => setMode(v as "resume" | "fork")}
 						options={[
-							{ v: "resume", icon: MessageSquareText, label: "继续", desc: why ? `现在不可用：${why.split("：")[0]}` : busyRun ? "Claude 正在运行：先排队，本次运行结束后发送" : "在这个会话的最新处继续", disabled: !!why },
-							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开一个新会话，带着到最新处为止的对话；原会话不变" : "开一个新会话，带着到你正在看的地方为止的对话；原会话不变" },
+							{ v: "resume", icon: MessageSquareText, label: "继续", desc: why ? `不可用：${why.reason}` : busyRun ? "运行中，先排队，结束后发出" : "接着这个会话", disabled: !!why },
+							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开新会话，带上到最新处的对话，原会话不变" : "开新会话，带上到你正在看的地方的对话，原会话不变" },
 						]}
 					/>
 					<PermissionSelect value={permission} onChange={setPermission} />
@@ -455,7 +572,7 @@ function ForkDialog({ project, session, w, chosen, target, onClose }: { project:
 						{target?.kind === "edit" ? "编辑并分叉" : "从这里分叉"}
 					</DialogTitle>
 					<DialogDescription>
-						{target?.kind === "edit" ? "带着这条消息之前的对话开一个新会话，这条换成下面的内容。" : `带着到${target?.what ?? "这里"}为止的对话开一个新会话，接着发送下面的内容。`}原会话不变。
+						{target?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${target?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
 					</DialogDescription>
 				</DialogHeader>
 				<Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} className="min-h-32" autoFocus />
@@ -474,7 +591,7 @@ function ForkDialog({ project, session, w, chosen, target, onClose }: { project:
 	);
 }
 
-/** 这个会话排着队的话：这次跑完一起发。可以撤回，也可以停下当前的马上发 */
+/** 这个会话排着队的消息：这次运行结束后一起发出。每条可以取消；也可以停下这次运行马上发 */
 function QueuedMessages({ session }: { session: string }) {
 	const { queue, runs } = useLive();
 	const mine = queue.filter((q) => q.session === session);
@@ -483,24 +600,26 @@ function QueuedMessages({ session }: { session: string }) {
 	return (
 		<div className="flex flex-col items-end gap-2">
 			{mine.map((q) => (
-				<div key={q.id} className="group flex max-w-[88%] flex-col items-end gap-1">
-					<div className="rounded-2xl rounded-br-md border border-dashed bg-secondary/50 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">{q.prompt}{q.images > 0 && <span className="block text-xs text-muted-foreground">带 {q.images} 张图片</span>}</div>
+				<div key={q.id} className="flex max-w-[88%] flex-col items-end gap-1.5">
+					<div className="rounded-2xl rounded-br-md border border-dashed bg-secondary/50 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">
+						{q.prompt}
+						{q.images > 0 && <Images className={q.prompt.trim() ? "mt-2" : undefined} srcs={Array.from({ length: q.images }, (_, i) => `/api/queue/${q.id}/image/${i}`)} />}
+					</div>
 					<div className="flex items-center gap-1 px-1 text-2xs text-muted-foreground">
 						<Clock className="size-3" />
-						<span>排队中，本次运行结束后发送</span>
-						<Button variant="ghost" size="xs" className="px-1.5 text-2xs" onClick={() => api(`/api/queue/${q.id}/cancel`, {}).catch(() => {})}>
-							<X className="size-3" />
-							取消
+						<span>排队中</span>
+						<Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => api(`/api/queue/${q.id}/cancel`, {}).catch(() => {})} aria-label="取消" title="取消">
+							<X className="size-3.5" />
 						</Button>
-						{run && (
-							<Button variant="ghost" size="xs" className="px-1.5 text-2xs" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})}>
-								<Square className="size-3" />
-								中断并发送
-							</Button>
-						)}
 					</div>
 				</div>
 			))}
+			{run && (
+				<Button variant="ghost" size="xs" className="text-2xs text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} title="停止这次运行，排队的消息马上发出">
+					<Square className="size-3" />
+					停止并发送
+				</Button>
+			)}
 		</div>
 	);
 }
@@ -520,7 +639,16 @@ export function useStream(session: string): Stream {
 	const cur = useRef<Tail>(tail);
 	/** 正在拿快照：这期间推来的事件先攒着，快照到了接在后面 */
 	const buffer = useRef<{ seq: number; event: unknown }[] | null>(null);
-	const put = (t: Tail) => { cur.current = t; setTail(t); };
+	// 一帧里常来好几段：只记下最新的，每帧最多画一次（页面在后台时不画，回来再画最新的）
+	const frame = useRef<number | null>(null);
+	const put = (t: Tail) => {
+		cur.current = t;
+		frame.current ??= requestAnimationFrame(() => {
+			frame.current = null;
+			setTail(cur.current);
+		});
+	};
+	useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
 	const sync = useCallback(() => {
 		if (!id) return;
 		buffer.current = [];
@@ -562,14 +690,10 @@ function liveSummary(json: string) {
  * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
  * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
  */
-function liveNodes(stream: Stream, path: Node[]): Node[] {
-	const keys = new Set(path.flatMap((n) => ("key" in n && n.key ? [n.key] : [])));
+function liveNodes(stream: Stream, path: Node[], keys: Set<string>): Node[] {
 	const ts = new Date().toISOString();
 	const r = stream.run;
-	const asked = r?.prompt.trim();
-	// 这次运行开始之后（给一分钟时钟误差）记录里有同样的一句，就是它已经写进去了
-	const written = !r || !asked || path.some((n) => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
-	const mine: Node[] = written ? [] : [{ k: "user", uuid: "live:user", parent: null, ts: r.started, text: r.prompt, images: 0 }];
+	const mine: Node[] = !r || !r.prompt.trim() || sentNode(r, path) ? [] : [{ k: "user", uuid: liveUser(r) as string, parent: null, ts: r.started, text: r.prompt, images: 0 }];
 	const blocks = stream.blocks.filter((b) => !keys.has(b.key));
 	return [
 		...mine,
@@ -583,3 +707,10 @@ function liveNodes(stream: Stream, path: Node[]): Node[] {
 	];
 }
 const isLive = (n: Node) => n.uuid.startsWith("live:");
+const liveUser = (r: Run | null) => (r ? `live:user:${r.id}` : null);
+/** 这次运行你发的那条已经写进记录了：运行开始之后（给一分钟时钟误差）记录里有同样的一句 */
+function sentNode(r: Run | null, path: Node[]) {
+	const asked = r?.prompt.trim();
+	if (!r || !asked) return undefined;
+	return path.find((n): n is User => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
+}

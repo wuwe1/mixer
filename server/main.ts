@@ -1,19 +1,25 @@
-// mixer 的服务：127.0.0.1:4848（MIXER_PORT 可改），手机经 Cloudflare 隧道访问（前面必须有 Access，这个服务能在本机跑 claude）。
+// mixer 的服务：127.0.0.1:4848（MIXER_PORT 可改），手机经隧道访问：Cloudflare Tunnel + Access，或 Tailscale Funnel + passkey（access.ts 认人，这个服务能在本机跑 claude）。
 //   读：项目、会话（显示节点树）、子 agent、工具的完整结果、会话里的图片；仓库的文件、内容、git 状态、改动、提交
 //   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹
 //   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化
+// 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
 // 写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）；MCP 工具发来的确认请求要带 MIXER_TOKEN。
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, sep } from "node:path";
-import { gzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { brotliCompress, constants, gzip, gzipSync } from "node:zlib";
+import * as access from "./access.ts";
+import * as codex from "./codex.ts";
 import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session, tree } from "./sessions.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session, toolDetail, tree } from "./sessions.ts";
 import * as state from "./state.ts";
+import * as tunnel from "./tunnel.ts";
+import * as workspace from "./workspace.ts";
 
 const PORT = Number(process.env.MIXER_PORT ?? 4848);
 const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
@@ -34,10 +40,9 @@ const TYPES: Record<string, string> = {
 };
 
 /** JSON；大于 8KB 且对方收 gzip 就压缩（会话一个就一两 MB，手机上省流量） */
-let current: IncomingMessage | null = null;
 const json = (res: ServerResponse, status: number, v: unknown) => {
 	const buf = Buffer.from(JSON.stringify(v));
-	const gz = buf.length > 8192 && /\bgzip\b/.test(String(current?.headers["accept-encoding"] ?? ""));
+	const gz = buf.length > 8192 && /\bgzip\b/.test(String(res.req?.headers["accept-encoding"] ?? ""));
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...(gz ? { "content-encoding": "gzip" } : {}) });
 	res.end(gz ? gzipSync(buf) : buf);
 };
@@ -63,6 +68,19 @@ const projectPath = (id: string) => {
 	return p.path;
 };
 
+// 打包出来的文件（文件名带 hash，不会变）：第一次有人要时压好 br 和 gzip 存着。主包 700 多 KB，压完两百来 KB
+const PACK = new Set([".js", ".css", ".svg", ".json", ".html"]);
+const packed = new Map<string, Promise<{ br: Buffer; gzip: Buffer }>>();
+const pack = (f: string) => {
+	let p = packed.get(f);
+	if (!p) {
+		const raw = readFileSync(f);
+		p = Promise.all([promisify(brotliCompress)(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }), promisify(gzip)(raw, { level: 9 })]).then(([br, gz]) => ({ br, gzip: gz }));
+		packed.set(f, p);
+	}
+	return p;
+};
+
 // SSE
 const clients = new Set<ServerResponse>();
 const emit = (type: string, data: unknown) => { for (const c of clients) c.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); };
@@ -71,26 +89,43 @@ setInterval(() => { for (const c of clients) c.write(": keepalive\n\n"); }, 25_0
 
 // 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const changed = (project: string, id: string) => {
+	const key = `${project}/${id}`;
+	if (timers.has(key)) return;
+	timers.set(key, setTimeout(() => { timers.delete(key); emit("session", { project, id }); }, 500));
+};
 if (existsSync(PROJECTS)) {
 	watch(PROJECTS, { recursive: true }, (_, f) => {
 		const m = /^([^/]+)\/([0-9a-f-]{36})\.jsonl$/.exec(String(f ?? "").split(sep).join("/"));
-		if (!m) return;
-		const key = `${m[1]}/${m[2]}`;
-		if (timers.has(key)) return;
-		timers.set(key, setTimeout(() => { timers.delete(key); emit("session", { project: m[1], id: m[2] }); }, 500));
+		if (m) changed(m[1], m[2]);
+	});
+}
+// Codex 的会话：年/月/日/rollout-…-<id>.jsonl，项目按它的 cwd 算
+if (existsSync(codex.CODEX)) {
+	watch(codex.CODEX, { recursive: true }, (_, f) => {
+		const i = codex.fromPath(String(f ?? "").split(sep).join("/"));
+		if (i) changed(i.project, i.id);
 	});
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse, m: string[], url: URL) => unknown;
+const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 const GET: [RegExp, Handler][] = [
+	[/^\/api\/auth\/status$/, async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
+	[/^\/api\/auth\/seen$/, (req, res) => { if (!access.isLocal(req)) throw fail(403, "只能在本机看"); json(res, 200, access.seenAccess()); }],
 	[/^\/api\/health$/, (_q, res) => json(res, 200, { app: "mixer", pid: process.pid })],
 	[/^\/api\/projects$/, (_q, res) => json(res, 200, (projCache = { at: 0, list: [] }, projects()))],
 	[/^\/api\/tree$/, async (_q, res) => json(res, 200, await tree())],
+	[/^\/api\/workspace$/, async (_q, res) => json(res, 200, await workspace.view())],
 	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m) => json(res, 200, await session(m[1], m[2]))],
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m) => {
 		const a = await agent(m[1], m[2], m[3]);
 		return a ? json(res, 200, a) : json(res, 404, { error: "没有这个子 agent 的记录" });
+	}],
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/tool\/([\w-]+)$/, async (_q, res, m, url) => {
+		const d = await toolDetail(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
+		return d ? json(res, 200, d) : json(res, 404, { error: "没有这个工具调用" });
 	}],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/result\/([\w-]+)$/, async (_q, res, m, url) => {
 		const t = await fullResult(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
@@ -110,16 +145,38 @@ const GET: [RegExp, Handler][] = [
 	}],
 	[/^\/api\/repo\/([\w.-]+)\/status$/, (_q, res, m) => json(res, 200, repo.status(projectPath(m[1])))],
 	[/^\/api\/repo\/([\w.-]+)\/diff$/, (_q, res, m, url) => json(res, 200, { diff: repo.diff(projectPath(m[1]), url.searchParams.get("path") ?? "") })],
-	[/^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, (_q, res, m) => json(res, 200, { text: repo.commit(projectPath(m[1]), m[2]) })],
+	[/^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, (_q, res, m) => json(res, 200, repo.commit(projectPath(m[1]), m[2]))],
 	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
 	[/^\/api\/runs\/([\w-]+)\/tail$/, (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
+	[/^\/api\/limits$/, (_q, res) => json(res, 200, state.limits())],
 	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
+	[/^\/api\/queue\/([\w-]+)\/image\/(\d+)$/, (_q, res, m) => {
+		const img = runs.queuedImage(m[1], Number(m[2]));
+		if (!img) return void res.writeHead(404).end();
+		res.writeHead(200, { "content-type": img.media, "cache-control": "private, max-age=3600" }).end(Buffer.from(img.data, "base64"));
+	}],
 	[/^\/api\/dirs$/, (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
 	[/^\/api\/skills\/([\w.-]+)$/, (_q, res, m) => json(res, 200, skills.list(m[1], projectPath(m[1])))],
 ];
 const POST: [RegExp, Handler][] = [
+	// 登录：配对码建 passkey、passkey 登录。登录成功种 cookie
+	[/^\/api\/auth\/register\/options$/, async (req, res) => json(res, 200, await access.registerOptions(req, JSON.parse(await body(req)).code))],
+	[/^\/api\/auth\/register$/, async (req, res) => {
+		const b = JSON.parse(await body(req));
+		res.setHeader("set-cookie", await access.register(req, b.code, b.response));
+		json(res, 200, { ok: true });
+	}],
+	[/^\/api\/auth\/login\/options$/, async (req, res) => json(res, 200, await access.loginOptions(req))],
+	[/^\/api\/auth\/login$/, async (req, res) => {
+		const b = JSON.parse(await body(req));
+		res.setHeader("set-cookie", await access.login(req, b.id, b.response));
+		json(res, 200, { ok: true });
+	}],
+	[/^\/api\/auth\/logout$/, (_q, res) => { res.setHeader("set-cookie", access.logoutCookie); json(res, 200, { ok: true }); }],
+	// 新的配对码（加一台设备）：已经认出来的才能要，`pnpm mixer pair` 从本机来要
+	[/^\/api\/pair$/, (_q, res) => json(res, 200, access.pair())],
 	[/^\/api\/runs$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
@@ -130,6 +187,21 @@ const POST: [RegExp, Handler][] = [
 	[/^\/api\/dirs$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
 		json(res, 200, dirs.create(String(b.parent ?? ""), String(b.name ?? "").trim()));
+	}],
+	// 工作区：add（放进来；不给 session 就只放文件夹）/ remove（不给 session 就移掉整个文件夹）/ order（文件夹拖完的顺序）
+	[/^\/api\/workspace$/, async (req, res) => {
+		const b = JSON.parse(await body(req));
+		const id = (v: unknown) => (typeof v === "string" && /^[\w.-]+$/.test(v) ? v : null);
+		const project = id(b.project);
+		const session = id(b.session);
+		const changed =
+			b.op === "add" && project ? state.addToWorkspace(project, typeof b.path === "string" ? b.path : null, session)
+			: b.op === "remove" && project ? state.removeFromWorkspace(project, session)
+			: b.op === "order" && Array.isArray(b.order) ? state.orderWorkspace(b.order.flatMap((x: unknown) => id(x) ?? []))
+			: null;
+		if (changed === null) throw fail(400, "不认识的操作");
+		if (changed) emit("workspace", null);
+		json(res, 200, { ok: true });
 	}],
 	[/^\/api\/seen$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
@@ -145,24 +217,70 @@ const POST: [RegExp, Handler][] = [
 	}],
 ];
 
+/**
+ * 改了 mixer 自己的代码：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）再换上，免得打断正在跑的、丢了排着的。
+ *   服务端的代码（server/、mcp/、两边共用的 web/src/lib/tail.ts）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
+ *   检查没过不重启，等下次改；终端里 pnpm start 的退出了没人拉，只提示一句。
+ *   只改了页面：重新打包，刷新就是新的
+ */
+const LAUNCHD = process.env.XPC_SERVICE_NAME === "com.mixer.server";
+const dirty = { server: 0, web: 0 };
+let swapping = false;
+const CODE = /\.(tsx?|css|html)$/;
+const touched = (kind: keyof typeof dirty) => (_: unknown, f: string | Buffer | null) => { if (CODE.test(String(f ?? ""))) dirty[kind] = Date.now(); };
+watch(join(ROOT, "server"), { recursive: true }, touched("server"));
+watch(join(ROOT, "mcp"), { recursive: true }, touched("server"));
+watch(join(ROOT, "web", "index.html"), touched("web"));
+watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(String(f ?? "").split(sep).join("/") === "lib/tail.ts" ? "server" : "web")(e, f));
+const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
+setInterval(() => {
+	const last = Math.max(dirty.server, dirty.web);
+	if (swapping || !last || Date.now() - last < 3000 || !runs.idle()) return;
+	swapping = true;
+	if (dirty.server) {
+		const at = dirty.server;
+		execFile(join(ROOT, "node_modules", ".bin", "tsc"), ["--noEmit", "-p", "server"], { cwd: ROOT }, (err, out) => {
+			swapping = false;
+			// 检查的时候又改了、又有人开始跑了：下一轮再说
+			if (dirty.server !== at || !runs.idle()) return;
+			dirty.server = 0;
+			if (err) return say(`服务端代码改了，类型检查没过，先不重启：\n${out}`);
+			if (!LAUNCHD) return say("服务端代码改了：重启后生效");
+			say("服务端代码改了，现在空闲：重启");
+			process.exit(0);
+		});
+		return;
+	}
+	const at = dirty.web;
+	execFile(join(ROOT, "node_modules", ".bin", "vite"), ["build", "--logLevel", "warn"], { cwd: ROOT }, (err, _out, stderr) => {
+		swapping = false;
+		if (dirty.web === at) dirty.web = 0;
+		packed.clear();
+		say(err ? `页面改了，打包失败：\n${stderr}` : "页面改了：已重新打包");
+	});
+}, 5000).unref();
+
 build();
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;
-	current = req;
 	try {
+		// MCP 工具来的确认请求：只认 token，一直挂着等人点
+		if (req.method === "POST" && path === "/api/approvals") {
+			if (req.headers["x-mixer-token"] !== runs.TOKEN) return json(res, 403, { error: "token 不对" });
+			const b = JSON.parse(await body(req));
+			return json(res, 200, await runs.ask(String(b.run), String(b.tool), b.input));
+		}
+		// 接口要先认出是谁；登录用的那几个除外（一分钟限次数）
+		if (path.startsWith("/api/auth/")) {
+			if (req.method === "POST" && access.limited(req)) return json(res, 429, { error: "试得太频繁了，过一分钟再来" });
+		} else if (path.startsWith("/api/") && !(await access.who(req))) return json(res, 401, { error: "要先登录", login: true });
 		if (path === "/api/events") {
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 			res.write(": hi\n\n");
 			clients.add(res);
 			req.on("close", () => clients.delete(res));
 			return;
-		}
-		// MCP 工具来的确认请求：只认 token，一直挂着等人点
-		if (req.method === "POST" && path === "/api/approvals") {
-			if (req.headers["x-mixer-token"] !== runs.TOKEN) return json(res, 403, { error: "token 不对" });
-			const b = JSON.parse(await body(req));
-			return json(res, 200, await runs.ask(String(b.run), String(b.tool), b.input));
 		}
 		const table = req.method === "POST" ? POST : req.method === "GET" ? GET : [];
 		if (req.method === "POST" && (!req.headers["content-type"]?.startsWith("application/json") || !ours(req))) return json(res, 403, { error: "只收自己页面的 JSON" });
@@ -174,7 +292,11 @@ const server = createServer(async (req, res) => {
 		// 页面
 		const f = join(DIST, path);
 		if (path !== "/" && f.startsWith(DIST + sep) && existsSync(f) && statSync(f).isFile()) {
-			return void res.writeHead(200, { "content-type": TYPES[extname(f)] ?? "application/octet-stream", "cache-control": path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache" }).end(readFileSync(f));
+			const head = { "content-type": TYPES[extname(f)] ?? "application/octet-stream", "cache-control": path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache", vary: "accept-encoding" };
+			const accept = String(req.headers["accept-encoding"] ?? "");
+			const how = !path.startsWith("/assets/") || !PACK.has(extname(f)) ? null : /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
+			if (how) return void res.writeHead(200, { ...head, "content-encoding": how }).end((await pack(f))[how]);
+			return void res.writeHead(200, head).end(readFileSync(f));
 		}
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" }).end(readFileSync(join(DIST, "index.html")));
 	} catch (e) {
@@ -185,6 +307,7 @@ const server = createServer(async (req, res) => {
 });
 server.listen(PORT, "127.0.0.1", () => {
 	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
+	tunnel.keep(PORT);
 	// 先把所有会话扫一遍（第一次要读完所有记录，之后按修改时间缓存），侧栏第一次打开就快
 	tree().catch((e) => console.error(e));
 });

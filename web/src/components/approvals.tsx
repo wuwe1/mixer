@@ -68,10 +68,10 @@ export function ApprovalCard({ a, run, elsewhere, className }: { a: Approval; ru
 
 /** 别的会话的确认请求：浮在右下角；新来的发一条系统通知 */
 export function FloatingApprovals({ current }: { current: string | null }) {
-	const { approvals, runs, tree } = useLive();
+	const { approvals, runs, workspace } = useLive();
 	const notified = useRef(new Set<string>());
 	const title = (sid: string | null | undefined) => {
-		for (const p of tree ?? []) {
+		for (const p of workspace ?? []) {
 			const s = p.sessions.find((x) => x.id === sid);
 			if (s) return `${p.path?.split("/").pop() ?? p.id} · ${s.title || s.last || s.first || sid?.slice(0, 8)}`;
 		}
