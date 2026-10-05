@@ -2,13 +2,13 @@
 // 最后是正在跑的那次运行（实时的字）、这个会话等你确认的请求、输入框。
 // 输入框只有两种做法：接着说（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
 // 能不能接着说看情况：在看旧版本、Claude 正在跑、终端里开着，都只能分叉。
-import { ChevronLeft, ChevronRight, GitFork, Loader2, Send, Square } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, GitFork, Hand, ListChecks, Loader2, MessageSquareText, Send, Sparkles, Square } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { type Agent, api, enc, type Node, type Run } from "@/lib/api";
@@ -83,23 +83,46 @@ function forkPoint(path: Node[], before?: Node): string | null {
 	return said?.uuid ?? null;
 }
 
-export const PERMISSIONS = [
-	{ v: "default", label: "改文件、跑命令都问" },
-	{ v: "acceptEdits", label: "改文件不问" },
-	{ v: "plan", label: "只出计划，不动手" },
+type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
+
+/** 输入框下面的小选项：平时只是个图标，点开才写每一项是什么意思 */
+function OptionMenu({ title, options, value, onChange }: { title: string; options: Option[]; value: string; onChange: (v: string) => void }) {
+	const cur = options.find((o) => o.v === value) ?? options[0];
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button variant="ghost" size="sm" className="h-7 gap-0.5 px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+					<cur.icon className="size-4" />
+					<ChevronDown className="size-3 opacity-60" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="start" className="w-72">
+				<DropdownMenuLabel>{title}</DropdownMenuLabel>
+				<DropdownMenuRadioGroup value={value} onValueChange={onChange}>
+					{options.map((o) => (
+						<DropdownMenuRadioItem key={o.v} value={o.v} disabled={o.disabled} className="items-start gap-2.5 py-2">
+							<o.icon className="mt-0.5 size-4 text-muted-foreground" />
+							<span className="flex flex-col gap-0.5">
+								<span className="font-medium">{o.label}</span>
+								<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
+							</span>
+						</DropdownMenuRadioItem>
+					))}
+				</DropdownMenuRadioGroup>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
+// auto：Claude Code 的自动模式，由它判断，一般操作直接放行，危险的才拦下。「改文件不问」被它盖住了，不再单列
+const PERMISSIONS: Option[] = [
+	{ v: "auto", icon: Sparkles, label: "自动", desc: "读文件、改文件、跑命令直接做，Claude 觉得危险的才停下来问你" },
+	{ v: "default", icon: Hand, label: "都问", desc: "改文件、跑命令前都先问你（只读的命令不问）" },
+	{ v: "plan", icon: ListChecks, label: "只出计划", desc: "只看不动手，写出打算怎么做" },
 ];
 
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-	return (
-		<Select value={value} onValueChange={onChange}>
-			<SelectTrigger size="sm" className="h-7 w-auto gap-1.5 border-0 bg-muted/60 px-2 text-xs shadow-none">
-				<SelectValue />
-			</SelectTrigger>
-			<SelectContent>
-				{PERMISSIONS.map((p) => <SelectItem key={p.v} value={p.v}>{p.label}</SelectItem>)}
-			</SelectContent>
-		</Select>
-	);
+	return <OptionMenu title="权限" options={PERMISSIONS} value={value} onChange={onChange} />;
 }
 
 export function Conversation({ project, session, w, t, onFile }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void }) {
@@ -209,7 +232,7 @@ export function Composer({ project, session, w, status }: { project: string; ses
 	const [text, setText] = useState("");
 	const why = noContinue(w, status);
 	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
-	const [permission, setPermission] = useState("default");
+	const [permission, setPermission] = useState("auto");
 	const [busy, setBusy] = useState(false);
 	useEffect(() => setMode(why ? "fork" : "resume"), [why]);
 	const send = async () => {
@@ -237,15 +260,15 @@ export function Composer({ project, session, w, status }: { project: string; ses
 					className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 				/>
 				<div className="flex items-center gap-1.5">
-					<Select value={mode} onValueChange={(v) => setMode(v as "resume" | "fork")}>
-						<SelectTrigger size="sm" className="h-7 w-auto gap-1.5 border-0 bg-muted/60 px-2 text-xs shadow-none">
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="resume" disabled={!!why}>接着说</SelectItem>
-							<SelectItem value="fork">分叉出新会话</SelectItem>
-						</SelectContent>
-					</Select>
+					<OptionMenu
+						title="发到哪"
+						value={mode}
+						onChange={(v) => setMode(v as "resume" | "fork")}
+						options={[
+							{ v: "resume", icon: MessageSquareText, label: "接着说", desc: why ? `现在不行：${why.split("：")[0]}` : "接在这个会话最新处说", disabled: !!why },
+							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开一个新会话，带着到最新处为止的对话；原会话不动" : "开一个新会话，带着到你看的这里为止的对话；原会话不动" },
+						]}
+					/>
 					<PermissionSelect value={permission} onChange={setPermission} />
 					<Button size="icon" className="ml-auto size-8 rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="发送">
 						{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
@@ -259,7 +282,7 @@ export function Composer({ project, session, w, status }: { project: string; ses
 function ForkDialog({ project, session, w, target, onClose }: { project: string; session: string; w: Walk; target: { kind: "edit"; n: User } | { kind: "after"; n: Said } | null; onClose: () => void }) {
 	const { follow } = useLive();
 	const [text, setText] = useState("");
-	const [permission, setPermission] = useState("default");
+	const [permission, setPermission] = useState("auto");
 	useEffect(() => { if (target) setText(target.kind === "edit" ? target.n.text : ""); }, [target]);
 	const send = async () => {
 		if (!target || !text.trim()) return;

@@ -135,7 +135,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			)}
 			{!wide && (
 				<Sheet open={!!panel} onOpenChange={(o) => !o && go({ panel: "none" })}>
-					<SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-lg">
+					<SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-lg" onOpenAutoFocus={(e) => e.preventDefault()}>
 						<SheetHeader className="border-b">
 							<SheetTitle>{title}</SheetTitle>
 							<SheetDescription className="sr-only">这个会话的{title}</SheetDescription>

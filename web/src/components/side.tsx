@@ -1,7 +1,7 @@
 // 侧栏：项目 → 会话。每个会话前面一个状态：等你确认、在跑、跑完了没看、出错了、终端里开着。分叉出来的会话挂在原会话下面。
 // 有状态的项目自动展开；其余的照人上次的开合（存在这台设备上）。
 import { ChevronRight, CircleAlert, CircleX, Folder, GitFork, Loader2, Search, SquarePen, SquareTerminal, WifiOff } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -77,7 +77,7 @@ function SessionRow({ s, r, kid }: { s: SessionMeta; r: Route; kid?: boolean }) 
 	const st = status(s);
 	return (
 		<SidebarMenuSubItem>
-			<SidebarMenuSubButton asChild isActive={r.session === s.id} className={cn("h-8 w-full gap-1.5", kid && "pl-5")}>
+			<SidebarMenuSubButton asChild isActive={r.session === s.id} className={cn("h-8 w-full gap-1.5 text-left", kid && "pl-5")}>
 				<button type="button" onClick={() => { openSession(r.project as string, s.id); setOpenMobile(false); }}>
 					{st ? <StatusIcon s={st} /> : kid ? <GitFork className="size-3! text-muted-foreground" /> : <StatusIcon s={null} />}
 					<span className={cn("min-w-0 flex-1 truncate text-[13px]", st === "done" || st === "error" || st === "waiting" ? "font-medium" : "")}>{sessionTitle(s)}</span>
@@ -141,7 +141,7 @@ function ProjectItem({ p, r, open, setOpen, q }: { p: ProjectTree; r: Route; ope
 						))}
 						{!q && !all && shown.length < fams.length && (
 							<SidebarMenuSubItem>
-								<SidebarMenuSubButton asChild className="h-7 w-full text-xs text-muted-foreground">
+								<SidebarMenuSubButton asChild className="h-7 w-full text-left text-xs text-muted-foreground">
 									<button type="button" onClick={() => setAll(true)}>还有 {fams.length - shown.length} 个</button>
 								</SidebarMenuSubButton>
 							</SidebarMenuSubItem>
@@ -153,7 +153,47 @@ function ProjectItem({ p, r, open, setOpen, q }: { p: ProjectTree; r: Route; ope
 	);
 }
 
+/**
+ * 手机上横着滑开关侧栏：往右滑打开，往左滑关上。
+ * iOS Safari 从屏幕最左边往右滑是「返回上一页」，网页拦不住，所以离左边 EDGE 以内起手的不管，留给返回；
+ * 加到主屏幕（全屏打开）没有这个返回手势，从边上滑也行。
+ */
+const EDGE = 24;
+function useSwipe() {
+	const { isMobile, openMobile, setOpenMobile } = useSidebar();
+	useEffect(() => {
+		if (!isMobile) return;
+		const standalone = (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
+		let start: { x: number; y: number } | null = null;
+		const down = (e: TouchEvent) => {
+			start = null;
+			const t = e.touches[0];
+			if (e.touches.length !== 1 || (!openMobile && !standalone && t.clientX < EDGE)) return;
+			// 在往右滚过的代码、表格上横滑，是在滚它
+			if (!openMobile) for (let el = e.target as Element | null; el; el = el.parentElement) if (el.scrollLeft > 0) return;
+			start = { x: t.clientX, y: t.clientY };
+		};
+		const up = (e: TouchEvent) => {
+			if (!start) return;
+			const t = e.changedTouches[0];
+			const dx = t.clientX - start.x;
+			const dy = t.clientY - start.y;
+			start = null;
+			if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+			if (dx > 0 && !openMobile) setOpenMobile(true);
+			if (dx < 0 && openMobile) setOpenMobile(false);
+		};
+		document.addEventListener("touchstart", down, { passive: true });
+		document.addEventListener("touchend", up, { passive: true });
+		return () => {
+			document.removeEventListener("touchstart", down);
+			document.removeEventListener("touchend", up);
+		};
+	}, [isMobile, openMobile, setOpenMobile]);
+}
+
 export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
+	useSwipe();
 	const { tree, status } = useLive();
 	const online = useOnline();
 	const { setOpenMobile } = useSidebar();

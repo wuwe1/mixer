@@ -9,5 +9,7 @@ export default defineConfig({
 	plugins: [react(), tailwindcss()],
 	resolve: { alias: { "@": path.resolve(import.meta.dirname, "web/src") } },
 	build: { outDir: "dist", emptyOutDir: true, chunkSizeWarningLimit: 4000 },
+	// 高亮的 Worker 要按需加载语言，得是 ES 模块
+	worker: { format: "es" },
 	server: { proxy: { "/api": "http://127.0.0.1:4848" } },
 });

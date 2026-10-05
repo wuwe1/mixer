@@ -94,8 +94,8 @@ const GET: [RegExp, Handler][] = [
 		const t = await fullResult(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
 		return t === null ? json(res, 404, { error: "没有" }) : json(res, 200, { text: t });
 	}],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/image\/([\w-]+)\/(\d+)$/, async (_q, res, m) => {
-		const img = await image(m[1], m[2], m[3], Number(m[4]));
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/image\/([\w-]+)\/(\d+)$/, async (_q, res, m, url) => {
+		const img = await image(m[1], m[2], m[3], Number(m[4]), url.searchParams.get("agent") ?? undefined);
 		if (!img) return void res.writeHead(404).end();
 		res.writeHead(200, { "content-type": img.media, "cache-control": "private, max-age=86400" }).end(Buffer.from(img.data, "base64"));
 	}],

@@ -6,7 +6,7 @@ export type SessionMeta = {
 };
 export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] };
 type Base = { uuid: string; parent: string | null; ts: string };
-export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean } | null; agent: string | null };
+export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; agent: string | null };
 export type Node =
 	| (Base & { k: "user"; text: string; images: number; queued?: boolean })
 	| (Base & { k: "assistant"; text: string })

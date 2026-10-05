@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, enc, type Status } from "@/lib/api";
 import { useEvent } from "@/lib/events";
+import { ago } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 const CODE: Record<string, { label: string; cls: string }> = {
@@ -96,7 +97,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 									<span className="line-clamp-2 text-[13px] leading-snug">{c.subject}</span>
 									<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
 										<GitCommitHorizontal className="size-3" />
-										<span className="font-mono">{c.hash}</span> · {c.when}
+										<span className="font-mono">{c.hash}</span> · {ago(c.when)}
 									</span>
 								</button>
 							))}
@@ -114,7 +115,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 							<Badge variant="outline" className="shrink-0">{sel.kind === "file" ? "改动" : "提交"}</Badge>
 							<span className="truncate text-xs">{sel.title}</span>
 						</div>
-						<ScrollArea className="min-h-0 flex-1">{text === null ? <Skeleton className="m-4 h-40" /> : <Diff text={text} />}</ScrollArea>
+						<div className="min-h-0 flex-1 overflow-auto overscroll-contain">{text === null ? <Skeleton className="m-4 h-40" /> : <Diff text={text} />}</div>
 					</>
 				) : (
 					<div className="m-auto text-sm text-muted-foreground">选一个改动或提交</div>

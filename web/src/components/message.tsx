@@ -73,12 +73,29 @@ export function EventLine({ n }: { n: Extract<Node, { k: "event" }> }) {
 /** 连在一起的工具调用、思考：收成一组，默认只显示一行概览 */
 type OnFile = (path: string, diff: boolean) => void;
 
+/** 工具结果里的图片（读图片文件、截图）：点开看原图 */
+const resultImages = (t: ToolNode, project: string, session: string, agent?: string) =>
+	Array.from({ length: t.result?.images ?? 0 }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${t.id}/${i}${agent ? `?agent=${agent}` : ""}`);
+
+function Thumbs({ srcs, className }: { srcs: string[]; className?: string }) {
+	return (
+		<div className={cn("flex flex-wrap gap-2", className)}>
+			{srcs.map((src) => (
+				<a key={src} href={src} target="_blank" rel="noreferrer">
+					<img src={src} alt="" loading="lazy" className="max-h-48 max-w-full rounded-lg border object-contain" />
+				</a>
+			))}
+		</div>
+	);
+}
+
 export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile }) {
 	const tools = nodes.filter((n): n is ToolNode => n.k === "tool");
 	const errors = tools.filter((t) => t.result?.error).length;
 	const names = [...new Set(tools.map((t) => toolName(t.name)))];
+	const imgs = tools.flatMap((t) => resultImages(t, project, session, agent));
 	return (
-		<Collapsible id={`n-${nodes[0].uuid}`} className="scroll-mt-24">
+		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<CollapsibleTrigger className="group/steps flex w-full items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
 				<ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/steps:rotate-90" />
 				<span className="flex -space-x-1">
@@ -97,6 +114,8 @@ export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nod
 				</span>
 				{errors > 0 && <span className="flex items-center gap-1 text-destructive"><TriangleAlert className="size-3" />{errors}</span>}
 			</CollapsibleTrigger>
+			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}
+			{imgs.length > 0 && <Thumbs srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
@@ -130,6 +149,9 @@ function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode
 	const I = toolIcon(t.name);
 	const file = onFile ? filePath(t) : null;
 	const [full, setFull] = useState<string | null>(null);
+	const imgs = resultImages(t, project, session, agent);
+	// 只有图片的结果（读一张图）：文字部分就是「[图片]」，不用再显示
+	const onlyImages = imgs.length > 0 && !t.result?.text.replace(/\[图片\]/g, "").trim();
 	const more = async () => {
 		const r = await api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/result/${t.id}${agent ? `?agent=${agent}` : ""}`);
 		setFull(r.text);
@@ -154,9 +176,10 @@ function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode
 					</Button>
 				)}
 			</div>
+			{imgs.length > 0 && <Thumbs srcs={imgs} className="mb-2 pl-5.5" />}
 			<CollapsibleContent className="mb-2 flex flex-col gap-2 pl-5">
 				<pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-all">{t.input}</pre>
-				{t.result && (
+				{t.result && !onlyImages && (
 					<div className="flex flex-col gap-1">
 						<pre className={cn("max-h-96 overflow-auto rounded-md border p-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-all", t.result.error ? "border-destructive/40 bg-destructive/5" : "bg-background")}>
 							{full ?? t.result.text}

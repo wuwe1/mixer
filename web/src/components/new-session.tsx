@@ -118,7 +118,7 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 export function StartBox({ target, autoFocus, placeholder, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; placeholder?: string; onStarted?: () => void }) {
 	const { follow } = useLive();
 	const [text, setText] = useState("");
-	const [permission, setPermission] = useState("default");
+	const [permission, setPermission] = useState("auto");
 	const [busy, setBusy] = useState(false);
 	const send = async () => {
 		if (!text.trim() || busy) return;

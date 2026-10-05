@@ -150,7 +150,8 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 					</ToggleGroup>
 				)}
 			</div>
-			<ScrollArea className="min-h-0 flex-1">
+			{/* 原生滚动：ScrollArea 只有竖的滚动条，长行没法往右滑 */}
+			<div className="min-h-0 flex-1 overflow-auto overscroll-contain">
 				{mode === "diff" ? (
 					diff === null ? <Skeleton className="m-4 h-40" /> : diff ? <Diff text={diff} /> : <p className="p-4 text-sm text-muted-foreground">这个文件没有没提交的改动。</p>
 				) : (
@@ -166,7 +167,7 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 				))}
 				</>
 				)}
-			</ScrollArea>
+			</div>
 		</>
 	);
 }

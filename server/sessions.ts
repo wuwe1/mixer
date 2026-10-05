@@ -41,7 +41,7 @@ export type Node =
 			name: string;
 			summary: string;
 			input: string;
-			result: { text: string; error: boolean; cut: boolean } | null;
+			result: { text: string; error: boolean; cut: boolean; images: number } | null;
 			agent: string | null;
 	  }
 	| { k: "event"; uuid: string; parent: string | null; ts: string; kind: "summary" | "compact" | "notice"; text: string };
@@ -244,10 +244,13 @@ export async function parse(file: string): Promise<Parsed> {
 					if (b?.type !== "tool_result") continue;
 					const text = resultText(b.content);
 					results.set(b.tool_use_id, text);
+					// 结果里的图片（读图片文件、截图）：按工具调用的 id 存，和人发的图片共用一个接口
+					const imgs = Array.isArray(b.content) ? b.content.filter((x: Raw) => x?.type === "image" && x.source?.type === "base64") : [];
+					if (imgs.length) images.set(b.tool_use_id, imgs.map((x: Raw) => ({ media: x.source.media_type, data: x.source.data })));
 					const tool = tools.get(b.tool_use_id);
 					if (tool) {
 						const { text: t2, cut: cutted } = cut(text);
-						tool.result = { text: t2, error: !!b.is_error, cut: cutted };
+						tool.result = { text: t2, error: !!b.is_error, cut: cutted, images: imgs.length };
 						const m = /agentId: (a[0-9a-f]+)/.exec(text);
 						if (m) tool.agent = m[1];
 					}
@@ -321,7 +324,8 @@ export async function fullResult(project: string, id: string, toolUseId: string,
 	return results.get(toolUseId) ?? null;
 }
 
-export async function image(project: string, id: string, uuid: string, i: number) {
-	const { images } = await parse(sessionFile(project, id));
+/** 人发的图片（按消息的 uuid）或工具结果里的图片（按工具调用的 id） */
+export async function image(project: string, id: string, uuid: string, i: number, agentId?: string) {
+	const { images } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
 	return images.get(uuid)?.[i] ?? null;
 }

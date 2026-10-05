@@ -37,7 +37,7 @@ export function App() {
 			<SidebarInset className="min-w-0 overflow-hidden">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
 					<SidebarTrigger className="-ml-1" />
-					<Separator orientation="vertical" className="mr-1 h-4" />
+					<Separator orientation="vertical" className="mr-1 data-vertical:h-4 data-vertical:self-center" />
 					<div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
 						{p && r.session && (
 							<>
@@ -64,7 +64,7 @@ export function App() {
 								return (
 									<Tooltip key={v}>
 										<TooltipTrigger asChild>
-											<ToggleGroupItem value={v} className="size-8 px-0" aria-label={label}>
+											<ToggleGroupItem value={v} className="size-8 px-0 aria-checked:bg-muted" aria-label={label}>
 												<I className="size-4" />
 											</ToggleGroupItem>
 										</TooltipTrigger>

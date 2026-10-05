@@ -54,7 +54,7 @@ export const get = (id: string) => {
 
 export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }) {
 	if (!o.prompt.trim()) throw new Error("说点什么");
-	if (!["default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
+	if (!["auto", "default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
 	if (!["new", "resume", "fork"].includes(o.mode)) throw new Error("不认识的方式");
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
