@@ -11,6 +11,7 @@ import { gzipSync } from "node:zlib";
 import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
+import * as skills from "./skills.ts";
 import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session, tree } from "./sessions.ts";
 import * as state from "./state.ts";
 
@@ -40,7 +41,8 @@ const json = (res: ServerResponse, status: number, v: unknown) => {
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...(gz ? { "content-encoding": "gzip" } : {}) });
 	res.end(gz ? gzipSync(buf) : buf);
 };
-const body = (req: IncomingMessage) => new Promise<string>((ok) => { let s = ""; req.on("data", (c) => { s += c; }); req.on("end", () => ok(s)); });
+// 先攒 Buffer 再一起解码：按块拼字符串，中文会在块的边界被切坏（带图片时请求体很大，一定会分块）
+const body = (req: IncomingMessage) => new Promise<string>((ok) => { const cs: Buffer[] = []; req.on("data", (c: Buffer) => { cs.push(c); }); req.on("end", () => ok(Buffer.concat(cs).toString("utf8"))); });
 
 function ours(req: IncomingMessage) {
 	const o = req.headers.origin;
@@ -114,13 +116,14 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
 	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
 	[/^\/api\/dirs$/, (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
+	[/^\/api\/skills\/([\w.-]+)$/, (_q, res, m) => json(res, 200, skills.list(m[1], projectPath(m[1])))],
 ];
 const POST: [RegExp, Handler][] = [
 	[/^\/api\/runs$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
 		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
-		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), permission: b.permission ?? "default" });
+		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null });
 		json(res, 200, r);
 	}],
 	[/^\/api\/dirs$/, async (req, res) => {

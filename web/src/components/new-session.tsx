@@ -11,7 +11,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type ProjectTree, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
-import { PermissionSelect } from "./conversation";
+import { ModelSelect, PermissionSelect } from "./conversation";
 
 const tilde = (p: string, home: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
 
@@ -120,13 +120,14 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
+	const [model, setModel] = useState("");
 	const [busy, setBusy] = useState(false);
 	const send = async () => {
 		if (!text.trim() || busy) return;
 		setBusy(true);
 		try {
 			askNotify();
-			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission });
+			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission, model: model || null });
 			follow(r);
 			setText("");
 			toast.success("已开始，会话建好后自动打开");
@@ -149,6 +150,7 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 			/>
 			<div className="flex items-center gap-1.5">
 				<PermissionSelect value={permission} onChange={setPermission} />
+				<ModelSelect value={model} onChange={setModel} />
 				<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
 					{busy ? <Spinner /> : <Send className="size-4" />}
 				</Button>

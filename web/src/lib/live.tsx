@@ -52,6 +52,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	useEffect(loadAll, [loadAll]);
 	useEvent("reconnect", loadAll);
 	useEvent("session", loadTree);
+	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
+	useEffect(() => {
+		const left = (tree ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());
+		if (!left.length) return;
+		const t = setTimeout(loadTree, Math.max(0, Math.min(...left)) + 1000);
+		return () => clearTimeout(t);
+	}, [tree, loadTree]);
 	useEvent("state", loadTree);
 
 	useEvent("run", useCallback((r: Run) => {

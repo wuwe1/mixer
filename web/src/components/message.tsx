@@ -2,7 +2,7 @@
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
 // 每条消息、每组工具调用后面常驻几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。图片点了在当前页面放大。
 import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { clock } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
+import { StatusIcon } from "./side";
 
 const ICON: Record<string, typeof Wrench> = {
 	Bash: SquareTerminal, Read: FileText, Write: Pencil, Edit: Pencil, MultiEdit: Pencil, NotebookEdit: Pencil, Grep: Search, Glob: Search,
@@ -19,6 +20,20 @@ const ICON: Record<string, typeof Wrench> = {
 };
 const toolIcon = (name: string) => ICON[name] ?? (name.startsWith("mcp__") ? Globe : Wrench);
 const toolName = (name: string) => name.replace(/^mcp__[^_]+__/, "");
+
+/** 从 since（毫秒）到现在多久：12 秒、2:13；每秒走一下 */
+export function Elapsed({ since, className }: { since: number; className?: string }) {
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => {
+		const t = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(t);
+	}, []);
+	const s = Math.max(0, Math.floor((now - since) / 1000));
+	return <span className={cn("tabular-nums", className)}>{s < 60 ? `${s} 秒` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`}</span>;
+}
+
+/** 一组里正在进行的那一步（执行中的工具、正在写的思考）和它开始的时间 */
+export type Now = { node: Node; since: number };
 
 /** 消息后面的小图标按钮 */
 function Action({ icon: I, label, onClick }: { icon: typeof Wrench; label: string; onClick: () => void }) {
@@ -166,7 +181,7 @@ type OnFile = (path: string, diff: boolean) => void;
 const resultImages = (t: ToolNode, project: string, session: string, agent?: string) =>
 	Array.from({ length: t.result?.images ?? 0 }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${t.id}/${i}${agent ? `?agent=${agent}` : ""}`);
 
-export function Steps({ nodes, project, session, agent, onAgent, onFile, onFork }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void }) {
+export function Steps({ nodes, project, session, agent, onAgent, onFile, onFork, now }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void; now?: Now | null }) {
 	const tools = nodes.filter((n): n is ToolNode => n.k === "tool");
 	const errors = tools.filter((t) => t.result?.error).length;
 	const names = [...new Set(tools.map((t) => toolName(t.name)))];
@@ -194,16 +209,25 @@ export function Steps({ nodes, project, session, agent, onAgent, onFile, onFork 
 			</CollapsibleTrigger>
 			{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />}
 			</div>
+			{/* 收着的时候正在进行的那一步也露出来，不用点开就知道在干什么 */}
+			{now && (
+				<div className="flex items-center gap-2 py-1 pl-5.5 text-md group-data-[state=open]/stepbox:hidden">
+					<StatusIcon s="running" className="size-3.5" />
+					<span className="shrink-0 font-medium">{now.node.k === "tool" ? toolName(now.node.name) : "思考"}</span>
+					{now.node.k === "tool" && <span className="truncate font-mono text-xs text-muted-foreground">{now.node.summary}</span>}
+					<Elapsed since={now.since} className="ml-auto shrink-0 text-2xs text-muted-foreground" />
+				</div>
+			)}
 			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}
 			{imgs.length > 0 && <Images srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
-						<ToolCall key={n.uuid} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} />
+						<ToolCall key={n.uuid} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} since={now?.node === n ? now.since : undefined} />
 					) : n.k === "thinking" ? (
 						<Collapsible key={n.uuid}>
 							<CollapsibleTrigger className="flex items-center gap-2 py-1 text-xs text-muted-foreground hover:text-foreground">
-								<Brain className="size-3.5" />
+								{now?.node === n ? <StatusIcon s="running" className="size-3.5" /> : <Brain className="size-3.5" />}
 								思考
 							</CollapsibleTrigger>
 							<CollapsibleContent className="pb-2 pl-5 text-md leading-relaxed whitespace-pre-wrap text-muted-foreground">{n.text}</CollapsibleContent>
@@ -225,7 +249,8 @@ export const filePath = (t: ToolNode) => {
 };
 export const edited = (t: ToolNode) => (EDITS.has(t.name) ? filePath(t) : null);
 
-function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile }) {
+/** since：这一步正在执行（还没结果），从什么时候开始的 */
+function ToolCall({ t, project, session, agent, onAgent, onFile, since }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; since?: number }) {
 	const I = toolIcon(t.name);
 	const file = onFile ? filePath(t) : null;
 	const [full, setFull] = useState<string | null>(null);
@@ -240,9 +265,10 @@ function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode
 		<Collapsible>
 			<div className="flex items-center gap-2">
 				<CollapsibleTrigger className="group/tool flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-md hover:text-foreground">
-					<I className={cn("size-3.5 shrink-0", t.result?.error ? "text-destructive" : "text-muted-foreground")} />
+					{since !== undefined ? <StatusIcon s="running" className="size-3.5" /> : <I className={cn("size-3.5 shrink-0", t.result?.error ? "text-destructive" : "text-muted-foreground")} />}
 					<span className="shrink-0 font-medium">{toolName(t.name)}</span>
 					<span className="truncate font-mono text-xs text-muted-foreground">{t.summary}</span>
+					{since !== undefined && <Elapsed since={since} className="ml-auto shrink-0 pl-2 text-2xs text-muted-foreground" />}
 				</CollapsibleTrigger>
 				{file && onFile && (
 					<Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={() => onFile(file, EDITS.has(t.name))} aria-label={EDITS.has(t.name) ? "查看改动" : "查看文件"} title={EDITS.has(t.name) ? "在右边看这个文件的改动" : "在右边打开这个文件"}>

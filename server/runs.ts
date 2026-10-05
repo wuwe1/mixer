@@ -25,6 +25,8 @@ export type Run = {
 	at: string | null;
 	prompt: string;
 	permission: string;
+	/** --model：别名（opus、sonnet…）或完整型号；null 是用 Claude Code 的默认 */
+	model: string | null;
 	status: RunStatus;
 	started: string;
 	ended: string | null;
@@ -33,7 +35,11 @@ export type Run = {
 };
 
 /** 排着队的「接着说」 */
-export type Queued = { id: string; project: string; cwd: string; session: string; prompt: string; permission: string; at: string };
+/** 消息里带的图片（base64） */
+export type Image = { media: string; data: string };
+
+/** 排着队的「接着说」 */
+export type Queued = { id: string; project: string; cwd: string; session: string; prompt: string; images: Image[]; permission: string; model: string | null; at: string };
 
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
@@ -57,10 +63,14 @@ export const get = (id: string) => {
 	return r ? { ...view(r), events: r.events } : null;
 };
 
-export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }) {
-	if (!o.prompt.trim()) throw new Error("说点什么");
+export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null }) {
+	const images = o.images ?? [];
+	if (!o.prompt.trim() && !images.length) throw new Error("说点什么");
+	if (images.length > 10 || images.some((i) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(i.media) || typeof i.data !== "string")) throw new Error("图片不对：最多 10 张，png / jpeg / gif / webp");
 	if (!["auto", "default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
 	if (!["new", "resume", "fork"].includes(o.mode)) throw new Error("不认识的方式");
+	const model = o.model || null;
+	if (model && !/^[a-z][\w.[\]-]*$/i.test(model)) throw new Error("模型名不对");
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
 	if (o.at && !/^[0-9a-f-]{36}$/.test(o.at)) throw new Error("分叉点不对");
@@ -68,10 +78,10 @@ export async function start(o: { project: string; cwd: string; session: string |
 		// 最近的写入是 mixer 自己的运行（已经跑完）就放行；否则 90 秒内有写入，说明可能在终端里开着
 		const ours = [...runs.values()].filter((r) => r.session === resume);
 		if (ours.some((r) => r.status === "running")) {
-			const q: Queued = { id: randomUUID().slice(0, 8), project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, permission: o.permission, at: new Date().toISOString() };
+			const q: Queued = { id: randomUUID().slice(0, 8), project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, images, permission: o.permission, model, at: new Date().toISOString() };
 			queue.push(q);
-			emit("queue", queue);
-			return { queued: q };
+			emit("queue", queued());
+			return { queued: queueView(q) };
 		}
 		const mtime = statSync(sessionFile(o.project, resume)).mtimeMs;
 		if (!ours.length && Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
@@ -84,6 +94,9 @@ export async function start(o: { project: string; cwd: string; session: string |
 	const cfg = join(dir, `mcp-${id}.json`);
 	writeFileSync(cfg, JSON.stringify({ mcpServers: { mixer: { command: process.execPath, args: [MCP], env: { MIXER_URL: `http://127.0.0.1:${process.env.MIXER_PORT ?? 4848}`, MIXER_TOKEN: TOKEN, MIXER_RUN: id } } } }));
 	const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", o.permission, "--permission-prompt-tool", "mcp__mixer__approve", "--mcp-config", cfg];
+	if (model) args.push("--model", model);
+	// 带图片：stdin 改成一条 stream-json 的 user 消息（文字 + 图片块）
+	if (images.length) args.push("--input-format", "stream-json");
 	if (resume) args.push("--resume", resume);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
 	const run: Run & { child?: ChildProcess } = {
@@ -96,6 +109,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 		at: o.mode === "fork" ? (o.at ?? null) : null,
 		prompt: o.prompt,
 		permission: o.permission,
+		model,
 		status: "running",
 		started: new Date().toISOString(),
 		ended: null,
@@ -105,7 +119,11 @@ export async function start(o: { project: string; cwd: string; session: string |
 	const child = spawn("claude", args, { cwd: o.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
 	run.child = child;
 	runs.set(id, run);
-	child.stdin.end(o.prompt);
+	if (!images.length) child.stdin.end(o.prompt);
+	else {
+		const content = [...(o.prompt.trim() ? [{ type: "text", text: o.prompt }] : []), ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.media, data: i.data } }))];
+		child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`);
+	}
 	let buf = "";
 	child.stdout.on("data", (chunk: Buffer) => {
 		buf += chunk.toString("utf8");
@@ -116,7 +134,18 @@ export async function start(o: { project: string; cwd: string; session: string |
 			if (!line) continue;
 			let ev: Record<string, unknown>;
 			try { ev = JSON.parse(line); } catch { continue; }
-			if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") run.session = ev.session_id;
+			// 新会话、分叉的 id 到这时才知道：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着
+			if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
+				// 续接的会话 id 一开始就知道；新会话、分叉的到这时才有，马上告诉网页
+				if (run.session !== ev.session_id) {
+					run.session = ev.session_id;
+					emit("run", view(run));
+				}
+				if (run.model) state.chooseModel(run.session, run.model);
+				if (Array.isArray(ev.skills)) state.learnCaps(run.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
+			}
+			if (ev.type === "result" && ev.modelUsage && typeof ev.modelUsage === "object")
+				for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
 			run.events.push(ev);
 			if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
 			emit("run-event", { id, event: ev });
@@ -139,13 +168,15 @@ export async function start(o: { project: string; cwd: string; session: string |
 	return view(run);
 }
 
-export const queued = () => queue;
+/** 给网页的：图片只给张数 */
+const queueView = (q: Queued) => ({ ...q, images: q.images.length });
+export const queued = () => queue.map(queueView);
 
 export function unqueue(id: string) {
 	const i = queue.findIndex((q) => q.id === id);
 	if (i < 0) return false;
 	queue.splice(i, 1);
-	emit("queue", queue);
+	emit("queue", queued());
 	return true;
 }
 
@@ -154,9 +185,9 @@ function drain(session: string) {
 	const items = queue.filter((q) => q.session === session);
 	if (!items.length) return;
 	for (const q of items) queue.splice(queue.indexOf(q), 1);
-	emit("queue", queue);
+	emit("queue", queued());
 	const last = items[items.length - 1];
-	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).join("\n\n"), permission: last.permission })
+	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).filter((p) => p.trim()).join("\n\n"), images: items.flatMap((q) => q.images), permission: last.permission, model: last.model })
 		.catch((e: Error) => emit("queue-error", { session, error: e.message }));
 }
 

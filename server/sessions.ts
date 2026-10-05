@@ -8,7 +8,7 @@
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { ourLastWrite, unread } from "./state.ts";
+import { chosenModel, ourLastWrite, unread, windows } from "./state.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
 
@@ -28,12 +28,16 @@ async function* lines(file: string): AsyncGenerator<string> {
 
 type Raw = Record<string, any>; // biome-ignore lint: 内部格式，没有类型
 
+/** 这条回复发出时上下文里有多少 token（输入 + 缓存读 + 缓存写），和用的模型：窗口多大按模型查 */
+type Ctx = { used: number; model: string };
+
 export type Node =
 	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number; queued?: boolean }
-	| { k: "assistant"; uuid: string; parent: string | null; ts: string; text: string }
-	| { k: "thinking"; uuid: string; parent: string | null; ts: string; text: string }
+	| { k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx }
+	| { k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx }
 	| {
 			k: "tool";
+			ctx?: Ctx;
 			uuid: string;
 			parent: string | null;
 			ts: string;
@@ -196,6 +200,22 @@ function userText(d: Raw): string | null {
 /** 系统借 user 消息塞进来的东西（后台任务通知、命令输出、提醒），不算人说的话 */
 const SYSTEM = /^\s*<(task-notification|command-name|command-message|local-command|system-reminder|bash-input|bash-stdout)/;
 
+/**
+ * 调用 skill（/名字 参数）：记录里先是一条 <command-name>，下一条 isMeta 的是 skill 的正文（Base directory for this skill: …）。
+ * 正文那条换成人说的「/名字 参数」；/clear、/model 这类终端里的命令后面没有正文，还是不显示
+ */
+function skillCall(d: Raw, raw: Map<string, Raw>): string | null {
+	if (!d.isMeta || !d.parentUuid) return null;
+	const c = d.message?.content;
+	const body = typeof c === "string" ? c : Array.isArray(c) ? (c[0]?.text ?? "") : "";
+	if (!String(body).startsWith("Base directory for this skill:")) return null;
+	const t = userText(raw.get(d.parentUuid) ?? {}) ?? "";
+	const name = tag(t, "command-name");
+	if (!name) return null;
+	const args = tag(t, "command-args");
+	return args ? `${name} ${args}` : name;
+}
+
 /** 用户真正说的话；不是就返回 null */
 function promptText(d: Raw): string | null {
 	if (d.isCompactSummary) return null;
@@ -270,7 +290,9 @@ export async function parse(file: string): Promise<Parsed> {
 		let n: Node | null = null;
 		if (d.type === "user") {
 			const t = promptText(d);
-			if (t !== null) {
+			const skill = t === null ? skillCall(d, raw) : null;
+			if (skill !== null) n = { k: "user", ...base(d), text: skill, images: 0 };
+			else if (t !== null) {
 				const imgs = Array.isArray(c) ? c.filter((b) => b?.type === "image" && b.source?.type === "base64") : [];
 				if (imgs.length) images.set(d.uuid, imgs.map((b) => ({ media: b.source.media_type, data: b.source.data })));
 				n = { k: "user", ...base(d), text: t, images: imgs.length };
@@ -321,6 +343,9 @@ export async function parse(file: string): Promise<Parsed> {
 				tools.set(b.id, tool);
 				n = tool;
 			}
+			const u = d.message?.usage;
+			const used = (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0);
+			if (n && used > 0 && typeof d.message.model === "string" && d.message.model !== "<synthetic>") n.ctx = { used, model: d.message.model };
 		} else if (d.type === "system") {
 			if (d.subtype === "away_summary" && d.content) n = { k: "event", ...base(d), kind: "summary", text: String(d.content) };
 			else if (d.subtype === "compact_boundary") {
@@ -361,7 +386,7 @@ export const agentFile = (project: string, id: string, agent: string) => join(PR
 export async function session(project: string, id: string) {
 	const file = sessionFile(project, id);
 	const [{ nodes }, metas] = await Promise.all([parse(file), listSessions(project)]);
-	return { meta: metas.find((m) => m.id === id) ?? (await scanMeta(file)), nodes };
+	return { meta: metas.find((m) => m.id === id) ?? (await scanMeta(file)), nodes, windows: windows(), model: chosenModel(id) };
 }
 
 export async function agent(project: string, id: string, agentId: string) {

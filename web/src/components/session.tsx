@@ -13,7 +13,7 @@ import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { Changes } from "./changes";
-import { Composer, Conversation, tree, walk } from "./conversation";
+import { Composer, Conversation, tree, useStream, walk } from "./conversation";
 import { Files } from "./files";
 import { edited } from "./message";
 
@@ -55,6 +55,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
 	useEvent("reconnect", load);
 
+	const stream = useStream(session);
 	const t = useMemo(() => (data ? tree(data.nodes) : null), [data]);
 	const w = useMemo(() => (t ? walk(t, r.leaf) : null), [t, r.leaf]);
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
@@ -136,14 +137,14 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 					<div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
 						{t && w ? (
-							<Conversation project={project} session={session} w={w} t={t} onFile={onFile} />
+							<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} />
 						) : (
 							[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
 						)}
 						<div ref={bottom} />
 					</div>
 				</div>
-				{w && <Composer project={project} session={session} w={w} status={st} />}
+				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} />}
 			</div>
 
 			{wide && panel && (

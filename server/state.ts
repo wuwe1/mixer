@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 
 const FILE = join(dirname(new URL(import.meta.url).pathname), "..", "data", "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string> };
-let state: State = { finished: {}, seen: {} };
+type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; caps: Record<string, Caps> };
+let state: State = { finished: {}, seen: {}, windows: {}, models: {}, caps: {} };
 try { state = { ...state, ...JSON.parse(readFileSync(FILE, "utf8")) }; } catch {}
 
 function save() {
@@ -39,3 +39,30 @@ export const ourLastWrite = (session: string, mtimeMs: number) => {
 	const f = state.finished[session];
 	return !!f && Date.parse(f.at) >= mtimeMs - 5000;
 };
+
+/** 各模型的上下文窗口多大：会话记录里只有模型名，mixer 里每跑完一次从结果里记下来 */
+export function learnWindow(model: string, size: number) {
+	if (state.windows[model] === size) return;
+	state.windows[model] = size;
+	save();
+}
+export const windows = () => state.windows;
+
+/** 在 mixer 里给会话选过的模型（别名）：之后续接都用它，直到再换 */
+export function chooseModel(session: string, model: string) {
+	if (state.models[session] === model) return;
+	state.models[session] = model;
+	save();
+}
+export const chosenModel = (session: string) => state.models[session] ?? null;
+
+/** 每个项目能用的 skill 名字和装着的插件：每次运行开头的 init 事件里有，记下来给输入框的 skill 列表用 */
+type Caps = { skills: string[]; plugins: { name: string; path: string }[]; at: string };
+export function learnCaps(project: string, caps: Omit<Caps, "at">) {
+	state.caps[project] = { ...caps, at: new Date().toISOString() };
+	save();
+}
+/** 这个项目还没在 mixer 里跑过：用最近跑过的那个项目的（内置的、装的插件大家都一样） */
+const capsOf = (project: string): Caps | undefined => state.caps[project] ?? Object.values(state.caps).sort((a, b) => b.at.localeCompare(a.at))[0];
+export const skills = (project: string) => capsOf(project)?.skills ?? [];
+export const plugins = (project: string) => (capsOf(project)?.plugins ?? []).filter((p) => p.path !== "builtin");

@@ -8,7 +8,6 @@ import {
 	Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInput, SidebarMenu, SidebarMenuAction,
 	SidebarMenuButton, SidebarMenuItem, SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, useSidebar,
 } from "@/components/ui/sidebar";
-import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProjectTree, SessionMeta } from "@/lib/api";
 import { useOnline } from "@/lib/events";
@@ -31,7 +30,12 @@ export function StatusIcon({ s, className }: { s: Status; className?: string }) 
 				<span className="relative size-2 rounded-full bg-waiting" />
 			</span>
 		)
-		: s === "running" ? <Spinner className="size-3.5 text-muted-foreground" />
+		: s === "running" ? (
+			<span className="relative flex size-2">
+				<span className="absolute inset-0 animate-ping rounded-full bg-unread opacity-60" />
+				<span className="relative size-2 rounded-full bg-unread" />
+			</span>
+		)
 		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
 		: s === "error" ? <span className="size-2 rounded-full bg-destructive" />
 		: s === "terminal" ? <span className="size-2 rounded-full border border-muted-foreground" />
