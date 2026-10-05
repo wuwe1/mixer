@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import * as codex from "./codex.ts";
+import * as codexRun from "./codex-run.ts";
 import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
 import { counts, emptyTail, step, type Tail } from "../web/src/lib/tail.ts";
@@ -22,6 +24,8 @@ export type Run = {
 	from: string | null;
 	session: string | null;
 	mode: "new" | "resume" | "fork";
+	/** 哪个 agent 跑的：Claude Code（claude -p）或 Codex（codex app-server） */
+	agent: "claude" | "codex";
 	/** 分叉点：从这条 Claude 的消息之后分出去；null 是从最新处 */
 	at: string | null;
 	prompt: string;
@@ -44,7 +48,7 @@ export type Queued = { id: string; project: string; cwd: string; session: string
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
 /** 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照） */
-type Live = Run & { child?: ChildProcess; tail: Tail };
+type Live = Run & { child?: ChildProcess; halt?: () => void; tail: Tail };
 const runs = new Map<string, Live>();
 const approvals = new Map<string, Approval>();
 const queue: Queued[] = [];
@@ -56,7 +60,7 @@ let emit: Emit = () => {};
 export const onEvent = (f: Emit) => { emit = f; };
 
 const view = (r: Live) => {
-	const { child: _c, tail: _t, events, ...rest } = r;
+	const { child: _c, halt: _h, tail: _t, events, ...rest } = r;
 	return { ...rest, events: events.length };
 };
 export const list = () => [...runs.values()].map(view).sort((a, b) => b.started.localeCompare(a.started));
@@ -67,7 +71,7 @@ export const get = (id: string) => {
 /** 正在写的那几段的快照；seq 之后的事件网页从推送里接 */
 export const tail = (id: string) => runs.get(id)?.tail ?? null;
 
-export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null }) {
+export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; agent?: string | null }) {
 	const images = o.images ?? [];
 	if (!o.prompt.trim() && !images.length) throw new Error("说点什么");
 	if (images.length > 10 || images.some((i) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(i.media) || typeof i.data !== "string")) throw new Error("图片不对：最多 10 张，png / jpeg / gif / webp");
@@ -77,7 +81,10 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (model && !/^[a-z][\w.[\]-]*$/i.test(model)) throw new Error("模型名不对");
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
-	if (o.at && !/^[0-9a-f-]{36}$/.test(o.at)) throw new Error("分叉点不对");
+	// 新会话按选的；续接、分叉跟着原会话是谁的
+	const cx = resume ? codex.find(resume) : null;
+	const agent: Run["agent"] = o.mode === "new" ? (o.agent === "codex" ? "codex" : "claude") : cx ? "codex" : "claude";
+	if (o.at && !(agent === "codex" ? /^[\w-]+$/ : /^[0-9a-f-]{36}$/).test(o.at)) throw new Error("分叉点不对");
 	if (o.mode === "resume" && resume) {
 		// 最近的写入是 mixer 自己的运行（已经跑完）就放行；否则 90 秒内有写入，说明可能在终端里开着
 		const ours = [...runs.values()].filter((r) => r.session === resume);
@@ -87,12 +94,13 @@ export async function start(o: { project: string; cwd: string; session: string |
 			emit("queue", queued());
 			return { queued: queueView(q) };
 		}
-		const mtime = statSync(sessionFile(o.project, resume)).mtimeMs;
+		const mtime = statSync(cx ? cx.file : sessionFile(o.project, resume)).mtimeMs;
 		if (!ours.length && Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
 			throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
 		}
 	}
 	const id = randomUUID().slice(0, 8);
+	if (agent === "codex") return startCodex(fresh(id, o, agent, model, resume), o, images, cx);
 	const dir = join(tmpdir(), "mixer");
 	mkdirSync(dir, { recursive: true });
 	const cfg = join(dir, `mcp-${id}.json`);
@@ -104,24 +112,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (images.length) args.push("--input-format", "stream-json");
 	if (resume) args.push("--resume", resume);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
-	const run: Live = {
-		id,
-		project: o.project,
-		cwd: o.cwd,
-		from: o.session,
-		session: o.mode === "resume" ? resume : null,
-		mode: o.mode,
-		at: o.mode === "fork" ? (o.at ?? null) : null,
-		prompt: o.prompt,
-		permission: o.permission,
-		model,
-		status: "running",
-		started: new Date().toISOString(),
-		ended: null,
-		error: null,
-		events: [],
-		tail: emptyTail(),
-	};
+	const run = fresh(id, o, agent, model, resume);
 	const child = spawn("claude", args, { cwd: o.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
 	run.child = child;
 	runs.set(id, run);
@@ -142,14 +133,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 			try { ev = JSON.parse(line); } catch { continue; }
 			// 新会话、分叉的 id 到这时才知道：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着
 			if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
-				// 续接的会话 id 一开始就知道；新会话、分叉的到这时才有，马上告诉网页
-				if (run.session !== ev.session_id) {
-					run.session = ev.session_id;
-					emit("run", view(run));
-				}
-				if (run.model) state.chooseModel(run.session, run.model);
-				// 在 mixer 里跑过的会话放进工作区（新会话、分叉的文件夹放到最上面）
-				if (state.addToWorkspace(run.project, run.cwd, run.session)) emit("workspace", null);
+				known(run, ev.session_id);
 				if (Array.isArray(ev.skills)) state.learnCaps(run.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
 			}
 			if (ev.type === "result" && ev.modelUsage && typeof ev.modelUsage === "object")
@@ -161,29 +145,96 @@ export async function start(o: { project: string; cwd: string; session: string |
 					emit("limits", state.limits());
 				}
 			}
-			run.events.push(ev);
-			if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
-			// 网页只要流事件：带上序号推过去，网页按序号接在快照后面，接不上就重新拿快照
-			if (counts(ev)) {
-				run.tail = step(run.tail, ev, Date.now());
-				emit("run-event", { id, seq: run.tail.seq, event: ev });
-			}
+			push(run, ev);
 		}
 	});
 	let err = "";
 	child.stderr.on("data", (c: Buffer) => { err = (err + c.toString("utf8")).slice(-4000); });
 	child.on("exit", (code, signal) => {
-		run.status = run.status === "stopped" ? "stopped" : code === 0 ? "done" : "error";
-		if (run.status === "error") run.error = err.trim() || `退出码 ${code ?? signal}`;
-		run.ended = new Date().toISOString();
 		delete run.child;
-		if (run.session) state.finished(run.project, run.session, run.status === "error");
-		// 这次运行的确认请求一律作废
-		for (const a of approvals.values()) if (a.run === id) { a.resolve({ allow: false, message: "运行已结束" }); approvals.delete(a.id); }
-		emit("run", view(run));
-		if (run.session) drain(run.session);
+		finish(run, code === 0 ? "done" : "error", err.trim() || `退出码 ${code ?? signal}`);
 	});
 	emit("run", view(run));
+	return view(run);
+}
+
+/** 一次运行的样子（两种 agent 一样） */
+function fresh(id: string, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }, agent: Run["agent"], model: string | null, resume: string | null): Live {
+	return {
+		id,
+		project: o.project,
+		cwd: o.cwd,
+		from: o.session,
+		session: o.mode === "resume" ? resume : null,
+		mode: o.mode,
+		agent,
+		at: o.mode === "fork" ? (o.at ?? null) : null,
+		prompt: o.prompt,
+		permission: o.permission,
+		model,
+		status: "running",
+		started: new Date().toISOString(),
+		ended: null,
+		error: null,
+		events: [],
+		tail: emptyTail(),
+	};
+}
+
+/** 会话 id 知道了（续接的一开始就知道；新会话、分叉的这时才有）：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着 */
+function known(run: Live, session: string) {
+	if (run.session !== session) {
+		run.session = session;
+		emit("run", view(run));
+	}
+	if (run.model) state.chooseModel(session, run.model);
+	// 在 mixer 里跑过的会话放进工作区（新会话、分叉的文件夹放到最上面）
+	if (state.addToWorkspace(run.project, run.cwd, session)) emit("workspace", null);
+}
+
+/** 一个输出事件：留着（/api/runs/:id 看得到）；流事件攒进「正在写的那几段」，带上序号推给网页，网页按序号接在快照后面，接不上就重新拿快照 */
+function push(run: Live, ev: Record<string, unknown>) {
+	run.events.push(ev);
+	if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
+	if (counts(ev)) {
+		run.tail = step(run.tail, ev, Date.now());
+		emit("run-event", { id: run.id, seq: run.tail.seq, event: ev });
+	}
+}
+
+/** 运行结束（跑完、出错、被停）：记下来、作废它的确认请求、接着发排队的 */
+function finish(run: Live, status: "done" | "error" | "stopped", error: string | null) {
+	if (run.status !== "running" && run.ended) return;
+	run.status = run.status === "stopped" ? "stopped" : status;
+	if (run.status === "error") run.error = error || "出错了";
+	run.ended = new Date().toISOString();
+	delete run.halt;
+	if (run.session) state.finished(run.project, run.session, run.status === "error");
+	for (const a of approvals.values()) if (a.run === run.id) { a.resolve({ allow: false, message: "运行已结束" }); approvals.delete(a.id); }
+	emit("run", view(run));
+	if (run.session) drain(run.session);
+}
+
+/** Codex：codex app-server 上跑一轮（codex-run.ts）。分叉点是节点，Codex 按轮分叉：换成它所在的那一轮 */
+function startCodex(run: Live, o: { mode: Run["mode"]; at?: string | null; prompt: string; permission: string; cwd: string; session: string | null }, images: Image[], cx: ReturnType<typeof codex.find>) {
+	runs.set(run.id, run);
+	emit("run", view(run));
+	(async () => {
+		try {
+			const at = o.mode === "fork" && o.at && cx ? await codex.turnOf(cx, o.at) : null;
+			if (o.mode === "fork" && o.at && !at) throw new Error("找不到分叉点在哪一轮");
+			const h = await codexRun.launch({ cwd: o.cwd, mode: o.mode, session: o.session, at, prompt: o.prompt, images, permission: o.permission, model: run.model }, {
+				event: (ev) => push(run, ev),
+				session: (sid) => known(run, sid),
+				ask: (tool, input) => ask(run.id, tool, input),
+				end: (status, error) => finish(run, status, error ?? null),
+			});
+			if (run.status === "running") run.halt = h.stop;
+			else if (!run.ended) h.stop();
+		} catch (e) {
+			finish(run, "error", e instanceof Error ? e.message : String(e));
+		}
+	})();
 	return view(run);
 }
 
@@ -214,10 +265,12 @@ function drain(session: string) {
 
 export function stop(id: string) {
 	const r = runs.get(id);
-	if (!r?.child) return false;
+	if (!r || r.status !== "running") return false;
 	r.status = "stopped";
-	r.child.kill("SIGINT");
-	setTimeout(() => r.child?.kill("SIGKILL"), 5000).unref();
+	if (r.child) {
+		r.child.kill("SIGINT");
+		setTimeout(() => r.child?.kill("SIGKILL"), 5000).unref();
+	} else r.halt?.();
 	return true;
 }
 

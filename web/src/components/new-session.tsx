@@ -11,7 +11,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type Project, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
-import { ModelSelect, PermissionSelect } from "./conversation";
+import type { Agent } from "@/lib/model";
+import { AgentSelect, ModelSelect, PermissionSelect } from "./conversation";
+
+/** 上次开新会话用的 agent（这台设备上） */
+const AGENT_KEY = "mixer.agent";
+const lastAgent = (): Agent => { try { return localStorage.getItem(AGENT_KEY) === "codex" ? "codex" : "claude"; } catch { return "claude"; } };
 
 const tilde = (p: string, home: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
 
@@ -115,9 +120,15 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 	);
 }
 
-/** 写第一句话、选权限、开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话 */
-export function StartBox({ target, autoFocus, placeholder, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; placeholder?: string; onStarted?: () => void }) {
+/** 写第一句话、选 agent（Claude Code / Codex）、权限、模型，开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话。lead：放在提示语前面 */
+export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; lead?: string; onStarted?: () => void }) {
 	const { follow } = useLive();
+	const [agent, setAgent] = useState<Agent>(lastAgent);
+	const pick = (a: Agent) => {
+		setAgent(a);
+		setModel("");
+		try { localStorage.setItem(AGENT_KEY, a); } catch {}
+	};
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState("");
@@ -127,7 +138,7 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 		setBusy(true);
 		try {
 			askNotify();
-			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission, model: model || null });
+			const r = await api<Run>("/api/runs", { mode: "new", ...target, agent, prompt: text, permission, model: model || null });
 			follow(r);
 			setText("");
 			toast.success("已开始，建好后自动打开");
@@ -145,12 +156,13 @@ export function StartBox({ target, autoFocus, placeholder, onStarted }: { target
 				value={text}
 				onChange={(e) => setText(e.target.value)}
 				onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-				placeholder={placeholder ?? "要 Claude 做什么……"}
+				placeholder={`${lead ?? ""}要 ${agent === "codex" ? "Codex" : "Claude"} 做什么……`}
 				className="max-h-[40svh] min-h-24 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 			/>
 			<div className="flex items-center gap-1.5">
+				<AgentSelect value={agent} onChange={pick} />
 				<PermissionSelect value={permission} onChange={setPermission} />
-				<ModelSelect value={model} onChange={setModel} />
+				<ModelSelect value={model} onChange={setModel} agent={agent} />
 				<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
 					{busy ? <Spinner /> : <Send className="size-4" />}
 				</Button>
@@ -175,7 +187,7 @@ export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange
 			<DialogContent className="top-[max(1rem,env(safe-area-inset-top))] translate-y-0 gap-4 sm:top-[12vh] sm:max-w-lg">
 				<DialogHeader>
 					<DialogTitle>新会话</DialogTitle>
-					<DialogDescription className="sr-only">选择一个文件夹，Claude 在那里开始新会话</DialogDescription>
+					<DialogDescription className="sr-only">选择一个文件夹，在那里开始新会话</DialogDescription>
 				</DialogHeader>
 				{cwd ? (
 					<div className="flex flex-col gap-3">

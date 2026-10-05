@@ -22,8 +22,8 @@ const projectId = (path: string) => path.replace(/[^a-zA-Z0-9]/g, "-");
 type Ctx = { used: number; model: string };
 type Node =
 	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number }
-	| { k: "assistant" | "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx }
-	| { k: "tool"; uuid: string; parent: string | null; ts: string; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: null; agent: null; ctx?: Ctx }
+	| { k: "assistant" | "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx; key?: string }
+	| { k: "tool"; uuid: string; parent: string | null; ts: string; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: null; agent: null; ctx?: Ctx; key?: string }
 	| { k: "event"; uuid: string; parent: string | null; ts: string; kind: "compact" | "info"; text: string; detail?: string };
 
 // —— 有哪些会话 ——
@@ -56,7 +56,16 @@ function refresh() {
 	if (!existsSync(CODEX)) return;
 	const walk = (dir: string, depth: number): string[] =>
 		readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() && depth < 3 ? walk(join(dir, e.name), depth + 1) : e.isFile() && e.name.endsWith(".jsonl") && depth === 3 ? [join(dir, e.name)] : []));
-	for (const file of walk(CODEX, 0)) {
+	const files = walk(CODEX, 0);
+	// Codex 会删掉自己的临时会话：文件没了就忘掉
+	const seen = new Set(files);
+	for (const [file, i] of infos) {
+		if (seen.has(file)) continue;
+		infos.delete(file);
+		cache.delete(file);
+		if (byId.get(i.id) === i) byId.delete(i.id);
+	}
+	for (const file of files) {
 		if (infos.has(file)) continue;
 		try {
 			const m = JSON.parse(firstLine(file)) as { type?: string; payload?: { id?: string; cwd?: string; thread_source?: string; parent_thread_id?: string } };
@@ -75,13 +84,13 @@ function all() {
 		refresh();
 		scanned = Date.now();
 	}
-	return [...byId.values()].filter((i) => !i.hidden);
+	return [...byId.values()].filter((i) => !i.hidden && existsSync(i.file));
 }
 /** 这个 id 是不是 Codex 的会话（不认识的再扫一次目录：刚建的） */
 export function find(id: string): Info | null {
-	if (!byId.has(id) && /^[0-9a-f-]{36}$/.test(id)) refresh();
+	if ((!byId.has(id) || !existsSync(byId.get(id)!.file)) && /^[0-9a-f-]{36}$/.test(id)) refresh();
 	const i = byId.get(id);
-	return i && !i.hidden ? i : null;
+	return i && !i.hidden && existsSync(i.file) ? i : null;
 }
 /** 监视到的文件名（年/月/日/rollout-…-<id>.jsonl）→ 会话 */
 export function fromPath(rel: string) {
@@ -124,7 +133,7 @@ function summarize(name: string, input: string): string {
 	try {
 		const a = JSON.parse(input) as Raw;
 		const cmd = Array.isArray(a.command) ? a.command.join(" ") : a.cmd ?? a.command;
-		const pick = cmd ?? a.path ?? a.file_path ?? a.query ?? a.url ?? a.pattern ?? a.title ?? a.questions?.[0]?.title ?? a.prompt ?? "";
+		const pick = a.description ?? cmd ?? a.file_path ?? a.path ?? a.query ?? a.url ?? a.pattern ?? a.title ?? a.questions?.[0]?.title ?? a.prompt ?? "";
 		if (pick) return String(pick).split("\n")[0].slice(0, 160);
 	} catch {}
 	// apply_patch、exec（一段 JS）这类原样的输入：第一行有意义的
@@ -152,47 +161,125 @@ type Parsed = {
 	inputs: Map<string, string>;
 	results: Map<string, string>;
 	images: Map<string, { media: string; data: string }[]>;
+	/** 节点在第几轮（分叉要按轮：thread/fork 的 lastTurnId） */
+	turns: Map<string, string>;
+	/** 节点是文件里第几条记录（ordinal）：分叉出来的会话只带原会话这条之前的 */
+	ords: Map<string, number>;
 	/** 这个会话用过的模型 → 上下文窗口 */
 	windows: Record<string, number>;
-	meta: { first: string | null; last: string | null; prompts: number };
+	meta: { first: string | null; last: string | null; fresh: string | null; prompts: number; parent: string | null };
 };
 const cache = new Map<string, Parsed>();
 
-/** 整个文件读一遍（变了就重读：Codex 的记录不大，也不像 Claude 那样要按 uuid 接） */
+/** 命令：「/bin/zsh -lc '…'」或 ["/bin/zsh", "-lc", "…"] → 里面那句（记录里和运行中的流里都这样显示） */
+export function shellInner(cmd: unknown): string {
+	if (Array.isArray(cmd)) return String(cmd.length === 3 && /sh$/.test(String(cmd[0])) && cmd[1] === "-lc" ? cmd[2] : cmd.join(" "));
+	const s = String(cmd ?? "");
+	const m = /^\/bin\/(?:ba|z)?sh -lc (['"])([\s\S]*)\1$/.exec(s);
+	return m ? m[2] : s;
+}
+/** 一个工具 item（记录里的 PascalCase 和流里的 camelCase 都认）→ 工具名、给网页的参数（JSON，按 tail.ts 的 summarize 挑一句显示） */
+export function toolOf(item: Raw): { name: string; input: Raw } | null {
+	const t = String(item.type ?? "").toLowerCase();
+	if (t === "commandexecution") return { name: "exec_command", input: { command: shellInner(item.command) } };
+	if (t === "filechange") {
+		const ch = item.changes;
+		const paths = Array.isArray(ch) ? ch.map((c: Raw) => String(c.path)) : Object.keys(ch ?? {});
+		return { name: "apply_patch", input: { file_path: paths[0] ?? "", ...(paths.length > 1 ? { files: paths } : {}) } };
+	}
+	if (t === "mcptoolcall") return { name: String(item.tool ?? "mcp"), input: { description: item.arguments?.title, ...(item.arguments ?? {}) } };
+	if (t === "websearch" || (t === "extension" && item.kind === "web.search")) return { name: "web_search", input: { query: item.query ?? item.action?.queries?.[0] ?? "" } };
+	return null;
+}
+/** 工具 item 的结果：输出、出没出错 */
+function resultOf(item: Raw): { text: string; error: boolean } {
+	const t = String(item.type ?? "").toLowerCase();
+	const failed = /fail|declin|error/i.test(String(item.status ?? ""));
+	if (t === "commandexecution") {
+		const code = item.exit_code ?? item.exitCode;
+		const text = item.aggregated_output ?? item.aggregatedOutput ?? [item.stdout, item.stderr].filter(Boolean).join("\n");
+		return { text: String(text ?? ""), error: failed || (typeof code === "number" && code !== 0) };
+	}
+	if (t === "filechange") return { text: String(item.stdout ?? item.stderr ?? ""), error: failed };
+	if (t === "mcptoolcall") return { text: (item.result?.content ?? []).map((c: Raw) => (c?.type === "text" ? c.text : c?.type === "image" ? "[图片]" : "")).join("\n") || (item.error ? JSON.stringify(item.error) : ""), error: failed || !!item.error };
+	return { text: (item.results ?? []).map((r: Raw) => [r.title, r.url].filter(Boolean).join(" ")).join("\n"), error: failed };
+}
+
+/**
+ * 整个文件读一遍（变了就重读：Codex 的记录不大，也不像 Claude 那样要按 uuid 接）。
+ * 新版本（有 item_completed 的）按 item 拼：id 和 app-server 流里的一样，运行中正在写的那段写进记录后能对上（key「item id:0」）；
+ * 老版本按 response_item 拼。分叉出来的会话文件里只有自己的记录：前面接上原会话 forked_from_ordinal_exclusive 之前的节点
+ */
 async function parse(file: string): Promise<Parsed> {
 	const st = statSync(file);
 	const old = cache.get(file);
 	if (old && old.size === st.size && old.mtime === st.mtimeMs) return old;
-	const p: Parsed = { size: st.size, mtime: st.mtimeMs, nodes: [], inputs: new Map(), results: new Map(), images: new Map(), windows: {}, meta: { first: null, last: null, prompts: 0 } };
+	const recs: Raw[] = [];
+	for await (const { line } of lines(file)) {
+		try { recs.push(JSON.parse(line)); } catch {}
+	}
+	const meta = (recs[0]?.type === "session_meta" ? recs[0].payload : {}) as Raw;
+	const short = String(meta.id ?? "").slice(-8);
+	const modern = recs.some((r) => r.type === "event_msg" && r.payload?.type === "item_completed");
+	const p: Parsed = { size: st.size, mtime: st.mtimeMs, nodes: [], inputs: new Map(), results: new Map(), images: new Map(), turns: new Map(), ords: new Map(), windows: {}, meta: { first: null, last: null, fresh: null, prompts: 0, parent: null } };
+
+	// 分叉：先接上原会话分叉点之前的
+	const from = typeof meta.forked_from_id === "string" ? byId.get(meta.forked_from_id) : undefined;
+	if (from && from.file !== file) {
+		const base = await parse(from.file);
+		const upto = typeof meta.forked_from_ordinal_exclusive === "number" ? meta.forked_from_ordinal_exclusive : Number.POSITIVE_INFINITY;
+		p.nodes = base.nodes.filter((n) => (base.ords.get(n.uuid) ?? 0) < upto);
+		for (const k of ["inputs", "results", "images", "turns", "ords"] as const) (p[k] as Map<string, unknown>) = new Map(base[k] as Map<string, unknown>);
+		Object.assign(p.windows, base.windows);
+		const users = p.nodes.filter((n) => n.k === "user") as Extract<Node, { k: "user" }>[];
+		p.meta = { ...p.meta, first: users[0]?.text.slice(0, 200) ?? null, last: users.at(-1)?.text.slice(0, 200) ?? null, prompts: users.length, parent: from.id };
+	}
+
 	const tools = new Map<string, Extract<Node, { k: "tool" }>>();
 	let model = "";
 	let window = 0;
-	let no = 0;
+	let turn = "";
+	let ord = 0;
 	const add = (n: NoParent<Node>) => {
 		const node = { ...n, parent: p.nodes[p.nodes.length - 1]?.uuid ?? null } as Node;
 		p.nodes.push(node);
+		if (turn) p.turns.set(node.uuid, turn);
+		p.ords.set(node.uuid, ord);
 		return node;
 	};
 	const human = (uuid: string, ts: string, raw: string, images: string[]) => {
-		const text = answers(raw) ?? raw;
+		const text = (answers(raw) ?? raw).trim();
 		const imgs = images.flatMap((u) => { const m = /^data:([^;]+);base64,(.*)$/s.exec(u); return m ? [{ media: m[1], data: m[2] }] : []; });
 		if (imgs.length) p.images.set(uuid, imgs);
-		add({ k: "user", uuid, ts, text: text.trim(), images: imgs.length });
+		add({ k: "user", uuid, ts, text, images: imgs.length });
 		p.meta.prompts++;
-		p.meta.first ??= text.trim().slice(0, 200);
-		p.meta.last = text.trim().slice(0, 200);
+		p.meta.first ??= text.slice(0, 200);
+		p.meta.fresh ??= text.slice(0, 200);
+		p.meta.last = text.slice(0, 200);
 	};
-	for await (const { line } of lines(file)) {
-		const uuid = `c${no++}`;
-		let r: Raw;
-		try { r = JSON.parse(line); } catch { continue; }
+	const tool = (uuid: string, ts: string, id: string, name: string, input: string, summary: string, key?: string) => {
+		p.inputs.set(id, pretty(input));
+		const t = add({ k: "tool", uuid, ts, id, name, summary, input: cut(pretty(input), 400).text, result: null, resultUuid: null, agent: null, ...(key ? { key } : {}) }) as Extract<Node, { k: "tool" }>;
+		tools.set(id, t);
+		return t;
+	};
+	const done = (t: Extract<Node, { k: "tool" }>, text: string, error: boolean) => {
+		p.results.set(t.id, text);
+		const c = cut(text, BRIEF_RESULT);
+		t.result = { text: c.text, cut: c.cut, error, images: 0 };
+	};
+
+	for (const [no, r] of recs.entries()) {
+		const uuid = `${short}-${no}`;
+		ord = typeof r.ordinal === "number" ? r.ordinal : no;
 		const ts = String(r.timestamp ?? "");
 		const d = (r.payload ?? {}) as Raw;
+		const tid = d.turn_id ?? d.internal_chat_message_metadata_passthrough?.turn_id;
+		if (typeof tid === "string") turn = tid;
 		if (r.type === "turn_context" && typeof d.model === "string") model = d.model;
 		else if (r.type === "compacted") add({ k: "event", uuid, ts, kind: "compact", text: "上下文已压缩", ...(d.message ? { detail: String(d.message) } : {}) });
 		else if (r.type === "event_msg") {
-			if (d.type === "user_message") human(uuid, ts, String(d.message ?? ""), Array.isArray(d.images) ? d.images.map(String) : []);
-			else if (d.type === "item_completed" && d.item?.type === "UserMessage") human(uuid, ts, (d.item.content ?? []).map((c: Raw) => (c?.type === "text" ? c.text : "")).join(""), []);
+			if (d.type === "user_message" && !modern) human(uuid, ts, String(d.message ?? ""), Array.isArray(d.images) ? d.images.map(String) : []);
 			else if (d.type === "turn_aborted") add({ k: "event", uuid, ts, kind: "info", text: "被打断了" });
 			else if (d.type === "context_compacted" && !(p.nodes.at(-1)?.k === "event" && (p.nodes.at(-1) as Raw).kind === "compact")) add({ k: "event", uuid, ts, kind: "compact", text: "上下文已压缩" });
 			else if (d.type === "task_started" && typeof d.model_context_window === "number") window = d.model_context_window;
@@ -203,8 +290,31 @@ async function parse(file: string): Promise<Parsed> {
 				// 用量记在最近一个 Codex 的节点上（和 Claude 的一样，网页取路上最后一个带 ctx 的）
 				const last = [...p.nodes].reverse().find((n) => n.k !== "user" && n.k !== "event") as Raw | undefined;
 				if (u && last && model) last.ctx = { used: (u.input_tokens ?? 0) + (u.output_tokens ?? 0), model };
+			} else if (d.type === "item_completed" && d.item) {
+				// 新版本：一个 item 一个节点，uuid 用 item 的 id
+				const it = d.item as Raw;
+				const id = String(it.id ?? uuid);
+				const key = `${id}:0`;
+				if (it.type === "UserMessage") {
+					const content = (it.content ?? []) as Raw[];
+					human(id, ts, content.map((c) => (c?.type === "text" ? c.text : "")).join(""), content.flatMap((c) => (c?.type === "image" && typeof c.url === "string" ? [c.url] : [])));
+				} else if (it.type === "AgentMessage") {
+					const text = (it.content ?? []).map((c: Raw) => c?.text ?? "").join("");
+					if (text.trim()) add({ k: "assistant", uuid: id, ts, text, key });
+				} else if (it.type === "Reasoning") {
+					const text = [...(it.summary_text ?? it.summary ?? [])].map(String).filter(Boolean).join("\n\n");
+					if (text.trim()) add({ k: "thinking", uuid: id, ts, text, key });
+				} else {
+					const t = toolOf(it);
+					if (!t) continue;
+					const input = JSON.stringify(t.input);
+					const node = tool(id, ts, id, t.name, input, summarize(t.name, input), key);
+					const res = resultOf(it);
+					done(node, res.text, res.error);
+				}
 			}
-		} else if (r.type === "response_item") {
+		} else if (r.type === "response_item" && !modern) {
+			// 老版本：按 response_item 拼
 			if (d.type === "message" && d.role === "assistant") {
 				const text = (d.content ?? []).map((c: Raw) => (c?.type === "output_text" ? c.text : "")).join("");
 				if (text.trim()) add({ k: "assistant", uuid, ts, text });
@@ -215,21 +325,16 @@ async function parse(file: string): Promise<Parsed> {
 				const id = String(d.call_id ?? d.id ?? uuid);
 				const name = d.type === "web_search_call" ? "web_search" : d.type === "local_shell_call" ? "shell" : String(d.name ?? "tool");
 				const input = d.type === "function_call" ? String(d.arguments ?? "") : d.type === "custom_tool_call" ? String(d.input ?? "") : JSON.stringify(d.action ?? {});
-				p.inputs.set(id, pretty(input));
-				const t = add({ k: "tool", uuid, ts, id, name, summary: summarize(name, input), input: cut(pretty(input), 400).text, result: null, resultUuid: null, agent: null }) as Extract<Node, { k: "tool" }>;
+				const t = tool(uuid, ts, id, name, input, summarize(name, input));
 				// 网页搜索没有单独的结果记录：搜过就算完成
-				if (d.type === "web_search_call") t.result = { text: "", error: false, cut: false, images: 0 };
-				tools.set(id, t);
+				if (d.type === "web_search_call") done(t, "", false);
 			} else if (d.type === "function_call_output" || d.type === "custom_tool_call_output" || d.type === "local_shell_call_output") {
-				const id = String(d.call_id ?? "");
-				const t = tools.get(id);
+				const t = tools.get(String(d.call_id ?? ""));
 				if (!t) continue;
 				const o = outputText(d.output);
 				// 命令的输出里写着退出码：不是 0 算出错
 				const code = /Process exited with code (\d+)/.exec(o.text)?.[1] ?? /"exit_code":\s*(\d+)/.exec(o.text)?.[1];
-				p.results.set(id, o.text);
-				const c = cut(o.text, BRIEF_RESULT);
-				t.result = { text: c.text, cut: c.cut, error: o.error || (!!code && code !== "0"), images: o.images };
+				done(t, o.text, o.error || (!!code && code !== "0"));
 			}
 		}
 	}
@@ -247,14 +352,15 @@ async function metaOf(i: Info) {
 		title: title(i.id),
 		first: p.meta.first,
 		last: p.meta.last,
-		fresh: p.meta.first,
+		fresh: p.meta.fresh,
 		prompts: p.meta.prompts,
 		size: st.size,
 		mtime: st.mtime.toISOString(),
 		active: Date.now() - st.mtimeMs < 90_000,
 		root: null,
 		born: i.born,
-		parent: null,
+		// 分叉出来的（forked_from_id）：挂在原会话下面
+		parent: p.meta.parent,
 		unread: null,
 	};
 }
@@ -292,3 +398,5 @@ export async function toolDetail(i: Info, id: string) {
 }
 export const fullResult = async (i: Info, id: string) => (await parse(i.file)).results.get(id) ?? null;
 export const image = async (i: Info, uuid: string, n: number) => (await parse(i.file)).images.get(uuid)?.[n] ?? null;
+/** 这个节点在第几轮（从它分叉：thread/fork 的 lastTurnId） */
+export const turnOf = async (i: Info, uuid: string) => (await parse(i.file)).turns.get(uuid) ?? null;

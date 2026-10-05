@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { brotliCompress, constants, gzip, gzipSync } from "node:zlib";
 import * as access from "./access.ts";
 import * as codex from "./codex.ts";
+import * as codexRun from "./codex-run.ts";
 import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
@@ -117,6 +118,8 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/projects$/, (_q, res) => json(res, 200, (projCache = { at: 0, list: [] }, projects()))],
 	[/^\/api\/tree$/, async (_q, res) => json(res, 200, await tree())],
 	[/^\/api\/workspace$/, async (_q, res) => json(res, 200, await workspace.view())],
+	// Codex 能用的模型（codex app-server 的 model/list）
+	[/^\/api\/codex\/models$/, async (_q, res) => json(res, 200, await codexRun.listModels())],
 	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m) => {
@@ -181,7 +184,7 @@ const POST: [RegExp, Handler][] = [
 		const b = JSON.parse(await body(req));
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
 		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
-		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null });
+		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, agent: typeof b.agent === "string" ? b.agent : null });
 		json(res, 200, r);
 	}],
 	[/^\/api\/dirs$/, async (req, res) => {

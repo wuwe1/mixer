@@ -24,13 +24,16 @@ import * as drawer from "@/lib/drawer";
 import { cn } from "@/lib/utils";
 import { Browse } from "./browse";
 
-const STATUS_LABEL: Record<Exclude<Status, null>, string> = { waiting: "待确认", running: "运行中", done: "已完成，未读", error: "出错，未读", terminal: "终端中打开" };
+/** ok / failed 是一步工具调用跑完了：成功、失败 */
+type Mark = Status | "ok" | "failed";
+const STATUS_LABEL: Record<Exclude<Mark, null>, string> = { waiting: "待确认", running: "运行中", done: "已完成，未读", error: "出错，未读", terminal: "终端中打开", ok: "成功", failed: "失败" };
 
 /**
  * 状态标记，全站一套：点 = 要你注意（琥珀待确认，带一圈扩散；蓝已完成未读；红出错未读）；转圈 = 运行中；灰色空心圈 = 终端中打开。
- * 颜色只有这几种意思：琥珀要你确认，红出错，蓝没看过，灰中性
+ * 一步工具调用跑完了：绿点成功、红点失败。
+ * 颜色只有这几种意思：琥珀要你确认，红出错，蓝没看过，绿这一步成功了，灰中性
  */
-export function StatusIcon({ s, className }: { s: Status; className?: string }) {
+export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 	const icon =
 		s === "waiting" ? (
 			<span className="relative flex size-2">
@@ -45,7 +48,8 @@ export function StatusIcon({ s, className }: { s: Status; className?: string }) 
 			</span>
 		)
 		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
-		: s === "error" ? <span className="size-2 rounded-full bg-destructive" />
+		: s === "error" || s === "failed" ? <span className="size-2 rounded-full bg-destructive" />
+		: s === "ok" ? <span className="size-2 rounded-full bg-success" />
 		: s === "terminal" ? <span className="size-2 rounded-full border border-muted-foreground" />
 		: null;
 	return (

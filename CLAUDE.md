@@ -6,14 +6,14 @@
 
 - **项目**：一个文件夹。项目页能开新会话、看文件和改动
 - **侧栏是工作区**：只放你放进来的文件夹和会话，一开始是空的。新会话、分叉、在 mixer 里跑过的会话自动放进来；已有的从「浏览会话」里挑（点一个就打开并放进来）。文件夹按你拖的顺序（按住文件夹图标拖），新放进来的在最上面；文件夹里的会话按时间排，新的在上面。移出：电脑上指着会话点 ×、文件夹的「…」；手机上在会话顶栏的图钉。移出不删记录。手机上侧栏从左边拉出来，跟着手指走，松手时甩得快或拉过一半就打开
-- **Codex**：本机 Codex 的会话也在「浏览会话」里（标着 Codex），能放进工作区、打开看，和同一个文件夹的 Claude 会话在一组。现在只能看，继续、分叉要回到 Codex 里
-- **会话**：侧栏每行右边是时间和状态标记，看侧栏就知道哪些完成了、哪些在运行。标记全站一套，都是小点：待确认是琥珀点、带一圈扩散；运行中是蓝点、带一圈扩散；已完成未读是蓝点；出错未读是红点；终端中打开是灰色空心圈。颜色只有这几种意思：琥珀要你确认、红出错、蓝 Claude 在跑或跑完没看、灰中性
+- **Codex**：开新会话时选 Claude Code 还是 Codex（记在这台设备上）；本机 Codex 的会话也在「浏览会话」里（标着 Codex），和同一个文件夹的 Claude 会话在一组。一个会话只能是一种。Codex 的会话和 Claude 的一样能继续、排队、停止、确认、分叉，只是分叉按轮：从一条回复分叉带上的是它那一整轮
+- **会话**：侧栏每行右边是时间和状态标记，看侧栏就知道哪些完成了、哪些在运行。标记全站一套，都是小点：待确认是琥珀点、带一圈扩散；运行中是蓝点、带一圈扩散；已完成未读是蓝点；出错未读是红点；终端中打开是灰色空心圈。颜色只有这几种意思：琥珀要你确认、红出错、蓝 Claude 在跑或跑完没看、绿一步工具调用成功了、灰中性
 - **开 agent 只有两种办法**：选文件夹开新会话；从一个会话分叉（每条 Claude 的回复、每组工具调用后面的分叉图标「从这里分叉」，每条你的消息后面的铅笔图标「编辑并分叉」）。分叉出来的会话挂在原会话下面
 - **继续**：Claude 正在 mixer 里运行时发送的会排队，本次运行结束（或被中断）后一起发出，排队中的可以取消；看着旧版本、终端中打开时不行，输入框自动变成分叉，并写明原因
 - **用时**：每条回复后面、复制和分叉的左边，是从这一轮开头（你的消息，或叫醒 Claude 的后台任务通知）到这条回复用了多久
 - **版本**：一条消息在终端里编辑过（回退重写），那里有「第 i / n 版」切换。只是看，不产生新东西
 - **不是人和 Claude 说的话**：小结、上下文已压缩（点开看压缩前的摘要）、系统提示是分隔线；后台任务的通知是一行；子代理的回报是单独的卡片
-- **运行中**：你发的消息、正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样，刷新也还在；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来），什么都没在动时末尾留一个 ping 点；输入框那一排有时长和停止。虚线框只用在排队的消息上，意思是「还没发出」
+- **运行中**：你发的消息、正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样，刷新也还在；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来；跑完了那一行留着，成功绿点、失败红点），什么都没在动时末尾留一个 ping 点；输入框那一排有时长和停止。虚线框只用在排队的消息上，意思是「还没发出」
 - **滚动**：停在底部时新内容长出来跟着滚，往上翻了就不跟；右下角「↓」回到最新，离开后有新内容带蓝点。长对话先只画最后一段，往上翻快到顶时自动接上更早的，位置不跳；目录里点到还没画的那条，先画出来再跳过去
 - **消息不丢**：输入框随打随存（这台设备上）；发出去的真写进会话记录才算数，没发出去的放回输入框
 - **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（手机上只有百分比）
@@ -26,8 +26,8 @@
 
 token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不直接写 `amber-500`、`text-[13px]` 这种具体值；review 时看到具体值就是要改的地方。
 
-- **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）
-- **颜色**：`waiting` 琥珀 = 要你确认（待确认的点、确认卡片）；`unread` 蓝 = 在跑（带扩散）/ 跑完没看过；`destructive` 红 = 出错；`muted-foreground` 灰 = 中性。只有这四种意思，别的地方不上色（比如「后台任务 · 完成」是灰的）
+- **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）；工具组收着时露出的最后一步，跑完了是绿点（成功）/ 红点（失败）
+- **颜色**：`waiting` 琥珀 = 要你确认（待确认的点、确认卡片）；`unread` 蓝 = 在跑（带扩散）/ 跑完没看过；`success` 绿 = 一步工具调用成功了；`destructive` 红 = 出错；`muted-foreground` 灰 = 中性。只有这五种意思，别的地方不上色（比如「后台任务 · 完成」是灰的）
 - **改动色**：`added` / `removed` / `modified` / `renamed`，只用在文件改动和 diff 上（git 工具的习惯配色）
 - **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
 - **图标按钮**：Button 的 `size="icon-xs"`（24px，消息后面）/ `"icon-sm"`（28px，面板里）/ `"icon"`（32px，顶栏、发送），不在 className 里另写 `size-*`；小文字按钮用 `size="xs"`
@@ -47,6 +47,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 |---|---|
 | `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>` |
 | `server/codex.ts` | 读 Codex 的会话（`~/.codex/sessions/年/月/日/rollout-*.jsonl`），拼成和 Claude 一样的节点和会话信息；`sessions.ts` 按会话 id 分派过来、列表里合进去。文件变了整个重读 |
+| `server/codex-run.ts` | 在 mixer 里跑 Codex：一个常驻的 `codex app-server`，item 通知翻成和 Claude 一样的 stream_event（tail.ts 原样用），确认请求转成 mixer 的确认。`runs.ts` 按会话是谁的分派过来，排队、停止、结束两边一套 |
 | `server/jsonl.ts` | 按 `\n` 一行一行读（两边共用） |
 | `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库 |
 | `server/dirs.ts` | 新会话选文件夹：列子文件夹、新建，只认家目录里面的 |
@@ -91,7 +92,20 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - 第一行 `session_meta` 很长（带系统提示）。`thread_source` 不是 `user`（比如 `guardian_review` 自动审批）、有 `parent_thread_id` 的是内部会话，不列
 - 标题在 `~/.codex/session_index.jsonl`（`thread_name`，同一个 id 后写的算）。记录是一条直线，没有版本
 - 上下文：`token_count` 的 `info.last_token_usage`（input + output）和 `model_context_window`；模型在 `turn_context.model`
-- 命令行没在 PATH 上，是 Codex.app 带的：`/Applications/Codex.app/Contents/Resources/codex`。继续会话要用 `codex app-server`（JSON-RPC，有 `thread/fork`、`turn/start`、`item/*/requestApproval`）；`codex exec` 不能中途确认
+- 新版本（有 `item_completed` 的）按 item 拼：item 的 id 和 app-server 流里的一样（回复 `msg_…`、命令 `exec-…`、你的消息是 uuid），节点 key 是「item id:0」，运行中正在写的那段写进记录后能对上。`response_item` 里命令被包在 `call_…` 里，对不上，所以新版本不用它
+- 记录里的 item 是 PascalCase、snake_case（`CommandExecution`、`exit_code`、`stdout`），流里是 camelCase（`commandExecution`、`exitCode`、`aggregatedOutput`）：`codex.ts` 的 `toolOf` 两种都认，名字、参数两边一样（命令叫 `exec_command`、参数 `{command}`，「/bin/zsh -lc '…'」只留里面那句）
+- 分叉出来的会话文件里**只有自己的记录**：`session_meta` 的 `forked_from_id` + `forked_from_ordinal_exclusive`，前面要接上原会话那个 ordinal 之前的节点。分叉挂在原会话下面（`parent`）
+- 命令行没在 PATH 上，是 Codex.app 带的：`/Applications/Codex.app/Contents/Resources/codex`（`MIXER_CODEX` 可改）。`codex exec` 不能中途确认，所以用 `codex app-server`
+
+## 跑 Codex（`server/codex-run.ts`）
+
+- `codex app-server` 是 stdio 上一行一个 JSON-RPC（没有 `jsonrpc` 字段）：先 `initialize`，再发 `initialized` 通知。协议的类型 `codex app-server generate-ts --out <目录>` 生成
+- 新会话 `thread/start`；续接 `thread/resume`（这个进程里没载入过的）再 `turn/start`；分叉 `thread/fork` 的 `lastTurnId`（带到这一轮为止，含）：节点按所在的轮换算（`codex.turnOf`）；停 `turn/interrupt`；`turn/completed` 的 `status`（completed / interrupted / failed）就是这次运行结束
+- 模型一定要给：`config.toml` 里写的可能是这个账号用不了的（`gpt-5.4` 报 400），不给就用 `model/list` 的 `isDefault`。**分叉不继承模型**，也要给。`thread/turns/list` 是新的在前
+- 推理摘要要 `turn/start` 带 `summary: "detailed"`，不然只有加密内容
+- 权限：自动 = `on-request` + `workspace-write`（Codex 自己的 Auto：工作区里随便写，越界、要网络才问）；每次询问 = `untrusted`；计划模式 = `read-only`
+- 确认：`item/commandExecution/requestApproval` → 卡片上是 Bash + 命令 + Codex 说的理由，回 `accept` / `decline`；`item/fileChange/requestApproval` → Edit + 文件；`item/permissions/requestApproval` → 回要的权限或空的。Codex 提问（`item/tool/requestUserInput`）mixer 还答不了，回空
+- 出错：先来一个 `error` 通知，再是 `failed` 的 `turn/completed`，错误信息常常是一段 JSON，取里面的 `error.message`
 
 ## 运行（`server/runs.ts`）
 
@@ -121,3 +135,4 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 - 常驻：launchd `~/Library/LaunchAgents/com.mixer.server.plist`（`KeepAlive`，PATH 里要有 `claude`、node、git），日志 `~/Library/Logs/mixer.log`
 - 改了自己的代码会自动换上（`main.ts`）：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）之后，服务端的代码（`server/`、`mcp/`、`web/src/lib/tail.ts`）类型检查过了就退出、launchd 拉起新的；只改了页面就重新打包。检查没过不重启，日志里有原因。要马上重启：`launchctl kickstart -k gui/$(id -u)/com.mixer.server`
+- 这台机器上的外网地址、隧道这些写在 `CLAUDE.local.md`（不进 git）

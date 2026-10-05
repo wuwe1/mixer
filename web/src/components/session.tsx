@@ -227,7 +227,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
 							{t && w ? (
-								<Conversation key={session} project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} readOnly={codex} />
+								<Conversation key={session} project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} />
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
 							)}
@@ -240,11 +240,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{codex ? (
-					<p className="border-t px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-center text-xs text-muted-foreground">Codex 的会话现在只能在这里看；继续、分叉要回到 Codex 里</p>
-				) : (
-					w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} />
-				)}
+				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} agent={codex ? "codex" : "claude"} />}
 			</div>
 
 			{wide && panel && (

@@ -17,6 +17,12 @@ export const emptyTail = (): Tail => ({ seq: 0, msg: null, blocks: [] });
 // biome-ignore lint: 命令行的事件格式，没有类型
 type Ev = Record<string, any>;
 
+/** 工具调用一行里显示的那句（Bash 的说明、文件路径、搜的词…）：记录里的和流里正在写的用同一份，写完换成记录里的时不变 */
+export function summarize(input: Ev): string {
+	const pick = input.description ?? input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.url ?? input.prompt ?? input.skill ?? "";
+	return String(pick).split("\n")[0].slice(0, 160);
+}
+
 /** 只有 stream_event 会改动这几段；别的事件不算序号 */
 export const counts = (ev: Ev) => ev?.type === "stream_event" && !!ev.event;
 

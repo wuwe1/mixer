@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import * as codex from "./codex.ts";
 import { lines } from "./jsonl.ts";
+import { summarize } from "../web/src/lib/tail.ts";
 import { chosenModel, ourLastWrite, unread, windows } from "./state.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
@@ -282,11 +283,6 @@ const resultText = (c: unknown): string => {
 };
 
 /** 工具调用的一行摘要：命令、文件路径、搜索词…… */
-function summarize(input: Raw): string {
-	const pick = input.description ?? input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.url ?? input.prompt ?? input.skill ?? "";
-	return String(pick).split("\n")[0].slice(0, 160);
-}
-
 type Tool = Extract<Node, { k: "tool" }>;
 /**
  * 一个会话读到哪了、拼成的节点，文件长了接着往下读。

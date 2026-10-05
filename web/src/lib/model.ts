@@ -34,6 +34,11 @@ export const defaultModel = (path: Node[], chosen: string | null) => {
 	return f && MODELS.some((m) => m.v === f) ? f : null;
 };
 
+export type Agent = "claude" | "codex";
+/** Codex 的会话下一条用哪个模型：选过的；没选过就接着用上一条回复的（完整型号）；都没有就是 Codex 的默认 */
+export const codexModel = (path: Node[], chosen: string | null) => chosen ?? lastCtx(path)?.model ?? null;
+export const modelFor = (agent: Agent, path: Node[], chosen: string | null) => (agent === "codex" ? codexModel(path, chosen) : defaultModel(path, chosen));
+
 /** 模型的上下文窗口：完整型号直接查；别名用学到的同系列里最新的那个 */
 export function windowOf(model: string, windows: Record<string, number>) {
 	if (windows[model]) return windows[model];

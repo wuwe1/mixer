@@ -206,6 +206,9 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 	const imgs = tools.flatMap((t) => resultImages(t, project, session, agent));
 	// 只有思考的一组：正在想的时候不另起一行，标题上直接带 ping 点、最新一句和耗时
 	const thinking = !tools.length && now?.node.k === "thinking" ? now : null;
+	const running = now && !thinking ? now : null;
+	const lastTool = tools[tools.length - 1];
+	const shown = running?.node ?? (lastTool?.result ? lastTool : null);
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<div className="flex items-center gap-1">
@@ -238,13 +241,13 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 			</CollapsibleTrigger>
 			{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />}
 			</div>
-			{/* 收着的时候正在进行的那一步也露出来，不用点开就知道在干什么 */}
-			{now && !thinking && (
+			{/* 收着的时候最后一步也露出来：在跑是蓝点带耗时，跑完了留着，成功绿点、失败红点 */}
+			{shown && (
 				<div className="flex items-center gap-2 py-1 pl-5.5 text-md group-data-[state=open]/stepbox:hidden">
-					<StatusIcon s="running" className="size-3.5" />
-					<span className="shrink-0 font-medium">{now.node.k === "tool" ? toolName(now.node.name) : "思考"}</span>
-					{now.node.k === "tool" ? <span className="truncate font-mono text-xs text-muted-foreground">{now.node.summary}</span> : <span className="truncate text-muted-foreground">{latest(now.node)}</span>}
-					<Elapsed since={now.since} className="ml-auto shrink-0 text-2xs text-muted-foreground" />
+					<StatusIcon s={running ? "running" : shown.k === "tool" && shown.result?.error ? "failed" : "ok"} className="size-3.5" />
+					<span className="shrink-0 font-medium">{shown.k === "tool" ? toolName(shown.name) : "思考"}</span>
+					{shown.k === "tool" ? <span className="truncate font-mono text-xs text-muted-foreground">{shown.summary}</span> : <span className="truncate text-muted-foreground">{latest(shown)}</span>}
+					{running && <Elapsed since={running.since} className="ml-auto shrink-0 text-2xs text-muted-foreground" />}
 				</div>
 			)}
 			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}

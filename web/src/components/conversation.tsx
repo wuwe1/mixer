@@ -3,7 +3,7 @@
 // 输入框只有两种发送方式：继续（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
 // Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
 // 从中间分叉：每条回复、每组工具调用的「⋯」→ 从这里分叉；每条你的消息的「⋯」→ 编辑并分叉。
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Clock, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, X } from "lucide-react";
+import { Bot, ChevronDown, Code, ChevronLeft, ChevronRight, Clock, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, X } from "lucide-react";
 import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,9 +17,9 @@ import { type Agent, api, enc, type Node, type Queued, type Run } from "@/lib/ap
 import { useEvent } from "@/lib/events";
 import { askNotify, type Status, useLive } from "@/lib/live";
 import { go } from "@/lib/route";
-import { defaultModel, family, lastCtx, MODELS, pretty, windowOf } from "@/lib/model";
+import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf } from "@/lib/model";
 import { useDraft, useOutbox } from "@/lib/outbox";
-import { type Block as LiveBlock, emptyTail, step, type Tail } from "@/lib/tail";
+import { type Block as LiveBlock, emptyTail, step, summarize, type Tail } from "@/lib/tail";
 import { clock } from "@/lib/time";
 import { ApprovalCard } from "./approvals";
 import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
@@ -235,6 +235,27 @@ const PERMISSIONS: Option[] = [
 	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先出计划" },
 ];
 
+/** Codex 能用的模型：整个页面拿一次（codex app-server 的 model/list） */
+let codexModels: Promise<{ id: string; label: string; isDefault: boolean }[]> | null = null;
+function useCodexModels(on: boolean) {
+	const [list, setList] = useState<{ id: string; label: string; isDefault: boolean }[]>([]);
+	useEffect(() => {
+		if (!on) return;
+		codexModels ??= api<{ id: string; label: string; isDefault: boolean }[]>("/api/codex/models").catch(() => { codexModels = null; return []; });
+		codexModels.then(setList);
+	}, [on]);
+	return list;
+}
+
+/** 新会话用哪个 agent */
+export function AgentSelect({ value, onChange }: { value: Kind; onChange: (v: Kind) => void }) {
+	const options: Option[] = [
+		{ v: "claude", icon: Sparkles, label: "Claude Code", desc: "用本机的 claude 命令行" },
+		{ v: "codex", icon: Code, label: "Codex", desc: "用本机的 Codex（codex app-server）" },
+	];
+	return <OptionMenu title="Agent" options={options} value={value} onChange={(v) => onChange(v as Kind)} />;
+}
+
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
 	return <OptionMenu title="权限" options={PERMISSIONS} value={value} onChange={onChange} />;
 }
@@ -243,7 +264,16 @@ export function PermissionSelect({ value, onChange }: { value: string; onChange:
  * 下一条用的模型。value 是别名，"" 是 Claude Code 的默认；current 是上一条回复实际用的完整型号，同系列时显示它（Opus 5.5），
  * 手机上只显示系列名
  */
-export function ModelSelect({ value, onChange, current }: { value: string; onChange: (v: string) => void; current?: string | null }) {
+export function ModelSelect({ value, onChange, current, agent = "claude" }: { value: string; onChange: (v: string) => void; current?: string | null; agent?: Kind }) {
+	const codex = useCodexModels(agent === "codex");
+	if (agent === "codex") {
+		const def = codex.find((m) => m.isDefault)?.id;
+		const opts: Option[] = [
+			{ v: "", icon: Bot, label: "默认", desc: def ? `Codex 的默认（${def}）` : "Codex 的默认" },
+			...codex.map((m) => ({ v: m.id, icon: Bot, label: m.label, desc: current === m.id ? "现在用的" : m.id })),
+		];
+		return <OptionMenu title="模型" options={opts} value={value} onChange={onChange} text={value || current || "默认"} />;
+	}
 	const options: Option[] = [
 		{ v: "", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
 		...MODELS.map((m) => ({ v: m.v as string, icon: Bot, label: m.label, desc: current && family(current) === m.v ? `现在用的是 ${pretty(current)}` : `最新的 ${m.label}` })),
@@ -258,8 +288,8 @@ export function ModelSelect({ value, onChange, current }: { value: string; onCha
 	return <OptionMenu title="模型" options={options} value={value} onChange={onChange} text={text} />;
 }
 
-/** readOnly：只能看（Codex 的会话），不给分叉 */
-export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, readOnly }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; readOnly?: boolean }) {
+/** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样） */
+export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, kind = "claude" }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind }) {
 	const { approvals, runs } = useLive();
 	const [agent, setAgent] = useState<Agent | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
@@ -322,18 +352,23 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 						{v && <VersionSwitch v={v} best={t.best} />}
 						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
 						{b.kind === "steps" ? (
-							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={readOnly || b.nodes.some(isLive) ? undefined : forkSteps} />
+							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} />
 						) : b.n.k === "user" ? (
-							<UserMessage n={b.n} project={project} session={session} onFork={readOnly || isLive(b.n) ? undefined : forkEdit} />
+							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : forkEdit} />
 						) : b.n.k === "assistant" ? (
-							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={readOnly || isLive(b.n) ? undefined : forkReply} />
+							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} />
 						) : b.n.k === "event" ? (
 							<EventLine n={b.n} onAgent={openAgent} />
 						) : null}
 					</div>
 				);
 			})}
-			{idle && <StatusIcon s="running" className="-mt-2" />}
+			{/* 和工具组收着时露出的那一步对齐：同样缩进、同样大小 */}
+			{idle && (
+				<div className="-mt-3 flex py-1 pl-5.5">
+					<StatusIcon s="running" className="size-3.5" />
+				</div>
+			)}
 			<QueuedMessages session={session} />
 			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-waiting/50" />)}
 
@@ -360,7 +395,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 				</SheetContent>
 			</Sheet>
 
-			<ForkDialog project={project} session={session} w={w} chosen={chosen} target={fork} onClose={() => setFork(null)} />
+			<ForkDialog project={project} session={session} w={w} chosen={chosen} target={fork} agent={kind} onClose={() => setFork(null)} />
 		</>
 	);
 }
@@ -445,7 +480,7 @@ function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<
 	);
 }
 
-export function Composer({ project, session, w, status, windows, chosen, stream }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; stream: Stream }) {
+export function Composer({ project, session, w, status, windows, chosen, stream, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; stream: Stream; agent?: Kind }) {
 	const { follow, runs, queue } = useLive();
 	const [text, setText] = useDraft(session);
 	// 发出去的先记着，真写进会话记录才算数；没发出去的放回输入框
@@ -454,14 +489,14 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 	const busyRun = status === "running" || status === "waiting";
 	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
 	const [permission, setPermission] = useState("auto");
-	const [model, setModel] = useState(() => defaultModel(w.path, chosen) ?? "");
+	const [model, setModel] = useState(() => modelFor(agent, w.path, chosen) ?? "");
 	const [busy, setBusy] = useState(false);
 	const [skills, setSkills] = useState(false);
 	const [shots, setShots] = useState<Shot[]>([]);
 	const input = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => setMode(why ? "fork" : "resume"), [why]);
 	// 换了会话、或者在别处（终端、另一个页面）换了模型：跟着变
-	const fallback = defaultModel(w.path, chosen) ?? "";
+	const fallback = modelFor(agent, w.path, chosen) ?? "";
 	useEffect(() => setModel(fallback), [session, fallback]);
 	const send = async () => {
 		if ((!text.trim() && !shots.length) || busy) return;
@@ -514,8 +549,8 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 						]}
 					/>
 					<PermissionSelect value={permission} onChange={setPermission} />
-					<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} />
-					<SkillButton onClick={() => setSkills(true)} />
+					<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
+					{agent === "claude" && <SkillButton onClick={() => setSkills(true)} />}
 					<AttachButton onAdd={(s) => setShots((x) => [...x, ...s])} />
 					<span className="ml-auto" />
 					{stream.run && <RunStatus run={stream.run} stream={stream} waiting={status === "waiting"} path={w.path} />}
@@ -541,7 +576,7 @@ export function Composer({ project, session, w, status, windows, chosen, stream 
 	);
 }
 
-function ForkDialog({ project, session, w, chosen, target, onClose }: { project: string; session: string; w: Walk; chosen: string | null; target: ForkTarget | null; onClose: () => void }) {
+function ForkDialog({ project, session, w, chosen, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
 	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
@@ -549,7 +584,7 @@ function ForkDialog({ project, session, w, chosen, target, onClose }: { project:
 	useEffect(() => {
 		if (!target) return;
 		setText(target.kind === "edit" ? target.n.text : "");
-		setModel(defaultModel(w.path, chosen) ?? "");
+		setModel(modelFor(agent, w.path, chosen) ?? "");
 	}, [target]);
 	const send = async () => {
 		if (!target || !text.trim()) return;
@@ -557,7 +592,7 @@ function ForkDialog({ project, session, w, chosen, target, onClose }: { project:
 			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
 			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
 			const m = model || null;
-			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, model: m } : { project, mode: "new", prompt: text, permission, model: m }, follow);
+			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, model: m } : { project, mode: "new", agent, prompt: text, permission, model: m }, follow);
 			onClose();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -573,13 +608,14 @@ function ForkDialog({ project, session, w, chosen, target, onClose }: { project:
 					</DialogTitle>
 					<DialogDescription>
 						{target?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${target?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
+						{agent === "codex" && target?.kind === "at" && " Codex 按轮分叉：带上的是这一轮整轮。"}
 					</DialogDescription>
 				</DialogHeader>
 				<Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} className="min-h-32" autoFocus />
 				<DialogFooter className="items-center sm:justify-between">
 					<div className="flex items-center gap-1.5">
 						<PermissionSelect value={permission} onChange={setPermission} />
-						<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} />
+						<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
 					</div>
 					<div className="flex gap-2">
 						<Button variant="outline" onClick={onClose}>取消</Button>
@@ -678,9 +714,7 @@ export function useStream(session: string): Stream {
 /** 工具参数还在写的时候的概览：能解析了就挑一个最能说明它在干什么的字段，还没写完就显示写了多少 */
 function liveSummary(json: string) {
 	try {
-		const o = JSON.parse(json) as Record<string, unknown>;
-		const v = ["command", "file_path", "notebook_path", "path", "pattern", "url", "query", "description", "prompt"].map((k) => o[k]).find((x) => typeof x === "string");
-		return typeof v === "string" ? v.split("\n")[0] : "";
+		return summarize(JSON.parse(json));
 	} catch {
 		return json.length > 2048 ? `正在写… ${Math.round(json.length / 1024)} KB` : "";
 	}
