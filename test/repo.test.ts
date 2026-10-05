@@ -1,0 +1,59 @@
+// repo.ts 的 inside()：路径只许在仓库里面
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { inside } from "../server/repo.ts";
+
+// macOS 的临时目录本身就经过软链接（/var → /private/var），仓库路径不一定是真实路径
+const tmp = mkdtempSync(join(tmpdir(), "mixer-repo-"));
+const root = join(tmp, "repo");
+const outside = join(tmp, "outside");
+mkdirSync(join(root, "src"), { recursive: true });
+mkdirSync(outside);
+writeFileSync(join(root, "src", "a.ts"), "");
+writeFileSync(join(outside, "secret"), "");
+symlinkSync(outside, join(root, "out"));
+symlinkSync(join(outside, "secret"), join(root, "secret"));
+symlinkSync(join(root, "src", "a.ts"), join(root, "alias.ts"));
+symlinkSync(root, join(tmp, "link-to-repo"));
+
+const denied = (r: string, rel: string) => assert.throws(() => inside(r, rel), (e: Error & { status?: number }) => e.status === 403, rel);
+
+test("仓库里的路径：原样给回来", () => {
+	assert.equal(inside(root, "src/a.ts"), join(root, "src", "a.ts"));
+	assert.equal(inside(root, "./src/../src/a.ts"), join(root, "src", "a.ts"));
+	assert.equal(inside(root, ""), root);
+	// 软链接指向仓库里面的：可以
+	assert.equal(inside(root, "alias.ts"), join(root, "alias.ts"));
+});
+
+test("../ 跑出去：拒绝", () => {
+	denied(root, "../outside/secret");
+	denied(root, "src/../../outside");
+	denied(root, "..");
+	denied(root, "/etc/passwd/../../..");
+});
+
+test("软链接跑出去：拒绝", () => {
+	denied(root, "secret");
+	denied(root, "out");
+	denied(root, "out/secret");
+});
+
+test("还不存在的文件（比如删掉了的，看它的改动）：在仓库里就行", () => {
+	assert.equal(inside(root, "src/gone.ts"), join(root, "src", "gone.ts"));
+	assert.equal(inside(root, "new/dir/file.ts"), join(root, "new", "dir", "file.ts"));
+	denied(root, "../gone");
+	// 经过跑出去的软链接，后面的文件不存在：也拒绝
+	denied(root, "out/gone");
+});
+
+test("仓库路径本身经过软链接：一样认", () => {
+	const r = join(tmp, "link-to-repo");
+	assert.equal(inside(r, "src/a.ts"), join(r, "src", "a.ts"));
+	assert.equal(inside(r, "src/gone.ts"), join(r, "src", "gone.ts"));
+	denied(r, "out/secret");
+	denied(r, "../outside/secret");
+});

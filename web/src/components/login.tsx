@@ -1,7 +1,8 @@
 // 登录：远程来的要先认出是谁（server/access.ts）。本机、经 Cloudflare Access 来的直接进；Tailscale Funnel 来的用 passkey。
 // 第一台设备：Mac 上 `pnpm mixer pair` 出二维码，扫开的地址带着配对码（?pair=），在这里建 passkey。
-// 之后（包括添加到主屏幕的 app，它和 Safari 的 cookie 不通）点「登录」用同一个 passkey
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+// 之后（包括添加到主屏幕的 app，它和 Safari 的 cookie 不通）点「登录」用同一个 passkey。
+// passkey 的库点了才加载：认出来了的（绝大多数时候）用不着它
+import type { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { KeyRound } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,8 @@ function Login({ auth }: { auth: Auth }) {
 	const code = new URLSearchParams(location.search).get("pair");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// 先把 passkey 的库拿来：点按钮时就不用等它了
+	useEffect(() => { import("@simplewebauthn/browser").catch(() => {}); }, []);
 	// 登录了：去掉配对码，整页重新载入
 	const done = () => {
 		const u = new URL(location.href);
@@ -54,11 +57,13 @@ function Login({ auth }: { auth: Auth }) {
 	};
 	const create = attempt(async () => {
 		const optionsJSON = await api<Parameters<typeof startRegistration>[0]["optionsJSON"]>("/api/auth/register/options", { code });
-		await api("/api/auth/register", { code, response: await startRegistration({ optionsJSON }) });
+		const w = await import("@simplewebauthn/browser");
+		await api("/api/auth/register", { code, response: await w.startRegistration({ optionsJSON }) });
 	});
 	const login = attempt(async () => {
 		const o = await api<{ id: string; options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }>("/api/auth/login/options", {});
-		await api("/api/auth/login", { id: o.id, response: await startAuthentication({ optionsJSON: o.options }) });
+		const w = await import("@simplewebauthn/browser");
+		await api("/api/auth/login", { id: o.id, response: await w.startAuthentication({ optionsJSON: o.options }) });
 	});
 
 	const [title, text, action] = !auth.passkey

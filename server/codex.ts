@@ -9,7 +9,7 @@
 //     web_search_call 和对应的 *_output（按 call_id 挂到调用上）
 //   compacted / context_compacted：上下文压缩；turn_aborted：被打断；token_count：上下文用量和窗口；turn_context：模型
 // 标题在 ~/.codex/session_index.jsonl（同一个 id 后写的算）。记录是一条直线（没有 Claude 那种 uuid 树），每个节点挂在上一个下面
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, type Dirent, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lines } from "./jsonl.ts";
@@ -51,11 +51,26 @@ function firstLine(file: string): string {
 	}
 }
 
-/** 扫一遍会话目录，新文件读它的 session_meta（读过的不再读） */
+/** 一个会话文件：读它的 session_meta 记下来。读的时候文件可能刚被删掉（Codex 删自己的临时会话）：那就当没有 */
+function learn(file: string) {
+	try {
+		const m = JSON.parse(firstLine(file)) as { type?: string; payload?: { id?: string; cwd?: string; thread_source?: string; parent_thread_id?: string } };
+		const p = m.payload;
+		if (m.type !== "session_meta" || !p?.id || !p.cwd) return;
+		const info = { id: p.id, file, cwd: p.cwd, project: projectId(p.cwd), born: statSync(file).birthtimeMs, hidden: (!!p.thread_source && p.thread_source !== "user") || !!p.parent_thread_id };
+		infos.set(file, info);
+		byId.set(info.id, info);
+	} catch {}
+}
+
+/** 扫一遍会话目录，新文件读它的 session_meta（读过的不再读）。扫的时候文件夹也可能没了，跳过 */
 function refresh() {
 	if (!existsSync(CODEX)) return;
-	const walk = (dir: string, depth: number): string[] =>
-		readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() && depth < 3 ? walk(join(dir, e.name), depth + 1) : e.isFile() && e.name.endsWith(".jsonl") && depth === 3 ? [join(dir, e.name)] : []));
+	const walk = (dir: string, depth: number): string[] => {
+		let es: Dirent[];
+		try { es = readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+		return es.flatMap((e) => (e.isDirectory() && depth < 3 ? walk(join(dir, e.name), depth + 1) : e.isFile() && e.name.endsWith(".jsonl") && depth === 3 ? [join(dir, e.name)] : []));
+	};
 	const files = walk(CODEX, 0);
 	// Codex 会删掉自己的临时会话：文件没了就忘掉
 	const seen = new Set(files);
@@ -65,17 +80,7 @@ function refresh() {
 		cache.delete(file);
 		if (byId.get(i.id) === i) byId.delete(i.id);
 	}
-	for (const file of files) {
-		if (infos.has(file)) continue;
-		try {
-			const m = JSON.parse(firstLine(file)) as { type?: string; payload?: { id?: string; cwd?: string; thread_source?: string; parent_thread_id?: string } };
-			const p = m.payload;
-			if (m.type !== "session_meta" || !p?.id || !p.cwd) continue;
-			const info = { id: p.id, file, cwd: p.cwd, project: projectId(p.cwd), born: statSync(file).birthtimeMs, hidden: (!!p.thread_source && p.thread_source !== "user") || !!p.parent_thread_id };
-			infos.set(file, info);
-			byId.set(info.id, info);
-		} catch {}
-	}
+	for (const file of files) if (!infos.has(file)) learn(file);
 }
 let scanned = 0;
 /** 所有（不是内部的）会话；5 秒内扫过就不再扫 */
@@ -86,16 +91,26 @@ function all() {
 	}
 	return [...byId.values()].filter((i) => !i.hidden && existsSync(i.file));
 }
-/** 这个 id 是不是 Codex 的会话（不认识的再扫一次目录：刚建的） */
+/**
+ * 这个 id 是不是 Codex 的会话（不认识的再扫一次目录：刚建的）。
+ * Claude 的会话 id 每次都对不上（打开、拉取都会问一遍），扫目录两秒最多一次；刚建的文件监视到时由 fromPath 直接记下
+ */
+let missed = 0;
 export function find(id: string): Info | null {
-	if ((!byId.has(id) || !existsSync(byId.get(id)!.file)) && /^[0-9a-f-]{36}$/.test(id)) refresh();
+	if ((!byId.has(id) || !existsSync(byId.get(id)!.file)) && /^[0-9a-f-]{36}$/.test(id) && Date.now() - missed > 2000) {
+		missed = Date.now();
+		refresh();
+	}
 	const i = byId.get(id);
 	return i && !i.hidden && existsSync(i.file) ? i : null;
 }
-/** 监视到的文件名（年/月/日/rollout-…-<id>.jsonl）→ 会话 */
+/** 监视到的文件名（年/月/日/rollout-…-<id>.jsonl）→ 会话；没见过的直接读这个文件，不扫整个目录 */
 export function fromPath(rel: string) {
 	const m = /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(rel);
-	return m ? find(m[1]) : null;
+	if (!m) return null;
+	const file = join(CODEX, rel);
+	if (!byId.has(m[1]) && existsSync(file)) learn(file);
+	return find(m[1]);
 }
 
 /** 标题：session_index.jsonl，同一个 id 后写的算 */
@@ -169,7 +184,20 @@ type Parsed = {
 	windows: Record<string, number>;
 	meta: { first: string | null; last: string | null; fresh: string | null; prompts: number; parent: string | null };
 };
+/** 读过的会话：按最近用过的排，加起来超过 100MB（按文件大小算）丢掉最久没用的 */
 const cache = new Map<string, Parsed>();
+const BUDGET = 100 * 1024 * 1024;
+function keep(file: string, p: Parsed) {
+	cache.delete(file);
+	cache.set(file, p);
+	let total = 0;
+	for (const x of cache.values()) total += x.size;
+	for (const [f, x] of cache) {
+		if (total <= BUDGET || f === file) break;
+		cache.delete(f);
+		total -= x.size;
+	}
+}
 
 /** 命令：「/bin/zsh -lc '…'」或 ["/bin/zsh", "-lc", "…"] → 里面那句（记录里和运行中的流里都这样显示） */
 export function shellInner(cmd: unknown): string {
@@ -213,7 +241,10 @@ function resultOf(item: Raw): { text: string; error: boolean } {
 async function parse(file: string): Promise<Parsed> {
 	const st = statSync(file);
 	const old = cache.get(file);
-	if (old && old.size === st.size && old.mtime === st.mtimeMs) return old;
+	if (old && old.size === st.size && old.mtime === st.mtimeMs) {
+		keep(file, old);
+		return old;
+	}
 	const recs: Raw[] = [];
 	for await (const { line } of lines(file)) {
 		try { recs.push(JSON.parse(line)); } catch {}
@@ -225,8 +256,9 @@ async function parse(file: string): Promise<Parsed> {
 
 	// 分叉：先接上原会话分叉点之前的
 	const from = typeof meta.forked_from_id === "string" ? byId.get(meta.forked_from_id) : undefined;
-	if (from && from.file !== file) {
-		const base = await parse(from.file);
+	// 原会话的文件刚好没了：只显示自己的
+	const base = from && from.file !== file ? await parse(from.file).catch(() => null) : null;
+	if (from && base) {
 		const upto = typeof meta.forked_from_ordinal_exclusive === "number" ? meta.forked_from_ordinal_exclusive : Number.POSITIVE_INFINITY;
 		p.nodes = base.nodes.filter((n) => (base.ords.get(n.uuid) ?? 0) < upto);
 		for (const k of ["inputs", "results", "images", "turns", "ords"] as const) (p[k] as Map<string, unknown>) = new Map(base[k] as Map<string, unknown>);
@@ -338,7 +370,7 @@ async function parse(file: string): Promise<Parsed> {
 			}
 		}
 	}
-	cache.set(file, p);
+	keep(file, p);
 	return p;
 }
 
@@ -369,16 +401,20 @@ async function metaOf(i: Info) {
 export function projects() {
 	const m = new Map<string, { id: string; path: string; sessions: number; mtime: number }>();
 	for (const i of all()) {
+		let mtime: number;
+		// 刚看过还在、这时没了：跳过它
+		try { mtime = statSync(i.file).mtimeMs; } catch { continue; }
 		const p = m.get(i.project) ?? { id: i.project, path: i.cwd, sessions: 0, mtime: 0 };
 		p.sessions++;
-		p.mtime = Math.max(p.mtime, statSync(i.file).mtimeMs);
+		p.mtime = Math.max(p.mtime, mtime);
 		m.set(i.project, p);
 	}
 	return [...m.values()];
 }
 
-/** 一个文件夹里的 Codex 会话（第一次要整个读一遍，之后文件没变就用缓存） */
-export const list = (project: string) => Promise.all(all().filter((i) => i.project === project).map(metaOf));
+/** 一个文件夹里的 Codex 会话（第一次要整个读一遍，之后文件没变就用缓存）。读着读着没了的那个跳过，不让整个列表出错 */
+export const list = async (project: string) =>
+	(await Promise.all(all().filter((i) => i.project === project).map((i) => metaOf(i).catch(() => null)))).filter((m) => m !== null);
 
 /** 一个会话。没变（version 对得上）就只回「没变」，不再发一遍 */
 export async function session(i: Info, since?: string | null) {

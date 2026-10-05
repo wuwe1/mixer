@@ -7,7 +7,7 @@
 // 正在 mixer 里跑的会话再「接着说」就排队：这次运行一结束（跑完、出错、被停），排着的话合成一条续接发出去。
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as codex from "./codex.ts";
@@ -36,7 +36,8 @@ export type Run = {
 	started: string;
 	ended: string | null;
 	error: string | null;
-	events: unknown[];
+	/** 输出了几个事件（事件本身不留：流事件攒进 tail，其余的没人看） */
+	events: number;
 };
 
 /** 消息里带的图片（base64） */
@@ -47,8 +48,11 @@ export type Queued = { id: string; project: string; cwd: string; session: string
 
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
-/** 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照） */
-type Live = Run & { child?: ChildProcess; halt?: () => void; tail: Tail };
+/**
+ * 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照）。
+ * stopping：点了停止、进程还没退：状态还是 running（这时发的话照样排队，进程真退了才算结束、才发出去）
+ */
+type Live = Run & { child?: ChildProcess; halt?: () => void; tail: Tail; stopping?: boolean };
 const runs = new Map<string, Live>();
 const approvals = new Map<string, Approval>();
 const queue: Queued[] = [];
@@ -60,14 +64,19 @@ let emit: Emit = () => {};
 export const onEvent = (f: Emit) => { emit = f; };
 
 const view = (r: Live) => {
-	const { child: _c, halt: _h, tail: _t, events, ...rest } = r;
-	return { ...rest, events: events.length };
+	const { child: _c, halt: _h, tail: _t, ...rest } = r;
+	return rest;
 };
 export const list = () => [...runs.values()].map(view).sort((a, b) => b.started.localeCompare(a.started));
 export const get = (id: string) => {
 	const r = runs.get(id);
-	return r ? { ...view(r), events: r.events } : null;
+	return r ? view(r) : null;
 };
+
+/** 结束了一小时的运行忘掉（tail 留一会儿：刚跑完时页面可能还要拿快照） */
+setInterval(() => {
+	for (const [id, r] of runs) if (r.ended && Date.now() - Date.parse(r.ended) > 3600_000) runs.delete(id);
+}, 600_000).unref();
 /** 正在写的那几段的快照；seq 之后的事件网页从推送里接 */
 export const tail = (id: string) => runs.get(id)?.tail ?? null;
 
@@ -81,6 +90,8 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (model && !/^[a-z][\w.[\]-]*$/i.test(model)) throw new Error("模型名不对");
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
+	// 会话 id 要放进命令行参数：只认 UUID（Claude、Codex 都是），免得被当成别的参数
+	if (resume && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(resume)) throw new Error("会话 id 不对");
 	// 新会话按选的；续接、分叉跟着原会话是谁的
 	const cx = resume ? codex.find(resume) : null;
 	const agent: Run["agent"] = o.mode === "new" ? (o.agent === "codex" ? "codex" : "claude") : cx ? "codex" : "claude";
@@ -116,43 +127,64 @@ export async function start(o: { project: string; cwd: string; session: string |
 	const child = spawn("claude", args, { cwd: o.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
 	run.child = child;
 	runs.set(id, run);
+	// claude 一开始就退出了（参数不对、没登录）：stdin 写不进去是 EPIPE，结果看 close
+	child.stdin.on("error", () => {});
 	if (!images.length) child.stdin.end(o.prompt);
 	else {
 		const content = [...(o.prompt.trim() ? [{ type: "text", text: o.prompt }] : []), ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.media, data: i.data } }))];
 		child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`);
 	}
 	let buf = "";
-	child.stdout.on("data", (chunk: Buffer) => {
-		buf += chunk.toString("utf8");
+	// 按 utf8 解码再拼：一个汉字可能被切在两块之间
+	child.stdout.setEncoding("utf8");
+	const line = (raw: string) => {
+		if (!raw.trim()) return;
+		let ev: Record<string, unknown>;
+		try { ev = JSON.parse(raw); } catch { return; }
+		// 新会话、分叉的 id 到这时才知道：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着
+		if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
+			known(run, ev.session_id);
+			if (Array.isArray(ev.skills)) state.learnCaps(run.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
+		}
+		if (ev.type === "result" && ev.modelUsage && typeof ev.modelUsage === "object")
+			for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
+		if (ev.type === "rate_limit_event") {
+			const w = (ev.rate_limit_info as { unifiedWindows?: unknown } | undefined)?.unifiedWindows;
+			if (w && typeof w === "object") {
+				state.learnLimits(w as Record<string, unknown>);
+				emit("limits", state.limits());
+			}
+		}
+		push(run, ev);
+	};
+	child.stdout.on("data", (chunk: string) => {
+		buf += chunk;
 		let i: number;
 		while ((i = buf.indexOf("\n")) >= 0) {
-			const line = buf.slice(0, i).trim();
+			line(buf.slice(0, i));
 			buf = buf.slice(i + 1);
-			if (!line) continue;
-			let ev: Record<string, unknown>;
-			try { ev = JSON.parse(line); } catch { continue; }
-			// 新会话、分叉的 id 到这时才知道：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着
-			if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
-				known(run, ev.session_id);
-				if (Array.isArray(ev.skills)) state.learnCaps(run.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
-			}
-			if (ev.type === "result" && ev.modelUsage && typeof ev.modelUsage === "object")
-				for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
-			if (ev.type === "rate_limit_event") {
-				const w = (ev.rate_limit_info as { unifiedWindows?: unknown } | undefined)?.unifiedWindows;
-				if (w && typeof w === "object") {
-					state.learnLimits(w as Record<string, unknown>);
-					emit("limits", state.limits());
-				}
-			}
-			push(run, ev);
 		}
 	});
 	let err = "";
-	child.stderr.on("data", (c: Buffer) => { err = (err + c.toString("utf8")).slice(-4000); });
-	child.on("exit", (code, signal) => {
+	child.stderr.setEncoding("utf8");
+	child.stderr.on("data", (c: string) => { err = (err + c).slice(-4000); });
+	const end = (status: "done" | "error", error: string) => {
+		if (run.ended) return;
 		delete run.child;
-		finish(run, code === 0 ? "done" : "error", err.trim() || `退出码 ${code ?? signal}`);
+		rmSync(cfg, { force: true });
+		finish(run, status, error);
+	};
+	// 起不来（找不到 claude）：原因在 error 里
+	child.on("error", (e) => end("error", `起不来 claude：${e.message}`));
+	// close：输出都读完了才算结束（exit 时 stdout 里可能还有没读的）；最后一行没有换行也算
+	child.on("close", (code, signal) => {
+		line(buf);
+		buf = "";
+		end(code === 0 ? "done" : "error", err.trim() || `退出码 ${code ?? signal}`);
+	});
+	// 进程退了，输出却一直没关（被它起的后台进程拿着）：等 5 秒按退出算
+	child.on("exit", (code, signal) => {
+		setTimeout(() => end(code === 0 ? "done" : "error", err.trim() || `退出码 ${code ?? signal}`), 5000).unref();
 	});
 	emit("run", view(run));
 	return view(run);
@@ -176,7 +208,7 @@ function fresh(id: string, o: { project: string; cwd: string; session: string | 
 		started: new Date().toISOString(),
 		ended: null,
 		error: null,
-		events: [],
+		events: 0,
 		tail: emptyTail(),
 	};
 }
@@ -192,20 +224,20 @@ function known(run: Live, session: string) {
 	if (state.addToWorkspace(run.project, run.cwd, session)) emit("workspace", null);
 }
 
-/** 一个输出事件：留着（/api/runs/:id 看得到）；流事件攒进「正在写的那几段」，带上序号推给网页，网页按序号接在快照后面，接不上就重新拿快照 */
+/** 一个输出事件：流事件攒进「正在写的那几段」，带上序号推给网页，网页按序号接在快照后面，接不上就重新拿快照 */
 function push(run: Live, ev: Record<string, unknown>) {
-	run.events.push(ev);
-	if (run.events.length > 5000) run.events.splice(0, run.events.length - 5000);
+	run.events++;
 	if (counts(ev)) {
 		run.tail = step(run.tail, ev, Date.now());
 		emit("run-event", { id: run.id, seq: run.tail.seq, event: ev });
 	}
 }
 
-/** 运行结束（跑完、出错、被停）：记下来、作废它的确认请求、接着发排队的 */
+/** 运行结束（跑完、出错、被停）：记下来、作废它的确认请求、接着发排队的。点过停止的一律算停止 */
 function finish(run: Live, status: "done" | "error" | "stopped", error: string | null) {
-	if (run.status !== "running" && run.ended) return;
-	run.status = run.status === "stopped" ? "stopped" : status;
+	if (run.ended) return;
+	run.status = run.stopping ? "stopped" : status;
+	delete run.stopping;
 	if (run.status === "error") run.error = error || "出错了";
 	run.ended = new Date().toISOString();
 	delete run.halt;
@@ -229,8 +261,9 @@ function startCodex(run: Live, o: { mode: Run["mode"]; at?: string | null; promp
 				ask: (tool, input) => ask(run.id, tool, input),
 				end: (status, error) => finish(run, status, error ?? null),
 			});
-			if (run.status === "running") run.halt = h.stop;
-			else if (!run.ended) h.stop();
+			// 起的时候点了停止：现在才有 turn 能停
+			if (!run.ended) run.halt = h.stop;
+			if (run.stopping) h.stop();
 		} catch (e) {
 			finish(run, "error", e instanceof Error ? e.message : String(e));
 		}
@@ -263,30 +296,45 @@ function drain(session: string) {
 		.catch((e: Error) => emit("queue-error", { session, error: e.message }));
 }
 
+/**
+ * 停：claude 发 SIGINT（5 秒不退 SIGKILL），Codex 发 turn/interrupt。进程真退了（Codex 是 turn/completed）才结束，
+ * 免得同一个会话又开一次运行、两边一起写；这期间发的话排队。Codex 10 秒没回音也按停止结束
+ */
 export function stop(id: string) {
 	const r = runs.get(id);
 	if (!r || r.status !== "running") return false;
-	r.status = "stopped";
+	if (r.stopping) return true;
+	r.stopping = true;
+	emit("run", view(r));
 	if (r.child) {
 		r.child.kill("SIGINT");
 		setTimeout(() => r.child?.kill("SIGKILL"), 5000).unref();
-	} else r.halt?.();
+	} else {
+		r.halt?.();
+		setTimeout(() => finish(r, "stopped", null), 10_000).unref();
+	}
 	return true;
 }
 
-/** MCP 工具发来的确认请求：挂起，等网页上的人点。10 分钟没人点就拒绝 */
-export function ask(run: string, tool: string, input: unknown): Promise<{ allow: boolean; message?: string }> {
+/**
+ * MCP 工具发来的确认请求：挂起，等网页上的人点。10 分钟没人点就拒绝。
+ * gone：问的那边不等了（MCP 工具的连接断了，claude 已经退出）：卡片收掉，也不再挡着重启
+ */
+export function ask(run: string, tool: string, input: unknown, gone?: AbortSignal): Promise<{ allow: boolean; message?: string }> {
 	return new Promise((resolve) => {
 		const id = randomUUID().slice(0, 8);
 		const a: Approval = { id, run, tool, input, at: new Date().toISOString(), resolve };
 		approvals.set(id, a);
 		emit("approval", { id, run, tool, input, at: a.at });
-		setTimeout(() => {
+		const drop = (message: string) => {
 			if (!approvals.has(id)) return;
 			approvals.delete(id);
-			resolve({ allow: false, message: "10 分钟没人确认，拒绝了" });
+			resolve({ allow: false, message });
 			emit("approval-done", { id });
-		}, 10 * 60_000).unref();
+		};
+		setTimeout(() => drop("10 分钟没人确认，拒绝了"), 10 * 60_000).unref();
+		gone?.addEventListener("abort", () => drop("问的那边断开了"), { once: true });
+		if (gone?.aborted) drop("问的那边断开了");
 	});
 }
 

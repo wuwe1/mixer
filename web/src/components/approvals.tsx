@@ -1,6 +1,6 @@
 // 确认请求：Claude 要执行命令、改文件时问你。当前会话的请求出现在对话里（前面就是 Claude 的思路）；别的会话的浮在右下角，带「查看」。
 import { Check, ChevronRight, ShieldQuestion, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,16 +17,22 @@ export function what(a: Approval, cwd?: string): string {
 	return (cwd && s.startsWith(`${cwd}/`) ? s.slice(cwd.length + 1) : s).slice(0, 300);
 }
 
-const answer = async (a: Approval, allow: boolean) => {
-	try {
-		await api(`/api/approvals/${a.id}`, { allow });
-	} catch (e) {
-		toast.error(e instanceof Error ? e.message : String(e));
-	}
-};
-
 export function ApprovalCard({ a, run, elsewhere, className }: { a: Approval; run?: Run; elsewhere?: string; className?: string }) {
 	const w = what(a, run?.cwd);
+	// 点了就先按住两个按钮，免得点两下；答上了不等服务推来 approval-done，先收起来
+	const [state, setState] = useState<"busy" | "done" | null>(null);
+	const answer = async (allow: boolean) => {
+		if (state) return;
+		setState("busy");
+		try {
+			await api(`/api/approvals/${a.id}`, { allow });
+			setState("done");
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : String(e));
+			setState(null);
+		}
+	};
+	if (state === "done") return null;
 	return (
 		<Card className={cn("gap-3 py-4", className)}>
 			<CardHeader className="px-4">
@@ -53,11 +59,11 @@ export function ApprovalCard({ a, run, elsewhere, className }: { a: Approval; ru
 				</Collapsible>
 			</CardContent>
 			<CardFooter className="gap-2 px-4">
-				<Button variant="outline" className="flex-1 gap-1.5" onClick={() => answer(a, false)}>
+				<Button variant="outline" className="flex-1 gap-1.5" disabled={!!state} onClick={() => answer(false)}>
 					<X className="size-4" />
 					拒绝
 				</Button>
-				<Button className="flex-1 gap-1.5" onClick={() => answer(a, true)}>
+				<Button className="flex-1 gap-1.5" disabled={!!state} onClick={() => answer(true)}>
 					<Check className="size-4" />
 					允许
 				</Button>
@@ -87,7 +93,7 @@ export function FloatingApprovals({ current }: { current: string | null }) {
 	}, [list]);
 	if (list.length === 0) return null;
 	return (
-		<div className="fixed inset-x-3 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:w-[26rem]">
+		<div className="fixed inset-x-3 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:w-104">
 			{list.map(({ a, run }) => <ApprovalCard key={a.id} a={a} run={run} elsewhere={title(run?.session)} className="border-waiting/50 shadow-lg" />)}
 		</div>
 	);

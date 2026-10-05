@@ -1,6 +1,6 @@
 // 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话。
 // 会话的「状态」由这三样合起来算：等你确认 > 在跑 > 跑完了没看 / 出错了 > 终端里开着。
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, type Approval, type Group, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
@@ -34,28 +34,36 @@ export const useLive = () => {
 	return c;
 };
 
+/**
+ * 拉回来的和现在的一样就不换：换了就是新对象，整个页面跟着重画（跑的时候每 1.5 秒拉一次工作区）。
+ * 按 JSON 文本比，和现在的状态比（不是和上次拉回来的比：本地先改过的，失败了重新拉要能改回来）
+ */
+const keep = <T,>(set: Dispatch<SetStateAction<T>>) => (v: T) => set((old) => (JSON.stringify(old) === JSON.stringify(v) ? old : v));
+
 export function LiveProvider({ children }: { children: ReactNode }) {
 	const [workspace, setWorkspace] = useState<Group[] | null>(null);
 	const [runs, setRuns] = useState<Run[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
 	const following = useRef(new Set<string>());
+	const [putWorkspace, putRuns, putApprovals, putQueue] = useMemo(() => [keep(setWorkspace), keep(setRuns), keep(setApprovals), keep(setQueue)] as const, []);
 
-	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次
+	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次。pulled：拉过几次（拉回来没变也算，下面「终端中打开」到点了要接着看）
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [pulled, setPulled] = useState(0);
 	const loadWorkspace = useCallback(() => {
 		if (timer.current) return;
 		timer.current = setTimeout(() => {
 			timer.current = null;
-			api<Group[]>("/api/workspace").then(setWorkspace, () => {});
+			api<Group[]>("/api/workspace").then((w) => { putWorkspace(w); setPulled((n) => n + 1); }, () => {});
 		}, 1500);
-	}, []);
+	}, [putWorkspace]);
 	const loadAll = useCallback(() => {
-		api<Group[]>("/api/workspace").then(setWorkspace, () => setWorkspace((w) => w ?? []));
-		api<Run[]>("/api/runs").then(setRuns, () => {});
-		api<Approval[]>("/api/approvals").then(setApprovals, () => {});
-		api<Queued[]>("/api/queue").then(setQueue, () => {});
-	}, []);
+		api<Group[]>("/api/workspace").then(putWorkspace, () => setWorkspace((w) => w ?? []));
+		api<Run[]>("/api/runs").then(putRuns, () => {});
+		api<Approval[]>("/api/approvals").then(putApprovals, () => {});
+		api<Queued[]>("/api/queue").then(putQueue, () => {});
+	}, [putWorkspace, putRuns, putApprovals, putQueue]);
 	useEffect(loadAll, [loadAll]);
 	useEvent("reconnect", loadAll);
 	useEvent("session", loadWorkspace);
@@ -65,9 +73,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		if (!left.length) return;
 		const t = setTimeout(loadWorkspace, Math.max(0, Math.min(...left)) + 1000);
 		return () => clearTimeout(t);
-	}, [workspace, loadWorkspace]);
+	}, [workspace, pulled, loadWorkspace]);
 	useEvent("state", loadWorkspace);
-	useEvent("workspace", useCallback(() => { api<Group[]>("/api/workspace").then(setWorkspace, () => {}); }, []));
+	useEvent("workspace", useCallback(() => { api<Group[]>("/api/workspace").then(putWorkspace, () => {}); }, [putWorkspace]));
 
 	useEvent("run", useCallback((r: Run) => {
 		setRuns((rs) => [r, ...rs.filter((x) => x.id !== r.id)].sort((a, b) => b.started.localeCompare(a.started)));
@@ -82,7 +90,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		setApprovals((l) => [...l.filter((x) => x.id !== a.id), a]);
 		navigator.vibrate?.(80);
 	}, []));
-	useEvent("queue", setQueue);
+	useEvent("queue", putQueue);
 	useEvent("queue-error", useCallback((e: { error: string }) => toast.error(`排队消息发送失败：${e.error}`.slice(0, 300)), []));
 	useEvent("approval-done", useCallback((d: { id: string }) => setApprovals((l) => l.filter((a) => a.id !== d.id)), []));
 

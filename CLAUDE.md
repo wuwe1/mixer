@@ -29,29 +29,30 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）；工具组收着时露出的最后一步，跑完了是绿点（成功）/ 红点（失败）
 - **颜色**：`waiting` 琥珀 = 要你确认（待确认的点、确认卡片）；`unread` 蓝 = 在跑（带扩散）/ 跑完没看过；`success` 绿 = 一步工具调用成功了；`destructive` 红 = 出错；`muted-foreground` 灰 = 中性。只有这五种意思，别的地方不上色（比如「后台任务 · 完成」是灰的）
 - **改动色**：`added` / `removed` / `modified` / `renamed`，只用在文件改动和 diff 上（git 工具的习惯配色）
-- **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
-- **图标按钮**：Button 的 `size="icon-xs"`（24px，消息后面）/ `"icon-sm"`（28px，面板里）/ `"icon"`（32px，顶栏、发送），不在 className 里另写 `size-*`；小文字按钮用 `size="xs"`
-- **加载中**：一律 `Spinner`（和状态标记同样的点带扩散，颜色跟文字）；Claude 运行中用 `StatusIcon` 的 `running`（蓝）。不用转圈；**展开收起**：一律左边一个 `›`，展开时转 90°；**空状态**：一律 `Placeholder`（`Empty`）
+- **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）、`text-lg` 18px（标题：侧栏的 mixer、项目页的项目名）；代码块、diff 的行高用 `leading-code`。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
+- **图标按钮**：Button 的 `size="icon-xs"`（24px，消息后面）/ `"icon-sm"`（28px，面板里）/ `"icon"`（32px，顶栏、发送），不在 className 里另写 `size-*`；小文字按钮用 `size="xs"`（自带 `text-2xs`）/ `"sm"`（自带 `text-xs`），className 里不再写字号、高度
+- **加载中**：一律 `Spinner`（和状态标记同样的点带扩散，颜色跟文字）；Claude 运行中用 `StatusIcon` 的 `running`（蓝）。不用转圈；**展开收起**：一律左边一个 `›`，展开时转 90°；**空状态**：一律 `Placeholder`（`Empty`）；渲染出错是 `Boundary`（`placeholder.tsx`），显示「出错了」和「刷新」
 - **时间**：列表里用 `since()`（刚刚 / 5 分钟 / 3 小时 / 2 天 / 10/3），消息上用 `clock()`（10/5 11:58）
 
 ## 跑
 
 - `pnpm start`：服务在 127.0.0.1:4848（`MIXER_PORT` 可改）。`web/src` 比 `web/dist` 新时，启动会先重新打包
 - `pnpm dev`：Vite 开发服务（5173），`/api` 转到 4848
-- `pnpm check`：类型检查（web 和 server 各一遍）
+- `pnpm check`：类型检查（web、server、test 各一遍）
+- `pnpm test`：node:test，测试在 `test/*.test.ts`、fixtures 是小的 jsonl（`test/fixtures/`）。HOME、`MIXER_DATA` 指到临时目录，不读本机的 `~/.claude`、`~/.codex`、`data/`。CI（`.github/workflows/ci.yml`，macOS）跑 check、test、build
 - `pnpm mixer`：手机怎么访问。`setup cloudflare`（Tunnel + Access，要有托管在 Cloudflare 的域名）/ `setup funnel`（Tailscale Funnel + passkey，不要域名）/ `pair`（出二维码，手机扫了建 passkey）/ `passkeys [rm <id>]`。改的是 `data/access.json`，服务不用重启
 
 ## 结构
 
 | 位置 | 做什么 |
 |---|---|
-| `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>` |
+| `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>`。读过的会话按最近使用留在内存，总量超 200MB（按文件大小算）丢最久没用的 |
 | `server/codex.ts` | 读 Codex 的会话（`~/.codex/sessions/年/月/日/rollout-*.jsonl`），拼成和 Claude 一样的节点和会话信息；`sessions.ts` 按会话 id 分派过来、列表里合进去。文件变了整个重读 |
 | `server/codex-run.ts` | 在 mixer 里跑 Codex：一个常驻的 `codex app-server`，item 通知翻成和 Claude 一样的 stream_event（tail.ts 原样用），确认请求转成 mixer 的确认。`runs.ts` 按会话是谁的分派过来，排队、停止、结束两边一套 |
 | `server/jsonl.ts` | 按 `\n` 一行一行读（两边共用） |
-| `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库 |
+| `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库。git 状态是异步的：同一个仓库同时来的共用一次，缓存 1.5 秒 |
 | `server/dirs.ts` | 新会话选文件夹：列子文件夹、新建，只认家目录里面的 |
-| `server/access.ts` | 谁能用：本机直接放行；Cloudflare Access 验 JWT（签名、iss、aud、邮箱）；passkey 登录的签名 cookie。配置 `data/access.json`（不进 git），按修改时间重读 |
+| `server/access.ts` | 谁能用：本机直接放行；Cloudflare Access 验 JWT（签名、iss、aud、邮箱）；passkey 登录的签名 cookie。配置 `data/access.json`（不进 git；`data/` 的位置 `MIXER_DATA` 可改，测试用），按修改时间重读 |
 | `server/tunnel.ts` | `access.json` 里有 `cloudflare.tunnel` 就起一个 cloudflared（自己写一份配置，不读 `~/.cloudflared/config.yml`），挂了退避再起 |
 | `server/cli.ts` | `pnpm mixer …` |
 | `server/state.ts` | `data/state.json`（不进 git）：每个会话在 mixer 里最后跑完的时间、人最后看它的时间 →「跑完了没看」；工作区（文件夹的顺序、放进来的会话） |
@@ -59,13 +60,18 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/runs.ts` | 起 `claude -p` 跑一次（新会话 / 续接 / 分叉 / 从中间分叉），管确认请求 |
 | `server/skills.ts` | 输入框里能选的 skill：名字按 init 事件记下的，加上扫 skill 文件夹补的新建的，描述从 `SKILL.md` 读 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
-| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着 |
+| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。SSE 连上先发 `build`（入口脚本的路径当版本号），重新打包后再发一次；每 25 秒一个 `ping`。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
 | `web/` | Vite + React + Tailwind v4 + shadcn（radix-nova），组件在 `web/src/components/ui` |
 | `side.tsx` / `browse.tsx` | 侧栏（工作区，文件夹用 dnd-kit 拖）/ 浏览会话的对话框 |
+| `web/src/components/lazy.tsx` | 首屏用不着的按需加载：浏览会话、新会话、skill 选择第一次打开才拿，项目页、文件、改动面板加载时是 Spinner |
+| `composer.tsx` / `fork-dialog.tsx` | 输入框和底下那排选项 / 从这里分叉、编辑并分叉的对话框 |
 | `web/src/components/login.tsx` | `Gate`：先问 `/api/auth/status`，没认出来就是登录页（配对码建 passkey / passkey 登录）；接口回 401 时也换成它 |
 | `web/src/lib/live.tsx` | 全页面共用的项目树、运行、确认请求，和会话状态的算法 |
 | `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端每次运行攒一份（`/api/runs/:id/tail` 是快照），网页先拿快照、再按序号接推送（`run-event` 带 `seq`），接不上就重新拿 |
-| `useStream`（`conversation.tsx`） | 还没写进会话记录的那几段变成和记录里一样的节点接在对话末尾；记录里有了同一段（「消息 id : 第几段」）就换成记录里的 |
+| `web/src/lib/thread.ts` | 会话记录 → 对话的纯函数：节点树、走成一条路、工具调用收成一组、分叉点、正在写的段变成节点 |
+| `useStream`（`lib/use-stream.ts`） | 还没写进会话记录的那几段变成和记录里一样的节点接在对话末尾；记录里有了同一段（「消息 id : 第几段」）就换成记录里的。运行结束后留着最后几段，直到记录里都有了（最多 10 秒），不闪 |
+| `web/src/lib/events.ts` | 整页一条 SSE。断了退避重连（1–30 秒），回到前台、`pageshow`、`online` 都重连，60 秒什么都没收到（包括 `ping`）也重连。`build` 和本页入口脚本不同：在前台弹「有新版本」，在后台就等回到前台时直接刷新 |
+| `web/src/lib/highlight-worker.ts` | 代码高亮在 Worker 里：`shiki/core` + JS 正则引擎（没有 wasm），语言按需加载 |
 | `web/src/lib/drawer.ts` | 手机上的侧栏抽屉：位置是进度 0–1，拖的时候直接改样式跟手（不经过 React），松手按速度或过没过半动画到底；手势在 `side.tsx` 的 `useSwipe` |
 | `web/src/lib/outbox.ts` | 草稿随打随存；发件箱：发出去的写进记录才删，没发出去的放回输入框，其实发出去了的把输入框里原样的清掉 |
 
@@ -99,7 +105,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 ## 跑 Codex（`server/codex-run.ts`）
 
-- `codex app-server` 是 stdio 上一行一个 JSON-RPC（没有 `jsonrpc` 字段）：先 `initialize`，再发 `initialized` 通知。协议的类型 `codex app-server generate-ts --out <目录>` 生成
+- `codex app-server` 是 stdio 上一行一个 JSON-RPC（没有 `jsonrpc` 字段）：先 `initialize`，再发 `initialized` 通知。调用都有超时：控制类 30 秒，载入线程和 `turn/start` 120 秒；`initialize` 没成就杀掉进程，下次重起。协议的类型 `codex app-server generate-ts --out <目录>` 生成
 - 新会话 `thread/start`；续接 `thread/resume`（这个进程里没载入过的）再 `turn/start`；分叉 `thread/fork` 的 `lastTurnId`（带到这一轮为止，含）：节点按所在的轮换算（`codex.turnOf`）；停 `turn/interrupt`；`turn/completed` 的 `status`（completed / interrupted / failed）就是这次运行结束
 - 模型一定要给：`config.toml` 里写的可能是这个账号用不了的（`gpt-5.4` 报 400），不给就用 `model/list` 的 `isDefault`。**分叉不继承模型**，也要给。`thread/turns/list` 是新的在前
 - 推理摘要要 `turn/start` 带 `summary: "detailed"`，不然只有加密内容
@@ -116,7 +122,8 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - 用量：流里的 `rate_limit_event` 的 `rate_limit_info.unifiedWindows` 有 `five_hour`、`seven_day` 的 `utilization`（0–1）和 `resetsAt`（秒），记进 `state.json`，推 `limits` 事件
 - init 事件里有这个文件夹能用的全部 `skills` 和 `plugins`（内置的 skill 磁盘上没有文件），每次运行都按项目记进 `state.json`
 - 分叉全交给命令行：`--fork-session` 开新会话、原会话不动；`--resume-session-at` 是一条 assistant 记录的 uuid，只带到它为止的上下文（命令行帮助里没写，试过可用）。新会话文件里原会话的记录原样复制（uuid 不变），所以「第一条记录的 uuid 相同」= 一家；文件建立之后的第一句是它自己的标题
-- 确认：Claude 要用需要许可的工具时调 `mcp__mixer__approve`，它 POST 到 `/api/approvals`（带 `x-mixer-token`，每次启动随机生成），挂起直到网页上点了允许或拒绝；10 分钟没人管按拒绝处理。只读的命令（如 `echo`）Claude Code 自己会放行，不会来问
+- 确认：Claude 要用需要许可的工具时调 `mcp__mixer__approve`，它 POST 到 `/api/approvals`（带 `x-mixer-token`，每次启动随机生成），挂起直到网页上点了允许或拒绝；10 分钟没人管按拒绝处理，MCP 那边断开了也作废（卡片消失）。`approve.ts` 用 `node:http` 不用 fetch：fetch 等响应头最多 5 分钟。只读的命令（如 `echo`）Claude Code 自己会放行，不会来问
+- 停止：进程真退出了才算结束（之前状态还是运行中），这期间发的照样排队，免得两个进程同时写一个会话；Codex 10 秒没回音也按停止结束
 - 会话正在 mixer 里跑时续接就进队列（`runs.ts` 的 `queue`，只在内存里，重启就没了）；运行结束时（跑完、出错、被停）把这个会话排着的话按顺序用空行连成一条续接
 - 会话 90 秒内有写入（终端里可能正开着）就不让续接，免得两边同时写一个会话；最近那次写入是 mixer 自己跑完的就放行（按 `state.json` 判断，mixer 重启了也认得）
 - 新会话可以开在家目录里任意文件夹（`server/dirs.ts`，没开过会话的也行）。项目 id 是 claude 的规则：路径里非字母数字的字符都换成 `-`
@@ -125,14 +132,16 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 能在这台 Mac 上执行命令，所以：
 - 服务只听 127.0.0.1；写的接口只认本机或同源 https 的 Origin
-- `/api/` 全部先过 `access.who()`（`/api/auth/` 那几个登录用的除外，远程一分钟 30 次），页面本身谁都能拿。MCP 的确认请求只认 token
+- `/api/` 全部先过 `access.who()`（`/api/auth/` 那几个登录用的除外，远程每个 IP 一分钟 30 次；Funnel 上 IP 取 x-forwarded-for 最后一段，前面的对方能伪造）。请求体最多 20MB，页面本身谁都能拿。MCP 的确认请求只认 token
 - 「本机」= Host 是 127.0.0.1 / localhost、对方是回环地址、没有任何代理加的头（x-forwarded-for、cf-*、tailscale-*）。隧道转来的都是远程；Host 不对（DNS rebinding）也是远程
 - 放到外网两种：Cloudflare Tunnel + Access（mixer 再验一遍 JWT，隧道配错了漏掉 Access 也进不来）；Tailscale Funnel + passkey（公网，前面没人拦，全靠 mixer 的登录）。配 Funnel 时先写配置再开，开完自检经 Funnel 的请求不会被当成本机
-- `access.json` 什么都没配（原来那种自己挂 Access 的用法）：远程的只认带 Access JWT 的、不验签，启动后第一次远程请求时提示去 `pnpm mixer setup cloudflare`
+- `access.json` 什么都没配：远程的一律 401，第一次远程请求时提示去 `pnpm mixer setup …`（看到的 Access JWT 记下来给 setup 当默认值）
+- 仓库文件 `/raw`：只有常见图片能直接显示，别的（包括 SVG、HTML）一律下载，都带 `nosniff` 和 sandbox CSP，免得仓库里的文件在 mixer 的域名下跑脚本；页面不让别人嵌入
 - passkey：配对码一次性、10 分钟；登录要 user verification；cookie 30 天、HMAC 签名，删掉 passkey 它登录的 cookie 一起作废
 
 ## 部署
 
-- 常驻：launchd `~/Library/LaunchAgents/com.mixer.server.plist`（`KeepAlive`，PATH 里要有 `claude`、node、git），日志 `~/Library/Logs/mixer.log`
+- Node `^22.18.0 || >=23.6.0`（直接跑 `.ts`），`.nvmrc` 是 24
+- 常驻：`pnpm mixer service install` 写 launchd `~/Library/LaunchAgents/com.mixer.server.plist` 并装上（已经有了要 `--force`；不带参数只显示要写的；`uninstall` 卸掉）（`KeepAlive`，PATH 里要有 `claude`、node、git），日志 `~/Library/Logs/mixer.log`
 - 改了自己的代码会自动换上（`main.ts`）：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）之后，服务端的代码（`server/`、`mcp/`、`web/src/lib/tail.ts`）类型检查过了就退出、launchd 拉起新的；只改了页面就重新打包。检查没过不重启，日志里有原因。要马上重启：`launchctl kickstart -k gui/$(id -u)/com.mixer.server`
 - 这台机器上的外网地址、隧道这些写在 `CLAUDE.local.md`（不进 git）

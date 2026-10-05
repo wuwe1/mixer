@@ -22,7 +22,7 @@ import { go, openSession, type Route } from "@/lib/route";
 import { clock, since } from "@/lib/time";
 import * as drawer from "@/lib/drawer";
 import { cn } from "@/lib/utils";
-import { Browse } from "./browse";
+import { Browse } from "./lazy";
 
 /** ok / failed 是一步工具调用跑完了：成功、失败 */
 type Mark = Status | "ok" | "failed";
@@ -358,7 +358,7 @@ export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
 		<Sidebar>
 			<SidebarHeader className="gap-2">
 				<div className="flex items-center gap-1 px-1 pt-1">
-					<span className="text-base font-semibold tracking-tight">mixer</span>
+					<span className="text-lg font-semibold tracking-tight">mixer</span>
 					{!online && <WifiOff className="ml-1.5 size-3.5 text-destructive" aria-label="无法连接服务" />}
 					{/* 不用 Tooltip：手机上抽屉一打开焦点落在它上面，提示会自己弹出来 */}
 					<Button variant="ghost" size="icon-sm" className="ml-auto" onClick={() => setBrowse(true)} aria-label="浏览会话" title="浏览会话">

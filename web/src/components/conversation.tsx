@@ -1,122 +1,27 @@
 // 对话：把节点树走成一条路（默认走到最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
-// 最后是正在跑的那次运行（实时的字）、这个会话等你确认的请求、输入框。
-// 输入框只有两种发送方式：继续（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
-// Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
-// 从中间分叉：每条回复、每组工具调用的「⋯」→ 从这里分叉；每条你的消息的「⋯」→ 编辑并分叉。
-import { Bot, ChevronDown, Code, ChevronLeft, ChevronRight, Clock, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, X } from "lucide-react";
-import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+// 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、等你确认的请求。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx。
+import { ChevronLeft, ChevronRight, Clock, Square, X } from "lucide-react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
-import { type Agent, api, enc, type Node, type Queued, type Run } from "@/lib/api";
-import { useEvent } from "@/lib/events";
-import { askNotify, type Status, useLive } from "@/lib/live";
+import { type Agent, api, enc, type Node, type Run } from "@/lib/api";
+import { type Status, useLive } from "@/lib/live";
+import { type Agent as Kind, pretty } from "@/lib/model";
 import { go } from "@/lib/route";
-import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf } from "@/lib/model";
-import { useDraft, useOutbox } from "@/lib/outbox";
-import { type Block as LiveBlock, emptyTail, step, summarize, type Tail } from "@/lib/tail";
-import { clock } from "@/lib/time";
+import { append, type Block, blocks, headOf, isLive, keysOf, liveNodes, liveUser, pointOf, sentNode, type Tree, type User, type Walk } from "@/lib/thread";
+import type { Stream } from "@/lib/use-stream";
 import { ApprovalCard } from "./approvals";
-import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
+import { ForkDialog, type ForkTarget } from "./fork-dialog";
 import { Images } from "./lightbox";
-import { Markdown } from "./markdown";
+import { AssistantMessage, EventLine, Steps, stable, UserMessage } from "./message";
 import { StatusIcon } from "./side";
-import { SkillButton, SkillPicker, withSkill } from "./skills";
-import { AssistantMessage, Elapsed, EventLine, Steps, stable, UserMessage } from "./message";
-
-export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
-export type Walk = ReturnType<typeof walk>;
-type User = Extract<Node, { k: "user" }>;
-
-/** 子节点表；每个节点往下最新的那片叶子 */
-export function tree(nodes: Node[]): Tree {
-	const kids = new Map<string | null, Node[]>();
-	const byId = new Map(nodes.map((n) => [n.uuid, n]));
-	for (const n of nodes) {
-		const p = n.parent && byId.has(n.parent) ? n.parent : null;
-		kids.set(p, [...(kids.get(p) ?? []), n]);
-	}
-	const best = new Map<string, Node>();
-	// 节点是按文件顺序来的，子节点总在父节点后面：倒着走一遍就能算出每个节点的最新叶子
-	for (let i = nodes.length - 1; i >= 0; i--) {
-		const n = nodes[i];
-		const cs = kids.get(n.uuid) ?? [];
-		let b: Node = n;
-		for (const c of cs) {
-			const cb = best.get(c.uuid) ?? c;
-			if (cb.ts > b.ts || b === n) b = cb;
-		}
-		best.set(n.uuid, b);
-	}
-	return { kids, best, byId };
-}
-
-/** 从根走到 leaf 的那条路；路上每个改写过的地方的各个版本；latest 是整棵树最新的叶子 */
-export function walk(t: Tree, leaf: string | null) {
-	const roots = t.kids.get(null) ?? [];
-	const latest = roots.map((r) => t.best.get(r.uuid) ?? r).sort((a, b) => b.ts.localeCompare(a.ts))[0];
-	const end = (leaf ? t.byId.get(leaf) : undefined) ?? latest;
-	const path: Node[] = [];
-	for (let n: Node | undefined = end; n; n = n.parent ? t.byId.get(n.parent) : undefined) path.push(n);
-	path.reverse();
-	const versions = new Map<string, { options: Node[]; index: number }>();
-	for (const n of path) {
-		const siblings = t.kids.get(n.parent && t.byId.has(n.parent) ? n.parent : null) ?? [];
-		if (siblings.length > 1) versions.set(n.uuid, { options: siblings, index: siblings.indexOf(n) });
-	}
-	return { path, versions, end, latest, atLatest: !end || end === latest };
-}
-
-type Block = { kind: "one"; n: Node } | { kind: "steps"; nodes: Node[] };
-export function blocks(path: Node[]): Block[] {
-	const out: Block[] = [];
-	for (const n of path) {
-		if (n.k === "tool" || n.k === "thinking") {
-			const last = out[out.length - 1];
-			if (last?.kind === "steps") last.nodes.push(n);
-			else out.push({ kind: "steps", nodes: [n] });
-		} else out.push({ kind: "one", n });
-	}
-	return out;
-}
-
-/** 接上正在写的那几段：只换最后一块，前面的块原样留着（消息组件是 memo 的，每来一个字不用全部重画） */
-function append(bs: Block[], live: Node[]): Block[] {
-	if (!live.length) return bs;
-	const out = bs.slice();
-	for (const n of live) {
-		const last = out[out.length - 1];
-		if (n.k !== "tool" && n.k !== "thinking") out.push({ kind: "one", n });
-		else if (last?.kind === "steps") out[out.length - 1] = { kind: "steps", nodes: [...last.nodes, n] };
-		else out.push({ kind: "steps", nodes: [n] });
-	}
-	return out;
-}
-
-/**
- * 分叉点要的是一条记录的 uuid，新会话只带到它为止的上下文。
- * 工具调用要用它结果那条记录：用调用本身，命令行带过去的上下文里就没有结果
- */
-const pointOf = (n: Node) => (n.k === "tool" ? (n.resultUuid ?? n.uuid) : n.uuid);
-/** 路上 before 之前（不含）最后一条 Claude 的回复、思考或工具结果。没有（在第一条消息上分叉）就是 null */
-function forkPoint(path: Node[], before?: Node): string | null {
-	const upto = before ? path.slice(0, path.indexOf(before)) : path;
-	const last = [...upto].reverse().find((n) => n.k === "assistant" || n.k === "thinking" || n.k === "tool");
-	return last ? pointOf(last) : null;
-}
-
-type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
 
 /** 跳到这条（目录里点的）；at 让同一条点两次也算 */
 export type Reveal = { uuid: string; at: number };
 
 const STEP = 60;
-const headOf = (b: Block) => (b.kind === "one" ? b.n : b.nodes[0]);
 
 /**
  * 长对话只画最后一段：一开始画最后 STEP 块，往上滚到离顶不远时再往前接一段，接上之后保持看到的位置不动。
@@ -196,105 +101,13 @@ function useIds(bs: Block[], run: Run | null, path: Node[]) {
 	return ids;
 }
 
-type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
-
-/** 输入框下面的小选项：平时只是个图标，点开才写每一项是什么意思 */
-/** 平时只是个图标；给了 text 就显示成文字（模型名） */
-function OptionMenu({ title, options, value, onChange, text }: { title: string; options: Option[]; value: string; onChange: (v: string) => void; text?: ReactNode }) {
-	const cur = options.find((o) => o.v === value) ?? options[0];
-	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="sm" className="h-7 gap-0.5 px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
-					{text ? <span className="text-2xs">{text}</span> : <cur.icon className="size-4" />}
-					<ChevronDown className="size-3 opacity-60" />
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start" className="w-72">
-				<DropdownMenuLabel>{title}</DropdownMenuLabel>
-				<DropdownMenuRadioGroup value={value} onValueChange={onChange}>
-					{options.map((o) => (
-						<DropdownMenuRadioItem key={o.v} value={o.v} disabled={o.disabled} className="items-start gap-2.5 py-2">
-							<o.icon className="mt-0.5 size-4 text-muted-foreground" />
-							<span className="flex flex-col gap-0.5">
-								<span className="font-medium">{o.label}</span>
-								<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
-							</span>
-						</DropdownMenuRadioItem>
-					))}
-				</DropdownMenuRadioGroup>
-			</DropdownMenuContent>
-		</DropdownMenu>
-	);
-}
-
-// auto：Claude Code 的自动模式，由它判断，一般操作直接放行，有风险的才请求确认。「Accept edits」被它盖住了，不再单列
-const PERMISSIONS: Option[] = [
-	{ v: "auto", icon: Sparkles, label: "自动", desc: "直接执行，有风险的才请求确认" },
-	{ v: "default", icon: Hand, label: "每次询问", desc: "改文件、跑命令前都请求确认" },
-	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先出计划" },
-];
-
-/** Codex 能用的模型：整个页面拿一次（codex app-server 的 model/list） */
-let codexModels: Promise<{ id: string; label: string; isDefault: boolean }[]> | null = null;
-function useCodexModels(on: boolean) {
-	const [list, setList] = useState<{ id: string; label: string; isDefault: boolean }[]>([]);
-	useEffect(() => {
-		if (!on) return;
-		codexModels ??= api<{ id: string; label: string; isDefault: boolean }[]>("/api/codex/models").catch(() => { codexModels = null; return []; });
-		codexModels.then(setList);
-	}, [on]);
-	return list;
-}
-
-/** 新会话用哪个 agent */
-export function AgentSelect({ value, onChange }: { value: Kind; onChange: (v: Kind) => void }) {
-	const options: Option[] = [
-		{ v: "claude", icon: Sparkles, label: "Claude Code", desc: "用本机的 claude 命令行" },
-		{ v: "codex", icon: Code, label: "Codex", desc: "用本机的 Codex（codex app-server）" },
-	];
-	return <OptionMenu title="Agent" options={options} value={value} onChange={(v) => onChange(v as Kind)} />;
-}
-
-export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-	return <OptionMenu title="权限" options={PERMISSIONS} value={value} onChange={onChange} />;
-}
-
-/**
- * 下一条用的模型。value 是别名，"" 是 Claude Code 的默认；current 是上一条回复实际用的完整型号，同系列时显示它（Opus 5.5），
- * 手机上只显示系列名
- */
-export function ModelSelect({ value, onChange, current, agent = "claude" }: { value: string; onChange: (v: string) => void; current?: string | null; agent?: Kind }) {
-	const codex = useCodexModels(agent === "codex");
-	if (agent === "codex") {
-		const def = codex.find((m) => m.isDefault)?.id;
-		const opts: Option[] = [
-			{ v: "", icon: Bot, label: "默认", desc: def ? `Codex 的默认（${def}）` : "Codex 的默认" },
-			...codex.map((m) => ({ v: m.id, icon: Bot, label: m.label, desc: current === m.id ? "现在用的" : m.id })),
-		];
-		return <OptionMenu title="模型" options={opts} value={value} onChange={onChange} text={value || current || "默认"} />;
-	}
-	const options: Option[] = [
-		{ v: "", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
-		...MODELS.map((m) => ({ v: m.v as string, icon: Bot, label: m.label, desc: current && family(current) === m.v ? `现在用的是 ${pretty(current)}` : `最新的 ${m.label}` })),
-	];
-	const full = current && (!value || family(current) === value) ? pretty(current) : value ? pretty(value) : "默认";
-	const text = (
-		<>
-			<span className="md:hidden">{full.split(" ")[0]}</span>
-			<span className="hidden md:inline">{full}</span>
-		</>
-	);
-	return <OptionMenu title="模型" options={options} value={value} onChange={onChange} text={text} />;
-}
-
 /** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样） */
 export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, kind = "claude" }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind }) {
 	const { approvals, runs } = useLive();
 	const [agent, setAgent] = useState<Agent | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
 	// 看的是最新处：正在写的接在末尾
-	const keys = useMemo(() => new Set(w.path.flatMap((n) => ("key" in n && n.key ? [n.key] : []))), [w.path]);
+	const keys = useMemo(() => keysOf(w.path), [w.path]);
 	const live = w.atLatest ? liveNodes(stream, w.path, keys) : [];
 	const written = useMemo(() => blocks(w.path), [w.path]);
 	const bs = append(written, live);
@@ -418,215 +231,6 @@ function VersionSwitch({ v, best }: { v: { options: Node[]; index: number }; bes
 	);
 }
 
-async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
-	askNotify();
-	const r = await api<Run | { queued: Queued }>("/api/runs", body);
-	if ("queued" in r) return r;
-	if (body.mode === "fork") {
-		toast.success("正在分叉，建好后自动打开");
-		follow(r);
-	}
-	return r;
-}
-
-/** 为什么只能分叉（输入框里写的那句）；能继续就是 null */
-function noContinue(w: Walk, status: Status): { reason: string; hint: string } | null {
-	if (!w.atLatest) return { reason: "在看旧版本", hint: "在看旧版本，发送后从这里分叉" };
-	if (status === "terminal") return { reason: "终端中打开", hint: "终端中打开着，发送后分叉" };
-	return null;
-}
-
-const wan = (n: number) => (n >= 10_000 ? `${Math.round(n / 10_000)} 万` : String(n));
-
-/** 运行中：在做什么、跑了多久、停止。手机上地方不够，只有时长和停止（在做什么看对话末尾带 ping 点的那一步） */
-function RunStatus({ run, stream, waiting, path }: { run: Run; stream: Stream; waiting: boolean; path: Node[] }) {
-	const b = stream.blocks[stream.blocks.length - 1];
-	// 运行到一半才打开的页面没收到前面的流：从记录里看最后一步是不是还没结果的工具
-	const tail = path[path.length - 1];
-	const doing = waiting
-		? "待确认"
-		: b
-			? b.k === "text" ? "写回复" : b.k === "thinking" ? "思考" : b.name.replace(/^mcp__[^_]+__/, "")
-			: tail?.k === "tool" && !tail.result ? tail.name.replace(/^mcp__[^_]+__/, "") : "等 Claude";
-	return (
-		<span className="flex min-w-0 shrink items-center gap-1 text-2xs text-muted-foreground">
-			<span className="hidden min-w-0 truncate md:inline">运行中 · {doing} ·</span>
-			<Elapsed since={Date.parse(run.started)} className="shrink-0" />
-			<Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止运行">
-				<Square className="size-3 fill-current" />
-			</Button>
-		</span>
-	);
-}
-
-/** 上下文用了多少：你正在看的那条路上最后一条回复发出时的量，按下一条要用的模型的窗口算。手机上只有百分比 */
-function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<string, number>; model: string }) {
-	const ctx = lastCtx(path);
-	if (!ctx) return null;
-	const size = windowOf(model || ctx.model, windows) ?? windowOf(ctx.model, windows);
-	if (!size) return <span className="px-1 text-2xs text-muted-foreground tabular-nums" title={`上下文 ${wan(ctx.used)} token`}>{wan(ctx.used)}</span>;
-	const pct = Math.min(100, Math.round((ctx.used / size) * 100));
-	const r = 6;
-	const c = 2 * Math.PI * r;
-	return (
-		<span className="flex items-center gap-1 px-1 text-2xs text-muted-foreground tabular-nums" title={`上下文 ${wan(ctx.used)} / ${wan(size)} token${pct >= 80 ? "，快满了，会自动压缩" : ""}`}>
-			<svg viewBox="0 0 16 16" className="size-3.5 -rotate-90" aria-hidden>
-				<circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth="2" />
-				<circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)} />
-			</svg>
-			{pct}%
-			<span className="hidden md:inline">· {wan(ctx.used)} / {wan(size)}</span>
-		</span>
-	);
-}
-
-export function Composer({ project, session, w, status, windows, chosen, stream, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; stream: Stream; agent?: Kind }) {
-	const { follow, runs, queue } = useLive();
-	const [text, setText] = useDraft(session);
-	// 发出去的先记着，真写进会话记录才算数；没发出去的放回输入框
-	const track = useOutbox(session, w.path, runs, queue, text, setText);
-	const why = noContinue(w, status);
-	const busyRun = status === "running" || status === "waiting";
-	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
-	const [permission, setPermission] = useState("auto");
-	const [model, setModel] = useState(() => modelFor(agent, w.path, chosen) ?? "");
-	const [busy, setBusy] = useState(false);
-	const [skills, setSkills] = useState(false);
-	const [shots, setShots] = useState<Shot[]>([]);
-	const input = useRef<HTMLTextAreaElement>(null);
-	useEffect(() => setMode(why ? "fork" : "resume"), [why]);
-	// 换了会话、或者在别处（终端、另一个页面）换了模型：跟着变
-	const fallback = modelFor(agent, w.path, chosen) ?? "";
-	useEffect(() => setModel(fallback), [session, fallback]);
-	const send = async () => {
-		if ((!text.trim() && !shots.length) || busy) return;
-		setBusy(true);
-		try {
-			// 分叉：在看旧版本就从看到的地方分；否则从最新处（不给分叉点）
-			const at = w.atLatest ? null : forkPoint(w.path);
-			const images = await Promise.all(shots.map(encode));
-			const box = track(text, mode);
-			box.sent(await start({ project, session, mode, at, prompt: text, images, permission, model: model || null }, follow));
-			setText("");
-			for (const s of shots) URL.revokeObjectURL(s.url);
-			setShots([]);
-		} catch (e) {
-			// 连不上（断网、服务在重启）浏览器只给一句英文
-			const m = e instanceof TypeError ? "连不上 mixer" : e instanceof Error ? e.message : String(e);
-			toast.error(`没发出去：${m}，消息还在输入框里`);
-		} finally {
-			setBusy(false);
-		}
-	};
-	return (
-		<div className="border-t bg-background/80 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:px-6">
-			<div className="mx-auto flex w-full max-w-3xl flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-[3px] focus-within:ring-ring/30">
-				<AttachStrip shots={shots} onChange={setShots} />
-				<Textarea
-					value={text}
-					ref={input}
-					onChange={(e) => {
-						// 空输入框里打「/」：弹出 skill 列表
-						if (!text && e.target.value === "/") return setSkills(true);
-						setText(e.target.value);
-					}}
-					onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-					onPaste={(e) => {
-						const s = toShots(e.clipboardData.files);
-						if (s.length) { e.preventDefault(); setShots((x) => [...x, ...s]); }
-					}}
-					placeholder={why?.hint ?? (mode === "fork" ? "分叉出新会话…" : busyRun ? "运行中，发送后排队…" : "继续…")}
-					className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
-				/>
-				<div className="flex items-center gap-1.5">
-					<OptionMenu
-						title="发送方式"
-						value={mode}
-						onChange={(v) => setMode(v as "resume" | "fork")}
-						options={[
-							{ v: "resume", icon: MessageSquareText, label: "继续", desc: why ? `不可用：${why.reason}` : busyRun ? "运行中，先排队，结束后发出" : "接着这个会话", disabled: !!why },
-							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开新会话，带上到最新处的对话，原会话不变" : "开新会话，带上到你正在看的地方的对话，原会话不变" },
-						]}
-					/>
-					<PermissionSelect value={permission} onChange={setPermission} />
-					<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
-					{agent === "claude" && <SkillButton onClick={() => setSkills(true)} />}
-					<AttachButton onAdd={(s) => setShots((x) => [...x, ...s])} />
-					<span className="ml-auto" />
-					{stream.run && <RunStatus run={stream.run} stream={stream} waiting={status === "waiting"} path={w.path} />}
-					{/* 手机上运行中地方不够：先不显示上下文 */}
-					<span className={stream.run ? "hidden md:contents" : "contents"}>
-						<ContextUsage path={w.path} windows={windows} model={model} />
-					</span>
-					<Button size="icon" className="shrink-0 rounded-lg" disabled={(!text.trim() && !shots.length) || busy} onClick={send} aria-label="发送">
-						{busy ? <Spinner /> : <Send className="size-4" />}
-					</Button>
-				</div>
-			</div>
-			<SkillPicker
-				project={project}
-				open={skills}
-				onOpenChange={setSkills}
-				onPick={(name) => {
-					setText((t) => withSkill(t, name));
-					setTimeout(() => input.current?.focus(), 0);
-				}}
-			/>
-		</div>
-	);
-}
-
-function ForkDialog({ project, session, w, chosen, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
-	const { follow } = useLive();
-	const [text, setText] = useState("");
-	const [permission, setPermission] = useState("auto");
-	const [model, setModel] = useState("");
-	useEffect(() => {
-		if (!target) return;
-		setText(target.kind === "edit" ? target.n.text : "");
-		setModel(modelFor(agent, w.path, chosen) ?? "");
-	}, [target]);
-	const send = async () => {
-		if (!target || !text.trim()) return;
-		try {
-			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
-			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
-			const m = model || null;
-			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, model: m } : { project, mode: "new", agent, prompt: text, permission, model: m }, follow);
-			onClose();
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
-		}
-	};
-	return (
-		<Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
-			<DialogContent className="sm:max-w-xl">
-				<DialogHeader>
-					<DialogTitle className="flex items-center gap-2">
-						<GitFork className="size-4" />
-						{target?.kind === "edit" ? "编辑并分叉" : "从这里分叉"}
-					</DialogTitle>
-					<DialogDescription>
-						{target?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${target?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
-						{agent === "codex" && target?.kind === "at" && " Codex 按轮分叉：带上的是这一轮整轮。"}
-					</DialogDescription>
-				</DialogHeader>
-				<Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} className="min-h-32" autoFocus />
-				<DialogFooter className="items-center sm:justify-between">
-					<div className="flex items-center gap-1.5">
-						<PermissionSelect value={permission} onChange={setPermission} />
-						<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
-					</div>
-					<div className="flex gap-2">
-						<Button variant="outline" onClick={onClose}>取消</Button>
-						<Button onClick={send} disabled={!text.trim()}>分叉</Button>
-					</div>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
-	);
-}
-
 /** 这个会话排着队的消息：这次运行结束后一起发出。每条可以取消；也可以停下这次运行马上发 */
 function QueuedMessages({ session }: { session: string }) {
 	const { queue, runs } = useLive();
@@ -651,100 +255,11 @@ function QueuedMessages({ session }: { session: string }) {
 				</div>
 			))}
 			{run && (
-				<Button variant="ghost" size="xs" className="text-2xs text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} title="停止这次运行，排队的消息马上发出">
+				<Button variant="ghost" size="xs" className="text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} title="停止这次运行，排队的消息马上发出">
 					<Square className="size-3" />
 					停止并发送
 				</Button>
 			)}
 		</div>
 	);
-}
-
-export type Stream = { run: Run | null; blocks: LiveBlock[] };
-
-/**
- * 这个会话上正在跑的那次运行，和它输出流里正在写的那几段。
- * 服务端也攒着一份：打开（刷新、断线重连）时先拿快照，之后按序号接推送来的事件；中间漏了就重新拿快照。
- * 每段写完才写进会话记录；对话末尾先用流里的顶上，样子和写进记录之后一样，记录里有了同一段（消息 id : 第几段）就换成记录里的
- */
-export function useStream(session: string): Stream {
-	const { runs } = useLive();
-	const run = runs.find((r) => r.session === session && r.status === "running") ?? null;
-	const id = run?.id ?? null;
-	const [tail, setTail] = useState<Tail>(emptyTail);
-	const cur = useRef<Tail>(tail);
-	/** 正在拿快照：这期间推来的事件先攒着，快照到了接在后面 */
-	const buffer = useRef<{ seq: number; event: unknown }[] | null>(null);
-	// 一帧里常来好几段：只记下最新的，每帧最多画一次（页面在后台时不画，回来再画最新的）
-	const frame = useRef<number | null>(null);
-	const put = (t: Tail) => {
-		cur.current = t;
-		frame.current ??= requestAnimationFrame(() => {
-			frame.current = null;
-			setTail(cur.current);
-		});
-	};
-	useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
-	const sync = useCallback(() => {
-		if (!id) return;
-		buffer.current = [];
-		api<Tail>(`/api/runs/${id}/tail`).then(
-			(t) => {
-				let next = t;
-				for (const e of buffer.current ?? []) if (e.seq === next.seq + 1) next = step(next, e.event as Record<string, unknown>, Date.now());
-				buffer.current = null;
-				put(next);
-			},
-			() => { buffer.current = null; },
-		);
-	}, [id]);
-	useEffect(() => { put(emptyTail()); sync(); }, [sync]);
-	useEvent("reconnect", sync);
-	useEvent("run-event", useCallback((e: { id: string; seq: number; event: Record<string, unknown> }) => {
-		if (e.id !== id) return;
-		if (buffer.current) return void buffer.current.push(e);
-		const t = cur.current;
-		if (e.seq <= t.seq) return;
-		if (e.seq === t.seq + 1) put(step(t, e.event, Date.now()));
-		else sync();
-	}, [id, sync]));
-	return { run, blocks: run ? tail.blocks : [] };
-}
-
-/** 工具参数还在写的时候的概览：能解析了就挑一个最能说明它在干什么的字段，还没写完就显示写了多少 */
-function liveSummary(json: string) {
-	try {
-		return summarize(JSON.parse(json));
-	} catch {
-		return json.length > 2048 ? `正在写… ${Math.round(json.length / 1024)} KB` : "";
-	}
-}
-
-/**
- * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
- * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
- */
-function liveNodes(stream: Stream, path: Node[], keys: Set<string>): Node[] {
-	const ts = new Date().toISOString();
-	const r = stream.run;
-	const mine: Node[] = !r || !r.prompt.trim() || sentNode(r, path) ? [] : [{ k: "user", uuid: liveUser(r) as string, parent: null, ts: r.started, text: r.prompt, images: 0 }];
-	const blocks = stream.blocks.filter((b) => !keys.has(b.key));
-	return [
-		...mine,
-		...blocks.flatMap((b, i): Node[] => {
-			const base = { uuid: `live:${b.key}`, parent: null, ts, key: b.key };
-			if (b.k === "tool") return [{ k: "tool", ...base, id: b.id, name: b.name, summary: liveSummary(b.json), input: b.json, result: null, resultUuid: null, agent: null }];
-			// 思考有时是不给看的（空的）：记录里不会有能显示的节点，后面有了别的段就不再显示
-			if (b.k === "thinking") return !b.text.trim() && i < blocks.length - 1 ? [] : [{ k: "thinking", ...base, text: b.text }];
-			return b.text.trim() ? [{ k: "assistant", ...base, text: b.text }] : [];
-		}),
-	];
-}
-const isLive = (n: Node) => n.uuid.startsWith("live:");
-const liveUser = (r: Run | null) => (r ? `live:user:${r.id}` : null);
-/** 这次运行你发的那条已经写进记录了：运行开始之后（给一分钟时钟误差）记录里有同样的一句 */
-function sentNode(r: Run | null, path: Node[]) {
-	const asked = r?.prompt.trim();
-	if (!r || !asked) return undefined;
-	return path.find((n): n is User => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
 }

@@ -1,9 +1,10 @@
-// mixer 自己记的状态（data/state.json，不进 git）：每个会话在 mixer 里最后一次跑完的时间、人最后一次打开它的时间。
+// mixer 自己记的状态（data/state.json，不进 git；MIXER_DATA 可改目录）：每个会话在 mixer 里最后一次跑完的时间、人最后一次打开它的时间。
 // 跑完的时间晚于打开的时间，就是「跑完了，还没看」。还有工作区：侧栏里放了哪些文件夹（按人拖的顺序）、哪些会话。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DATA } from "./access.ts";
 
-const FILE = join(dirname(new URL(import.meta.url).pathname), "..", "data", "state.json");
+const FILE = join(DATA, "state.json");
 
 type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; caps: Record<string, Caps>; limits: Limits | null; workspace: Workspace | null };
 let state: State = { finished: {}, seen: {}, windows: {}, models: {}, caps: {}, limits: null, workspace: null };

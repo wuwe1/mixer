@@ -94,7 +94,7 @@ const TASK_STATUS: Record<string, string> = { completed: "完成", failed: "失�
 
 const AgentButton = ({ id, onAgent, className }: { id?: string; onAgent?: (id: string) => void; className?: string }) =>
 	id && onAgent ? (
-		<Button variant="outline" size="sm" className={cn("h-6 shrink-0 gap-1 px-2 text-2xs", className)} onClick={() => onAgent(id)}>
+		<Button variant="outline" size="xs" className={cn("shrink-0", className)} onClick={() => onAgent(id)}>
 			<Bot className="size-3" />
 			子代理对话
 		</Button>
@@ -333,7 +333,7 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since }: { t: T
 					</Button>
 				)}
 				{t.agent && onAgent && (
-					<Button variant="outline" size="xs" className="shrink-0 text-2xs" onClick={() => onAgent(t.agent as string)}>
+					<Button variant="outline" size="xs" className="shrink-0" onClick={() => onAgent(t.agent as string)}>
 						<Bot className="size-3" />
 						子代理对话
 					</Button>
@@ -348,7 +348,7 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since }: { t: T
 							{full ?? detail?.result ?? t.result.text}
 						</pre>
 						{(detail ? detail.cut : t.result.cut) && full === null && (
-							<Button variant="ghost" size="xs" className="self-start text-2xs" onClick={more}>
+							<Button variant="ghost" size="xs" className="self-start" onClick={more}>
 								显示完整结果
 							</Button>
 						)}

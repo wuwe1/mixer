@@ -3,7 +3,7 @@
 //   Cloudflare Access：验 Access 加在请求上的 JWT（cf-access-jwt-assertion）：签名（团队的公钥）、iss、aud、过期、邮箱
 //   passkey：Tailscale Funnel 这种前面没人拦的，靠 mixer 自己登录。Mac 上 `pnpm mixer pair` 出一个一次性的配对码（二维码），
 //     手机扫码打开、建一个 passkey；之后用 passkey 登录，拿到签名的 cookie（30 天）
-// access.json 一项都没配（只有原来那种自己挂 Cloudflare Access 的用法）：远程的只认带着 Access JWT 的，不验签，启动时提示去配置。
+// access.json 一项都没配：远程的一律不认（401），第一次有远程请求时提示去 `pnpm mixer setup …`。看到的 Access JWT 记下来给 setup cloudflare 当默认值。
 // 配置改了不用重启：每次按文件修改时间看要不要重读（`pnpm mixer setup …` 直接改文件）
 import { createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -11,7 +11,9 @@ import type { IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 
-export const FILE = join(dirname(new URL(import.meta.url).pathname), "..", "data", "access.json");
+/** mixer 自己的数据（access.json、state.json）放哪：MIXER_DATA，默认仓库里的 data/（测试、另起一个实例时指到临时目录） */
+export const DATA = process.env.MIXER_DATA || join(dirname(new URL(import.meta.url).pathname), "..", "data");
+export const FILE = join(DATA, "access.json");
 const PORT = Number(process.env.MIXER_PORT ?? 4848);
 
 export type Passkey = { id: string; key: string; counter: number; transports?: string[]; name: string; at: string };
@@ -64,15 +66,33 @@ const hostOf = (req: IncomingMessage) => String(req.headers.host ?? "").replace(
 const b64json = (s: string) => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
 
 // —— Cloudflare Access ——
-/** 团队的公钥：一小时拿一次；遇到不认识的 kid（换钥匙了）马上再拿，但一分钟最多一次 */
-const certs = new Map<string, { at: number; keys: Map<string, KeyObject> }>();
+/**
+ * 团队的公钥：一小时拿一次；遇到不认识的 kid（换钥匙了）马上再拿，但一分钟最多一次。
+ * 拿不到（断网、Cloudflare 出错）：一分钟内不再试，先用手里旧的；同时来的请求等同一次
+ */
+type Certs = { at: number; keys: Map<string, KeyObject>; retry?: number; fetching?: Promise<void> };
+const certs = new Map<string, Certs>();
 async function keyFor(team: string, kid: string) {
-	let c = certs.get(team);
-	if (!c || Date.now() - c.at > 3600_000 || (!c.keys.has(kid) && Date.now() - c.at > 60_000)) {
-		const r = await fetch(`https://${team}/cdn-cgi/access/certs`, { signal: AbortSignal.timeout(10_000) });
-		const d = (await r.json()) as { keys?: (JsonWebKey & { kid: string })[] };
-		c = { at: Date.now(), keys: new Map((d.keys ?? []).map((k) => [k.kid, createPublicKey({ key: k, format: "jwk" })])) };
-		certs.set(team, c);
+	const c: Certs = certs.get(team) ?? { at: 0, keys: new Map() };
+	certs.set(team, c);
+	const stale = Date.now() - c.at > 3600_000 || (!c.keys.has(kid) && Date.now() - c.at > 60_000);
+	if (stale && !(c.retry && Date.now() < c.retry)) {
+		c.fetching ??= (async () => {
+			try {
+				const r = await fetch(`https://${team}/cdn-cgi/access/certs`, { signal: AbortSignal.timeout(10_000) });
+				if (!r.ok) throw new Error(`${r.status}`);
+				const d = (await r.json()) as { keys?: (JsonWebKey & { kid: string })[] };
+				c.keys = new Map((d.keys ?? []).map((k) => [k.kid, createPublicKey({ key: k, format: "jwk" })]));
+				c.at = Date.now();
+				delete c.retry;
+			} catch (e) {
+				c.retry = Date.now() + 60_000;
+				console.log(`${new Date().toISOString()} 拿不到 ${team} 的公钥（${e instanceof Error ? e.message : e}），一分钟后再试`);
+			} finally {
+				delete c.fetching;
+			}
+		})();
+		await c.fetching;
 	}
 	return c.keys.get(kid) ?? null;
 }
@@ -99,7 +119,7 @@ async function accessEmail(req: IncomingMessage, cf: NonNullable<Config["cloudfl
 		return null;
 	}
 }
-/** 没配置时看到的 Access 请求（不验签）：`pnpm mixer setup cloudflare` 拿来当默认值 */
+/** 没配置时看到的 Access 请求（不验签，也不放行）：`pnpm mixer setup cloudflare` 拿来当默认值 */
 let sawAccess: { team: string; aud: string; email: string } | null = null;
 function noteAccess(req: IncomingMessage) {
 	const tok = req.headers["cf-access-jwt-assertion"];
@@ -138,7 +158,7 @@ const cookie = (k: Passkey) => {
 export const logoutCookie = `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
 
 /**
- * 这个请求是谁：local / access:<邮箱> / passkey:<设备> / open（没配置，靠外面那层）；null 是不认识，接口一律 401。
+ * 这个请求是谁：local / access:<邮箱> / passkey:<设备>；null 是不认识，接口一律 401（没配置时远程的都是 null）。
  * 页面本身（index.html、打包的 js）谁都能拿，里面没有数据
  */
 let warned = false;
@@ -147,12 +167,11 @@ export async function who(req: IncomingMessage): Promise<string | null> {
 	const c = config();
 	if (!configured(c)) {
 		noteAccess(req);
-		if (!req.headers["cf-access-jwt-assertion"]) return null;
 		if (!warned) {
 			warned = true;
-			console.log(`${new Date().toISOString()} 远程访问还没配置：现在只看请求带没带 Cloudflare Access 的 JWT、不验签。跑 pnpm mixer setup cloudflare 配上`);
+			console.log(`${new Date().toISOString()} 有远程来的请求，但远程访问还没配置：一律拒绝。跑 pnpm mixer setup cloudflare 或 pnpm mixer setup funnel 配上`);
 		}
-		return "open";
+		return null;
 	}
 	if (c.cloudflare) {
 		const email = await accessEmail(req, c.cloudflare);
@@ -260,12 +279,26 @@ export async function login(req: IncomingMessage, id: unknown, response: unknown
 	return cookie(k);
 }
 
-/** 登录相关的接口：远程来的一分钟最多 30 次（Funnel 是公网，挡一挡乱试的） */
-let bucket = { at: 0, n: 0 };
+/**
+ * 对方的 IP：经 Cloudflare 来的看 cf-connecting-ip（Cloudflare 自己写的）；经 Funnel 来的看 x-forwarded-for 最后一个
+ * （前面的是对方自己能写的，最后一个是 Tailscale 加的；cf-* 头 Funnel 不管，也是对方能写的）
+ */
+function clientIp(req: IncomingMessage) {
+	const cf = req.headers["cf-connecting-ip"];
+	if (typeof cf === "string" && cf && !("tailscale-funnel-request" in req.headers)) return cf.trim();
+	const xff = String(req.headers["x-forwarded-for"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+	return xff.at(-1) ?? req.socket.remoteAddress ?? "";
+}
+/** 登录相关的接口：远程来的每个 IP 一分钟最多 30 次（Funnel 是公网，挡一挡乱试的） */
+const buckets = new Map<string, { at: number; n: number }>();
 export function limited(req: IncomingMessage) {
 	if (isLocal(req)) return false;
-	if (Date.now() - bucket.at > 60_000) bucket = { at: Date.now(), n: 0 };
-	return ++bucket.n > 30;
+	const now = Date.now();
+	for (const [k, b] of buckets) if (now - b.at > 60_000) buckets.delete(k);
+	const ip = clientIp(req);
+	const b = buckets.get(ip) ?? { at: now, n: 0 };
+	buckets.set(ip, b);
+	return ++b.n > 30;
 }
 
 /** 页面打开时问：我是谁、能不能用 passkey 登录 */

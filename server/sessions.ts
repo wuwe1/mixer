@@ -310,7 +310,23 @@ type Parsed = Cursor & {
 	/** parentUuid 指向的记录还没读到（偶尔先写回复、后写它挂着的附带记录）：先当根，那条读到了再找 */
 	waiting: Map<string, Node[]>;
 };
+/**
+ * 读过的会话留在内存里（文件长了接着读），按最近用过的排；加起来超过 200MB（按文件大小算，图片的 base64 也在里面）
+ * 就丢掉最久没用的，下次打开从头读。正在用的那个不丢
+ */
 const cache = new Map<string, Parsed>();
+const BUDGET = 200 * 1024 * 1024;
+function keep(file: string, p: Parsed) {
+	cache.delete(file);
+	cache.set(file, p);
+	let total = 0;
+	for (const x of cache.values()) total += x.size;
+	for (const [f, x] of cache) {
+		if (total <= BUDGET || f === file) break;
+		cache.delete(f);
+		total -= x.size;
+	}
+}
 
 /** 读一个会话（或子 agent）的记录，变成显示节点 */
 export const parse = (file: string) => serial(`parse:${file}`, () => read(file));
@@ -319,7 +335,10 @@ async function read(file: string): Promise<Parsed> {
 	const st = statSync(file);
 	const hit = cache.get(file);
 	const todo = resume(hit, st);
-	if (todo === "same" && hit) return hit;
+	if (todo === "same" && hit) {
+		keep(file, hit);
+		return hit;
+	}
 	const s: Parsed =
 		todo === "more" && hit
 			? hit
@@ -460,6 +479,7 @@ async function read(file: string): Promise<Parsed> {
 	// 读的时候文件可能又长了：记的是开读前的大小，下次还会接着读
 	s.size = st.size;
 	s.mtime = st.mtimeMs;
+	keep(file, s);
 	return s;
 }
 

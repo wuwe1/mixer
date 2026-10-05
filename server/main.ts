@@ -5,7 +5,7 @@
 // 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
 // 写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）；MCP 工具发来的确认请求要带 MIXER_TOKEN。
 import { execFile, execFileSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, type Stats, statSync, watch } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -25,6 +25,11 @@ import * as workspace from "./workspace.ts";
 const PORT = Number(process.env.MIXER_PORT ?? 4848);
 const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 const DIST = join(ROOT, "web", "dist");
+const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
+
+// 哪里漏了没接住的错误：记下来，服务接着跑（launchd 会拉起，但正在跑的、排着的、待确认的就都没了）
+process.on("uncaughtException", (e) => say(`没接住的错误：${e.stack ?? e}`));
+process.on("unhandledRejection", (e) => say(`没接住的错误（Promise）：${e instanceof Error ? e.stack : e}`));
 
 /** web/src 比 web/dist 新就重新打包 */
 function build() {
@@ -33,12 +38,58 @@ function build() {
 	if (existsSync(out) && statSync(out).mtimeMs > Math.max(newest(join(ROOT, "web", "src")), statSync(join(ROOT, "web", "index.html")).mtimeMs)) return;
 	console.log("打包页面……");
 	execFileSync(join(ROOT, "node_modules", ".bin", "vite"), ["build", "--logLevel", "warn"], { cwd: ROOT, stdio: "inherit" });
+	prune();
+}
+
+/** 页面现在的版本：index.html 里入口脚本的路径（文件名带 hash）。开着的页面比一比，就知道有没有新的 */
+let version: string | null = null;
+const readVersion = () => {
+	try { version = /<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/.exec(readFileSync(join(DIST, "index.html"), "utf8"))?.[1] ?? null; } catch { version = null; }
+	return version;
+};
+
+/**
+ * 打包不清空 dist（emptyOutDir: false）：已经开着的页面还要按需加载旧的那些块。
+ * 打包完把一天前的、新的 index.html 顺着引用找不到的删掉
+ */
+function prune() {
+	const dir = join(DIST, "assets");
+	let names: string[];
+	try { names = readdirSync(dir); } catch { return; }
+	const all = new Set(names);
+	const used = new Set<string>();
+	const todo = [join(DIST, "index.html")];
+	for (let f = todo.pop(); f; f = todo.pop()) {
+		let text: string;
+		try { text = readFileSync(f, "utf8"); } catch { continue; }
+		for (const m of text.matchAll(/[\w.-]+\.(?:js|css|wasm|woff2?|ttf|svg|png|jpe?g|gif|webp|json)\b/g)) {
+			if (!all.has(m[0]) || used.has(m[0])) continue;
+			used.add(m[0]);
+			if (/\.(js|css)$/.test(m[0])) todo.push(join(dir, m[0]));
+		}
+	}
+	let n = 0;
+	for (const name of names) {
+		if (used.has(name)) continue;
+		try {
+			if (Date.now() - statSync(join(dir, name)).mtimeMs < 86_400_000) continue;
+			rmSync(join(dir, name), { force: true });
+			n++;
+		} catch {}
+	}
+	if (n) say(`删掉了 ${n} 个一天前的旧打包文件`);
 }
 
 const TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
-	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".woff2": "font/woff2", ".json": "application/json",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".bmp": "image/bmp",
+	".woff2": "font/woff2", ".json": "application/json",
 };
+/** 仓库里的文件原样给（/raw）：只有这几种图片能在页面里直接显示；别的（包括 SVG、HTML）一律当下载，还加上 sandbox 的 CSP，里面的脚本跑不起来 */
+const INLINE = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp"]);
+const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'";
+/** 页面本身不许被别的网站嵌进去（点击劫持） */
+const PAGE = { "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'" };
 
 /** JSON；大于 8KB 且对方收 gzip 就压缩（会话一个就一两 MB，手机上省流量） */
 const json = (res: ServerResponse, status: number, v: unknown) => {
@@ -47,8 +98,23 @@ const json = (res: ServerResponse, status: number, v: unknown) => {
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...(gz ? { "content-encoding": "gzip" } : {}) });
 	res.end(gz ? gzipSync(buf) : buf);
 };
-// 先攒 Buffer 再一起解码：按块拼字符串，中文会在块的边界被切坏（带图片时请求体很大，一定会分块）
-const body = (req: IncomingMessage) => new Promise<string>((ok) => { const cs: Buffer[] = []; req.on("data", (c: Buffer) => { cs.push(c); }); req.on("end", () => ok(Buffer.concat(cs).toString("utf8"))); });
+// 先攒 Buffer 再一起解码：按块拼字符串，中文会在块的边界被切坏（带图片时请求体很大，一定会分块）。
+// 最多 20MB（10 张图片也够），再大回 413
+const LIMIT = 20 * 1024 * 1024;
+const body = (req: IncomingMessage) => new Promise<string>((ok, no) => {
+	if (Number(req.headers["content-length"] ?? 0) > LIMIT) return no(fail(413, "太大了：最多 20MB"));
+	const cs: Buffer[] = [];
+	let n = 0;
+	req.on("data", (c: Buffer) => {
+		if (n > LIMIT) return;
+		n += c.length;
+		if (n <= LIMIT) return void cs.push(c);
+		cs.length = 0;
+		no(fail(413, "太大了：最多 20MB"));
+	});
+	req.on("end", () => { if (n <= LIMIT) ok(Buffer.concat(cs).toString("utf8")); });
+	req.on("error", no);
+});
 
 function ours(req: IncomingMessage) {
 	const o = req.headers.origin;
@@ -82,11 +148,12 @@ const pack = (f: string) => {
 	return p;
 };
 
-// SSE
+// SSE。连上先发 build（页面的版本），之后每 25 秒一个 ping：页面靠它知道连接还活着（手机睡醒、切网络后连接常常已经断了却没报错）
 const clients = new Set<ServerResponse>();
-const emit = (type: string, data: unknown) => { for (const c of clients) c.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); };
+const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+const emit = (type: string, data: unknown) => { const m = sse(type, data); for (const c of clients) c.write(m); };
 runs.onEvent(emit);
-setInterval(() => { for (const c of clients) c.write(": keepalive\n\n"); }, 25_000).unref();
+setInterval(() => emit("ping", {}), 25_000).unref();
 
 // 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -110,7 +177,7 @@ if (existsSync(codex.CODEX)) {
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse, m: string[], url: URL) => unknown;
-const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
+function fail(status: number, msg: string) { return Object.assign(new Error(msg), { status }); }
 const GET: [RegExp, Handler][] = [
 	[/^\/api\/auth\/status$/, async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
 	[/^\/api\/auth\/seen$/, (req, res) => { if (!access.isLocal(req)) throw fail(403, "只能在本机看"); json(res, 200, access.seenAccess()); }],
@@ -143,10 +210,21 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/repo\/([\w.-]+)\/file$/, (_q, res, m, url) => json(res, 200, repo.file(projectPath(m[1]), url.searchParams.get("path") ?? ""))],
 	[/^\/api\/repo\/([\w.-]+)\/raw$/, (_q, res, m, url) => {
 		const f = repo.inside(projectPath(m[1]), url.searchParams.get("path") ?? "");
-		res.writeHead(200, { "content-type": TYPES[extname(f).toLowerCase()] ?? "application/octet-stream", "cache-control": "private, max-age=60" });
-		createReadStream(f).pipe(res);
+		let st: Stats | null = null;
+		try { st = statSync(f); } catch {}
+		if (!st?.isFile()) return json(res, 404, { error: "没有这个文件" });
+		const ext = extname(f).toLowerCase();
+		res.writeHead(200, {
+			"content-type": TYPES[ext] ?? "application/octet-stream",
+			"content-length": st.size,
+			"cache-control": "private, max-age=60",
+			"x-content-type-options": "nosniff",
+			"content-security-policy": RAW_CSP,
+			...(INLINE.has(ext) ? {} : { "content-disposition": "attachment" }),
+		});
+		createReadStream(f).on("error", () => res.destroy()).pipe(res);
 	}],
-	[/^\/api\/repo\/([\w.-]+)\/status$/, (_q, res, m) => json(res, 200, repo.status(projectPath(m[1])))],
+	[/^\/api\/repo\/([\w.-]+)\/status$/, async (_q, res, m) => json(res, 200, await repo.status(projectPath(m[1])))],
 	[/^\/api\/repo\/([\w.-]+)\/diff$/, (_q, res, m, url) => json(res, 200, { diff: repo.diff(projectPath(m[1]), url.searchParams.get("path") ?? "") })],
 	[/^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, (_q, res, m) => json(res, 200, repo.commit(projectPath(m[1]), m[2]))],
 	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
@@ -235,7 +313,6 @@ watch(join(ROOT, "server"), { recursive: true }, touched("server"));
 watch(join(ROOT, "mcp"), { recursive: true }, touched("server"));
 watch(join(ROOT, "web", "index.html"), touched("web"));
 watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(String(f ?? "").split(sep).join("/") === "lib/tail.ts" ? "server" : "web")(e, f));
-const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 setInterval(() => {
 	const last = Math.max(dirty.server, dirty.web);
 	if (swapping || !last || Date.now() - last < 3000 || !runs.idle()) return;
@@ -260,10 +337,15 @@ setInterval(() => {
 		if (dirty.web === at) dirty.web = 0;
 		packed.clear();
 		say(err ? `页面改了，打包失败：\n${stderr}` : "页面改了：已重新打包");
+		if (err) return;
+		// 开着的页面：有新版本了
+		if (readVersion()) emit("build", { version });
+		prune();
 	});
 }, 5000).unref();
 
 build();
+readVersion();
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;
@@ -272,7 +354,10 @@ const server = createServer(async (req, res) => {
 		if (req.method === "POST" && path === "/api/approvals") {
 			if (req.headers["x-mixer-token"] !== runs.TOKEN) return json(res, 403, { error: "token 不对" });
 			const b = JSON.parse(await body(req));
-			return json(res, 200, await runs.ask(String(b.run), String(b.tool), b.input));
+			// 问的那边断了（claude 退出了）：确认请求作废
+			const gone = new AbortController();
+			res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+			return json(res, 200, await runs.ask(String(b.run), String(b.tool), b.input, gone.signal));
 		}
 		// 接口要先认出是谁；登录用的那几个除外（一分钟限次数）
 		if (path.startsWith("/api/auth/")) {
@@ -280,9 +365,10 @@ const server = createServer(async (req, res) => {
 		} else if (path.startsWith("/api/") && !(await access.who(req))) return json(res, 401, { error: "要先登录", login: true });
 		if (path === "/api/events") {
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-			res.write(": hi\n\n");
+			res.write(version ? sse("build", { version }) : ": hi\n\n");
 			clients.add(res);
-			req.on("close", () => clients.delete(res));
+			res.on("close", () => clients.delete(res));
+			res.on("error", () => clients.delete(res));
 			return;
 		}
 		const table = req.method === "POST" ? POST : req.method === "GET" ? GET : [];
@@ -295,18 +381,30 @@ const server = createServer(async (req, res) => {
 		// 页面
 		const f = join(DIST, path);
 		if (path !== "/" && f.startsWith(DIST + sep) && existsSync(f) && statSync(f).isFile()) {
-			const head = { "content-type": TYPES[extname(f)] ?? "application/octet-stream", "cache-control": path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache", vary: "accept-encoding" };
+			const head = { "content-type": TYPES[extname(f)] ?? "application/octet-stream", "cache-control": path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache", vary: "accept-encoding", ...(extname(f) === ".html" ? PAGE : {}) };
 			const accept = String(req.headers["accept-encoding"] ?? "");
 			const how = !path.startsWith("/assets/") || !PACK.has(extname(f)) ? null : /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
 			if (how) return void res.writeHead(200, { ...head, "content-encoding": how }).end((await pack(f))[how]);
 			return void res.writeHead(200, head).end(readFileSync(f));
 		}
-		res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" }).end(readFileSync(join(DIST, "index.html")));
+		res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...PAGE }).end(readFileSync(join(DIST, "index.html")));
 	} catch (e) {
-		const status = (e as { status?: number }).status ?? 500;
+		// 文件刚好没了（会话被删、临时文件）：404，不算服务出错
+		const status = (e as { status?: number }).status ?? ((e as { code?: string }).code === "ENOENT" ? 404 : 500);
 		if (status === 500) console.error(e);
+		if (res.headersSent) return void res.destroy();
+		// 请求体太大：回完就断开，剩下的不读了
+		if (status === 413) {
+			res.setHeader("connection", "close");
+			res.on("finish", () => req.destroy());
+		}
 		json(res, status, { error: e instanceof Error ? e.message : String(e) });
 	}
+});
+// 端口被占了之类：起不来就退出（launchd 隔一会儿再拉），不要挂着一个不听端口的进程
+server.on("error", (e) => {
+	say(`起不来：${e.message}`);
+	process.exit(1);
 });
 server.listen(PORT, "127.0.0.1", () => {
 	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);

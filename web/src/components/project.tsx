@@ -14,7 +14,7 @@ export function ProjectHome({ p, r }: { p: Pick<ProjectTree, "id" | "path">; r: 
 			<div className="shrink-0 border-b">
 				<div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6 md:px-6 md:py-10">
 					<div className="flex flex-col gap-0.5">
-						<h1 className="text-xl font-semibold tracking-tight">{projectName(p)}</h1>
+						<h1 className="text-lg font-semibold tracking-tight">{projectName(p)}</h1>
 						<p className="truncate font-mono text-xs text-muted-foreground">{p.path}</p>
 					</div>
 					<StartBox target={{ project: p.id }} lead="新会话：" />

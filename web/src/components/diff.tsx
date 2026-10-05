@@ -104,7 +104,7 @@ export function Hunks({ file }: { file: FileDiff }) {
 	const heads = !(file.kind === "A" && file.hunks.length === 1);
 	return (
 		<div className="overflow-x-auto overscroll-x-contain">
-			<div className="diff grid w-max min-w-full grid-cols-[auto_auto_1fr] font-mono text-xs leading-[1.6]">
+			<div className="diff grid w-max min-w-full grid-cols-[auto_auto_1fr] font-mono text-xs leading-code">
 				{file.hunks.map((h, i) => (
 					<Fragment key={i}>
 						{heads && <div className="col-span-3 bg-muted px-3 py-0.5 text-muted-foreground">{h.head}</div>}

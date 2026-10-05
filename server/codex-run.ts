@@ -21,28 +21,40 @@ function bin(): string | null {
 	return null;
 }
 
-type Server = { p: ChildProcess; call: (method: string, params?: unknown) => Promise<Raw>; loaded: Set<string> };
+/** ms：等回复最多多久（0 是一直等）。控制类的调用都是马上回的，30 秒没回就是卡住了 */
+type Server = { p: ChildProcess; call: (method: string, params?: unknown, ms?: number) => Promise<Raw>; loaded: Set<string> };
 let server: Promise<Server> | null = null;
+/** 载入线程（读整个记录）可能慢一些 */
+const SLOW = 120_000;
+/** mixer 退出时带走 app-server */
+let proc: ChildProcess | null = null;
+process.once("exit", () => proc?.kill());
 /** 各个线程在跑的那次运行：通知、确认请求按 threadId 分给它 */
 const threads = new Map<string, Handler>();
 type Handler = { note: (m: Raw) => void; request: (m: Raw) => Promise<unknown> };
 
 function connect(): Promise<Server> {
-	server ??= new Promise<Server>((ok, fail) => {
+	if (server) return server;
+	const me = new Promise<Server>((ok, fail) => {
 		const b = bin();
 		if (!b) return fail(new Error("没找到 codex：装 Codex.app，或者设 MIXER_CODEX 指到 codex 命令"));
 		const p = spawn(b, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+		proc = p;
 		let n = 0;
 		let buf = "";
 		const waiting = new Map<number, { ok: (r: Raw) => void; fail: (e: Error) => void }>();
 		const send = (m: unknown) => p.stdin?.write(`${JSON.stringify(m)}\n`);
-		const call = (method: string, params?: unknown) => new Promise<Raw>((ok2, fail2) => {
+		const call = (method: string, params?: unknown, ms = 30_000) => new Promise<Raw>((ok2, fail2) => {
 			const id = ++n;
-			waiting.set(id, { ok: ok2, fail: fail2 });
+			const t = ms ? setTimeout(() => { waiting.delete(id); fail2(new Error(`codex app-server ${ms / 1000} 秒没回 ${method}`)); }, ms) : null;
+			const done = () => { if (t) clearTimeout(t); };
+			waiting.set(id, { ok: (r) => { done(); ok2(r); }, fail: (e) => { done(); fail2(e); } });
 			send({ id, method, params });
 		});
-		p.stdout?.on("data", (d: Buffer) => {
-			buf += d.toString("utf8");
+		p.stdin?.on("error", () => {});
+		p.stdout?.setEncoding("utf8");
+		p.stdout?.on("data", (d: string) => {
+			buf += d;
 			let i: number;
 			while ((i = buf.indexOf("\n")) >= 0) {
 				const line = buf.slice(0, i);
@@ -68,24 +80,30 @@ function connect(): Promise<Server> {
 			}
 		});
 		let err = "";
-		p.stderr?.on("data", (d: Buffer) => { err = (err + d.toString("utf8")).slice(-2000); });
+		p.stderr?.setEncoding("utf8");
+		p.stderr?.on("data", (d: string) => { err = (err + d).slice(-2000); });
 		p.on("error", (e) => fail(e));
 		p.on("exit", (code) => {
 			say(`codex app-server 退出了（${code}）${err.trim() ? `：${err.trim().split("\n").pop()}` : ""}`);
-			server = null;
+			if (server === me) server = null;
+			if (proc === p) proc = null;
 			for (const w of waiting.values()) w.fail(new Error("codex app-server 退出了"));
 			// 正在跑的都算出错结束
 			for (const h of threads.values()) h.note({ method: "turn/completed", params: { turn: { status: "failed", error: { message: "codex app-server 退出了" } } } });
 			threads.clear();
 		});
-		process.on("exit", () => p.kill());
+		// 起来了却不回 initialize：杀掉，下次要用时重起
 		call("initialize", { clientInfo: { name: "mixer", title: "mixer", version: "0.1.0" }, capabilities: null }).then(() => {
 			send({ method: "initialized" });
 			ok({ p, call, loaded: new Set() });
-		}, fail);
+		}, (e: Error) => {
+			p.kill();
+			fail(e);
+		});
 	});
-	server.catch(() => { server = null; });
-	return server;
+	server = me;
+	me.catch(() => { if (server === me) server = null; });
+	return me;
 }
 
 /** 没人认领的请求（运行已经结束了）：拒绝 */
@@ -141,11 +159,11 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 	const pol = policy(o.permission);
 	const base = { model, cwd: o.cwd, approvalPolicy: pol.approvalPolicy, sandbox: pol.sandbox };
 	let tid: string;
-	if (o.mode === "new") tid = String((await s.call("thread/start", base)).thread.id);
-	else if (o.mode === "fork") tid = String((await s.call("thread/fork", { ...base, threadId: o.session, lastTurnId: o.at, excludeTurns: true })).thread.id);
+	if (o.mode === "new") tid = String((await s.call("thread/start", base, SLOW)).thread.id);
+	else if (o.mode === "fork") tid = String((await s.call("thread/fork", { ...base, threadId: o.session, lastTurnId: o.at, excludeTurns: true }, SLOW)).thread.id);
 	else {
 		tid = String(o.session);
-		if (!s.loaded.has(tid)) await s.call("thread/resume", { ...base, threadId: tid, excludeTurns: true });
+		if (!s.loaded.has(tid)) await s.call("thread/resume", { ...base, threadId: tid, excludeTurns: true }, SLOW);
 	}
 	s.loaded.add(tid);
 	h.session(tid);
@@ -213,7 +231,8 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 		...o.images.map((i) => ({ type: "image", url: `data:${i.media};base64,${i.data}` })),
 	];
 	try {
-		const r = await s.call("turn/start", { threadId: tid, input, model, approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" });
+		// turn/start 马上回（这一轮的进展全在通知里），带图片时请求大一点，给 SLOW
+		const r = await s.call("turn/start", { threadId: tid, input, model, approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" }, SLOW);
 		turnId = String(r.turn?.id ?? "") || null;
 	} catch (e) {
 		threads.delete(tid);

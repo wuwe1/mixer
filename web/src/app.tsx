@@ -9,8 +9,7 @@ import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/s
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FloatingApprovals } from "@/components/approvals";
-import { NewSession } from "@/components/new-session";
-import { ProjectHome } from "@/components/project";
+import { NewSession, ProjectHome } from "@/components/lazy";
 import { PANELS, panelOf, SessionView } from "@/components/session";
 import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
 import { useLive } from "@/lib/live";

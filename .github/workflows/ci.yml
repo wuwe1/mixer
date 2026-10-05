@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    # 只跑在 macOS 上（launchd、Codex.app 的路径这些），测试不依赖本机的会话记录
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 版本取 package.json 的 packageManager
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm build

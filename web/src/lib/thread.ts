@@ -1,0 +1,129 @@
+// 会话记录 → 对话：节点树、从根走到一片叶子的那条路、路上连着的工具调用收成一组、分叉点；
+// 还有正在跑的那次运行里还没写进记录的那几段，变成和记录里一样的节点接在末尾。都是纯函数，不碰 React。
+import type { Node, Run } from "./api";
+import { summarize } from "./tail";
+import type { Stream } from "./use-stream";
+
+export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
+export type Walk = ReturnType<typeof walk>;
+export type User = Extract<Node, { k: "user" }>;
+
+/** 子节点表；每个节点往下最新的那片叶子 */
+export function tree(nodes: Node[]): Tree {
+	const kids = new Map<string | null, Node[]>();
+	const byId = new Map(nodes.map((n) => [n.uuid, n]));
+	for (const n of nodes) {
+		const p = n.parent && byId.has(n.parent) ? n.parent : null;
+		kids.set(p, [...(kids.get(p) ?? []), n]);
+	}
+	const best = new Map<string, Node>();
+	// 节点是按文件顺序来的，子节点总在父节点后面：倒着走一遍就能算出每个节点的最新叶子
+	for (let i = nodes.length - 1; i >= 0; i--) {
+		const n = nodes[i];
+		const cs = kids.get(n.uuid) ?? [];
+		let b: Node = n;
+		for (const c of cs) {
+			const cb = best.get(c.uuid) ?? c;
+			if (cb.ts > b.ts || b === n) b = cb;
+		}
+		best.set(n.uuid, b);
+	}
+	return { kids, best, byId };
+}
+
+/** 从根走到 leaf 的那条路；路上每个改写过的地方的各个版本；latest 是整棵树最新的叶子 */
+export function walk(t: Tree, leaf: string | null) {
+	const roots = t.kids.get(null) ?? [];
+	const latest = roots.map((r) => t.best.get(r.uuid) ?? r).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+	const end = (leaf ? t.byId.get(leaf) : undefined) ?? latest;
+	const path: Node[] = [];
+	for (let n: Node | undefined = end; n; n = n.parent ? t.byId.get(n.parent) : undefined) path.push(n);
+	path.reverse();
+	const versions = new Map<string, { options: Node[]; index: number }>();
+	for (const n of path) {
+		const siblings = t.kids.get(n.parent && t.byId.has(n.parent) ? n.parent : null) ?? [];
+		if (siblings.length > 1) versions.set(n.uuid, { options: siblings, index: siblings.indexOf(n) });
+	}
+	return { path, versions, end, latest, atLatest: !end || end === latest };
+}
+
+/** 记录里有的段：「消息 id : 第几段」 */
+export const keysOf = (nodes: Node[]) => new Set(nodes.flatMap((n) => ("key" in n && n.key ? [n.key] : [])));
+
+export type Block = { kind: "one"; n: Node } | { kind: "steps"; nodes: Node[] };
+export function blocks(path: Node[]): Block[] {
+	const out: Block[] = [];
+	for (const n of path) {
+		if (n.k === "tool" || n.k === "thinking") {
+			const last = out[out.length - 1];
+			if (last?.kind === "steps") last.nodes.push(n);
+			else out.push({ kind: "steps", nodes: [n] });
+		} else out.push({ kind: "one", n });
+	}
+	return out;
+}
+
+/** 接上正在写的那几段：只换最后一块，前面的块原样留着（消息组件是 memo 的，每来一个字不用全部重画） */
+export function append(bs: Block[], live: Node[]): Block[] {
+	if (!live.length) return bs;
+	const out = bs.slice();
+	for (const n of live) {
+		const last = out[out.length - 1];
+		if (n.k !== "tool" && n.k !== "thinking") out.push({ kind: "one", n });
+		else if (last?.kind === "steps") out[out.length - 1] = { kind: "steps", nodes: [...last.nodes, n] };
+		else out.push({ kind: "steps", nodes: [n] });
+	}
+	return out;
+}
+
+export const headOf = (b: Block) => (b.kind === "one" ? b.n : b.nodes[0]);
+
+/**
+ * 分叉点要的是一条记录的 uuid，新会话只带到它为止的上下文。
+ * 工具调用要用它结果那条记录：用调用本身，命令行带过去的上下文里就没有结果
+ */
+export const pointOf = (n: Node) => (n.k === "tool" ? (n.resultUuid ?? n.uuid) : n.uuid);
+/** 路上 before 之前（不含）最后一条 Claude 的回复、思考或工具结果。没有（在第一条消息上分叉）就是 null */
+export function forkPoint(path: Node[], before?: Node): string | null {
+	const upto = before ? path.slice(0, path.indexOf(before)) : path;
+	const last = [...upto].reverse().find((n) => n.k === "assistant" || n.k === "thinking" || n.k === "tool");
+	return last ? pointOf(last) : null;
+}
+
+/** 工具参数还在写的时候的概览：能解析了就挑一个最能说明它在干什么的字段，还没写完就显示写了多少 */
+function liveSummary(json: string) {
+	try {
+		return summarize(JSON.parse(json));
+	} catch {
+		return json.length > 2048 ? `正在写… ${Math.round(json.length / 1024)} KB` : "";
+	}
+}
+
+/**
+ * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
+ * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
+ */
+export function liveNodes(stream: Stream, path: Node[], keys: Set<string>): Node[] {
+	const ts = new Date().toISOString();
+	const r = stream.run;
+	const mine: Node[] = !r || !r.prompt.trim() || sentNode(r, path) ? [] : [{ k: "user", uuid: liveUser(r) as string, parent: null, ts: r.started, text: r.prompt, images: 0 }];
+	const blocks = stream.blocks.filter((b) => !keys.has(b.key));
+	return [
+		...mine,
+		...blocks.flatMap((b, i): Node[] => {
+			const base = { uuid: `live:${b.key}`, parent: null, ts, key: b.key };
+			if (b.k === "tool") return [{ k: "tool", ...base, id: b.id, name: b.name, summary: liveSummary(b.json), input: b.json, result: null, resultUuid: null, agent: null }];
+			// 思考有时是不给看的（空的）：记录里不会有能显示的节点，后面有了别的段就不再显示
+			if (b.k === "thinking") return !b.text.trim() && i < blocks.length - 1 ? [] : [{ k: "thinking", ...base, text: b.text }];
+			return b.text.trim() ? [{ k: "assistant", ...base, text: b.text }] : [];
+		}),
+	];
+}
+export const isLive = (n: Node) => n.uuid.startsWith("live:");
+export const liveUser = (r: Run | null) => (r ? `live:user:${r.id}` : null);
+/** 这次运行你发的那条已经写进记录了：运行开始之后（给一分钟时钟误差）记录里有同样的一句 */
+export function sentNode(r: Run | null, path: Node[]) {
+	const asked = r?.prompt.trim();
+	if (!r || !asked) return undefined;
+	return path.find((n): n is User => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
+}

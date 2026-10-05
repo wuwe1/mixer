@@ -146,9 +146,9 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 				{f && <span className="shrink-0 text-2xs text-muted-foreground tabular-nums">{bytes(f.size)}</span>}
 				{(f?.kind === "text" || mode === "diff") && (
 					<ToggleGroup type="single" size="sm" value={mode} onValueChange={(v) => v && setMode(v as typeof mode)} className="ml-auto">
-						{isMd && <ToggleGroupItem value="preview" className="h-7 px-2 text-xs">预览</ToggleGroupItem>}
-						<ToggleGroupItem value="source" className="h-7 px-2 text-xs">源码</ToggleGroupItem>
-						<ToggleGroupItem value="diff" className="h-7 px-2 text-xs">改动</ToggleGroupItem>
+						{isMd && <ToggleGroupItem value="preview" className="px-2">预览</ToggleGroupItem>}
+						<ToggleGroupItem value="source" className="px-2">源码</ToggleGroupItem>
+						<ToggleGroupItem value="diff" className="px-2">改动</ToggleGroupItem>
 					</ToggleGroup>
 				)}
 			</div>

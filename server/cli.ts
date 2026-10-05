@@ -4,10 +4,11 @@
 //   pnpm mixer setup funnel       Tailscale Funnel + passkey：不要域名；Mac 上装 Tailscale，手机什么都不用装，面容 / 指纹登录
 //   pnpm mixer pair               出一个配对码（二维码），手机扫了建 passkey
 //   pnpm mixer passkeys [rm <id>] 登录过的设备；删掉的那台立刻登不进来
+//   pnpm mixer service            常驻（launchd）：显示要写的 plist。install [--force] 装上并启动，uninstall 停掉并删掉
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import QRCode from "qrcode";
 import { config, configured, update } from "./access.ts";
@@ -138,6 +139,73 @@ async function passkeys(args: string[]) {
 	for (const k of ks) console.log(`${k.id.slice(0, 8)}  ${k.name}  ${k.at.slice(0, 10)}`);
 }
 
+// —— 常驻：launchd 开机起、挂了拉起来（KeepAlive）。main.ts 认 Label（com.mixer.server）：改了自己的代码就退出，等 launchd 拉起新的 ——
+const LABEL = "com.mixer.server";
+const PLIST = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+const LOG = join(homedir(), "Library", "Logs", "mixer.log");
+const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const which = (cmd: string, dirs: string[]) => dirs.map((d) => join(d, cmd)).find((f) => { try { accessSync(f, constants.X_OK); return true; } catch { return false; } });
+
+/** 要写的 plist。PATH 用现在的（去掉 pnpm 加的 node_modules/.bin 这些）：launchd 起的进程要找得到 claude、node、git */
+function plist() {
+	const dirs = [...new Set((process.env.PATH ?? "").split(":").filter((d) => d.startsWith("/") && !/node_modules|node-gyp-bin/.test(d)))];
+	if (!which("node", dirs)) dirs.push(dirname(process.execPath));
+	const node = which("node", dirs) ?? process.execPath;
+	const missing = ["claude", "git"].filter((c) => !which(c, dirs));
+	const env: [string, string][] = [["PATH", dirs.join(":")], ...(process.env.MIXER_PORT ? [["MIXER_PORT", process.env.MIXER_PORT] as [string, string]] : [])];
+	const text = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>${LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${xml(node)}</string>
+		<string>server/main.ts</string>
+	</array>
+	<key>WorkingDirectory</key><string>${xml(ROOT)}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+${env.map(([k, v]) => `\t\t<key>${k}</key><string>${xml(v)}</string>`).join("\n")}
+	</dict>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>StandardOutPath</key><string>${xml(LOG)}</string>
+	<key>StandardErrorPath</key><string>${xml(LOG)}</string>
+</dict>
+</plist>
+`;
+	return { text, missing };
+}
+
+function service(args: string[]) {
+	const domain = `gui/${process.getuid?.()}`;
+	const { text, missing } = plist();
+	const warn = () => { if (missing.length) console.log(`\n注意：现在的 PATH 里找不到 ${missing.join("、")}，launchd 起的 mixer 也找不到。装好、能在终端里用之后再来`); };
+	if (args[0] === "install") {
+		if (existsSync(PLIST) && !args.includes("--force")) die(`已经有 ${PLIST} 了（可能是你自己写的）。pnpm mixer service 看看要写的那份，确定要换：pnpm mixer service install --force`);
+		// 已经装着的先停掉（没装过会失败，不管）
+		spawnSync("launchctl", ["bootout", `${domain}/${LABEL}`], { stdio: "ignore" });
+		mkdirSync(dirname(PLIST), { recursive: true });
+		mkdirSync(dirname(LOG), { recursive: true });
+		writeFileSync(PLIST, text);
+		const r = spawnSync("launchctl", ["bootstrap", domain, PLIST], { encoding: "utf8" });
+		if (r.status !== 0) die(`launchctl bootstrap 没成功：${r.stderr.trim()}`);
+		console.log(`装好了：${PLIST}\nmixer 在 ${LOCAL}，开机自己起、挂了拉起来；日志 ${LOG}\n终端里开着的 pnpm start 要先停掉，不然端口被占着`);
+		return warn();
+	}
+	if (args[0] === "uninstall") {
+		if (!existsSync(PLIST)) return console.log(`没装过（没有 ${PLIST}）`);
+		spawnSync("launchctl", ["bootout", `${domain}/${LABEL}`], { stdio: "ignore" });
+		rmSync(PLIST);
+		return console.log(`停掉了，删掉了 ${PLIST}`);
+	}
+	if (args.length) die("pnpm mixer service [install [--force] | uninstall]");
+	console.log(`pnpm mixer service install 会写到 ${PLIST}${existsSync(PLIST) ? "（已经有了，要加 --force 才会覆盖）" : ""}：\n\n${text}`);
+	warn();
+}
+
 async function show() {
 	const c = config();
 	const up = await local("/api/auth/status");
@@ -161,6 +229,7 @@ try {
 	else if (cmd === "setup" && rest[0] === "funnel") await setupFunnel();
 	else if (cmd === "pair") await showPair();
 	else if (cmd === "passkeys") await passkeys(rest);
+	else if (cmd === "service") service(rest);
 	else if (!cmd) await show();
 	else die(readFileSync(new URL(import.meta.url), "utf8").split("\n").filter((l) => l.startsWith("//   pnpm")).map((l) => l.slice(5)).join("\n"));
 } finally {

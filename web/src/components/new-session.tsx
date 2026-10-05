@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type Project, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
 import type { Agent } from "@/lib/model";
-import { AgentSelect, ModelSelect, PermissionSelect } from "./conversation";
+import { AgentSelect, ModelSelect, PermissionSelect } from "./composer";
 
 /** 上次开新会话用的 agent（这台设备上） */
 const AGENT_KEY = "mixer.agent";
@@ -150,7 +150,7 @@ export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd
 		}
 	};
 	return (
-		<div className="flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-[3px] focus-within:ring-ring/30">
+		<div className="flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-3 focus-within:ring-ring/30">
 			<Textarea
 				autoFocus={autoFocus}
 				value={text}

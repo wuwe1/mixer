@@ -73,7 +73,7 @@ export function Code({ code, lang = "text", lines = false, className }: { code: 
 		setHtml(null);
 		return highlight(code, lang, setHtml);
 	}, [code, lang]);
-	const cls = cn("code text-xs leading-[1.65]", lines && "code-lines", className);
+	const cls = cn("code text-xs leading-code", lines && "code-lines", className);
 	if (html) return <div className={cls} dangerouslySetInnerHTML={{ __html: html }} />;
 	return (
 		<div className={cls}>

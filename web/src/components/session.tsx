@@ -11,11 +11,14 @@ import { api, enc, type Node, type Session, type SessionMeta, type ToolNode } fr
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
+import { keysOf, tree, walk } from "@/lib/thread";
+import { useStream } from "@/lib/use-stream";
 import { cn } from "@/lib/utils";
-import { Changes } from "./changes";
-import { Composer, Conversation, type Reveal, tree, useStream, walk } from "./conversation";
-import { Files } from "./files";
+import { Composer } from "./composer";
+import { Conversation, type Reveal } from "./conversation";
+import { Changes, Files } from "./lazy";
 import { edited } from "./message";
+import { Boundary } from "./placeholder";
 
 export const PANELS: { v: Panel; label: string }[] = [
 	{ v: "outline", label: "目录" },
@@ -142,8 +145,8 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
 	useEvent("reconnect", load);
 
-	const stream = useStream(session);
 	const nodes = data?.nodes;
+	const stream = useStream(session, useMemo(() => keysOf(nodes ?? []), [nodes]));
 	const t = useMemo(() => (nodes ? tree(nodes) : null), [nodes]);
 	const w = useMemo(() => (t ? walk(t, r.leaf) : null), [t, r.leaf]);
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
@@ -227,7 +230,9 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
 							{t && w ? (
-								<Conversation key={session} project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} />
+								<Boundary key={session}>
+									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} />
+								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
 							)}

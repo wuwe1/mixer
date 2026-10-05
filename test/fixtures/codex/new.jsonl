@@ -1,0 +1,8 @@
+{"timestamp":"2026-01-01T00:00:11.000Z","type":"session_meta","payload":{"id":"22222222-2222-4222-8222-222222222222","cwd":"/tmp/demo","originator":"codex_cli_rs","cli_version":"0.120.0","instructions":"系统提示"}}
+{"timestamp":"2026-01-01T00:00:12.000Z","type":"turn_context","payload":{"model":"gpt-new","turn_id":"turn-1"}}
+{"timestamp":"2026-01-01T00:00:13.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"5b0e7c2a-0000-4000-8000-000000000001","content":[{"type":"text","text":"跑一下测试"}]}}}
+{"timestamp":"2026-01-01T00:00:14.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"新版本里这条不用"}]}}
+{"timestamp":"2026-01-01T00:00:15.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"Reasoning","id":"rs_1","summary_text":["先看看"]}}}
+{"timestamp":"2026-01-01T00:00:16.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"CommandExecution","id":"exec-1","command":"/bin/zsh -lc 'pnpm test'","exit_code":0,"aggregated_output":"ok","status":"completed"}}}
+{"timestamp":"2026-01-01T00:00:17.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","id":"msg_1","content":[{"type":"Text","text":"都过了"}]}}}
+{"timestamp":"2026-01-01T00:00:18.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-2","item":{"type":"CommandExecution","id":"exec-2","command":["/bin/zsh","-lc","false"],"exit_code":1,"status":"failed"}}}

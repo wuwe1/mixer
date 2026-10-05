@@ -1,8 +1,7 @@
-// 选 skill：输入框里打「/」或点「/」按钮，弹出这个项目能用的 skill，选了在消息开头插入「/名字 」。
-// 每次打开都重新拉一遍：会话里刚建的 skill 也在。最近用过的排在前面（存在这台设备上）。
-import { History, SquareSlash } from "lucide-react";
+// 选 skill：输入框里打「/」或点「/」按钮（按钮在 composer.tsx），弹出这个项目能用的 skill，选了在消息开头插入「/名字 」。
+// 第一次打开时才加载（lazy.tsx）。每次打开都重新拉一遍：会话里刚建的 skill 也在。最近用过的排在前面（存在这台设备上）。
+import { History } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
@@ -16,17 +15,6 @@ const recent = (): string[] => {
 };
 function remember(name: string) {
 	try { localStorage.setItem(RECENT_KEY, JSON.stringify([name, ...recent().filter((n) => n !== name)].slice(0, 5))); } catch {}
-}
-
-/** 消息开头换成「/名字 」：原来就有一个 /xxx 的话替换掉 */
-export const withSkill = (text: string, name: string) => `/${name} ${text.replace(/^\/\S+\s*/, "")}`;
-
-export function SkillButton({ onClick }: { onClick: () => void }) {
-	return (
-		<Button variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={onClick} aria-label="选 skill" title="选 skill">
-			<SquareSlash className="size-4" />
-		</Button>
-	);
 }
 
 export function SkillPicker({ project, open, onOpenChange, onPick }: { project: string; open: boolean; onOpenChange: (o: boolean) => void; onPick: (name: string) => void }) {
