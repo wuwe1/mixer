@@ -1,10 +1,11 @@
-// 改动页：当前分支、没提交的改动（点开看 diff）、最近的提交（点开看内容）。
+// 改动：当前分支、没提交的改动（点开看 diff；在会话里时可以只看这个会话改过的文件）、最近的提交（点开看内容）。按容器宽度排，同 files.tsx。
 import { ChevronLeft, GitBranch, GitCommitHorizontal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, enc, type Status } from "@/lib/api";
 import { useEvent } from "@/lib/events";
 import { cn } from "@/lib/utils";
@@ -39,8 +40,9 @@ export function Diff({ text }: { text: string }) {
 	);
 }
 
-export function Changes({ project }: { project: string }) {
+export function Changes({ project, touched }: { project: string; touched?: string[] }) {
 	const [s, setS] = useState<Status | null>(null);
+	const [only, setOnly] = useState(true);
 	const [sel, setSel] = useState<{ kind: "file" | "commit"; key: string; title: string } | null>(null);
 	const [text, setText] = useState<string | null>(null);
 	const load = useCallback(() => { api<Status>(`/api/repo/${enc(project)}/status`).then(setS, () => setS({ git: false })); }, [project]);
@@ -55,9 +57,11 @@ export function Changes({ project }: { project: string }) {
 
 	if (!s) return <div className="flex flex-col gap-2 p-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-8" />)}</div>;
 	if (!s.git) return <p className="p-6 text-sm text-muted-foreground">这个目录不是 git 仓库。</p>;
+	// 改名的那行是「旧 -> 新」，取新的
+	const shown = touched && only ? s.changes.filter((c) => touched.includes(c.path.split(" -> ").pop() as string)) : s.changes;
 	return (
-		<div className="flex min-h-0 flex-1">
-			<div className={cn("flex w-full shrink-0 flex-col border-r md:w-80", sel && "max-md:hidden")}>
+		<div className="@container/changes flex min-h-0 flex-1">
+			<div className={cn("flex w-full shrink-0 flex-col @3xl/changes:w-80 @3xl/changes:border-r", sel && "@max-3xl/changes:hidden")}>
 				<ScrollArea className="min-h-0 flex-1">
 					<div className="flex flex-col gap-5 p-3">
 						<div className="flex items-center gap-2 text-[13px]">
@@ -65,9 +69,17 @@ export function Changes({ project }: { project: string }) {
 							<span className="truncate font-mono text-xs">{s.branch}</span>
 						</div>
 						<section className="flex flex-col gap-1">
-							<h3 className="px-1 text-[11px] font-medium text-muted-foreground">没提交的改动 · {s.changes.length}</h3>
-							{s.changes.length === 0 && <p className="px-1 text-[13px] text-muted-foreground">干净</p>}
-							{s.changes.map((c) => {
+							<div className="flex items-center gap-2 px-1">
+								<h3 className="text-[11px] font-medium text-muted-foreground">没提交的改动 · {shown.length}</h3>
+								{touched && (
+									<ToggleGroup type="single" size="sm" value={only ? "mine" : "all"} onValueChange={(v) => v && setOnly(v === "mine")} className="ml-auto">
+										<ToggleGroupItem value="mine" className="h-6 px-2 text-[11px]">本会话</ToggleGroupItem>
+										<ToggleGroupItem value="all" className="h-6 px-2 text-[11px]">全部</ToggleGroupItem>
+									</ToggleGroup>
+								)}
+							</div>
+							{shown.length === 0 && <p className="px-1 text-[13px] text-muted-foreground">{touched && only && s.changes.length ? `这个会话没改过文件（项目里另有 ${s.changes.length} 处改动）` : "干净"}</p>}
+							{shown.map((c) => {
 								const k = kind(c.code);
 								return (
 									<button key={c.path} type="button" onClick={() => setSel({ kind: "file", key: c.path, title: c.path })} className={cn("flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent", sel?.key === c.path && "bg-accent")}>
@@ -92,11 +104,11 @@ export function Changes({ project }: { project: string }) {
 					</div>
 				</ScrollArea>
 			</div>
-			<div className={cn("flex min-w-0 flex-1 flex-col", !sel && "max-md:hidden")}>
+			<div className={cn("flex min-w-0 flex-1 flex-col", !sel && "@max-3xl/changes:hidden")}>
 				{sel ? (
 					<>
 						<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-							<Button variant="ghost" size="icon" className="size-7 md:hidden" onClick={() => setSel(null)} aria-label="返回">
+							<Button variant="ghost" size="icon" className="size-7 @3xl/changes:hidden" onClick={() => setSel(null)} aria-label="返回">
 								<ChevronLeft className="size-4" />
 							</Button>
 							<Badge variant="outline" className="shrink-0">{sel.kind === "file" ? "改动" : "提交"}</Badge>

@@ -1,5 +1,6 @@
 // 一条一条消息怎么画：你的话（右边的气泡）、Claude 的话（Markdown）、连在一起的工具调用和思考（收成一组，点开看）、事件（分隔线）。
-import { Bot, Brain, ChevronRight, FileText, Globe, GitFork, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
+// 分叉的按钮平时藏着：电脑上鼠标移上去、手机上点一下这条消息才出来。
+import { Bot, Brain, ChevronRight, FileDiff, FileText, Globe, GitFork, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ const toolName = (name: string) => name.replace(/^mcp__[^_]+__/, "");
 
 export function UserMessage({ n, project, session, onFork }: { n: Extract<Node, { k: "user" }>; project: string; session: string; onFork?: (n: Extract<Node, { k: "user" }>) => void }) {
 	return (
-		<div id={`n-${n.uuid}`} className="group flex scroll-mt-24 flex-col items-end gap-1.5">
+		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col items-end gap-1.5 outline-none">
 			<div className="max-w-[88%] rounded-2xl rounded-br-md bg-secondary px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">
 				{n.text || (n.images ? "" : "（空）")}
 				{n.images > 0 && (
@@ -35,9 +36,9 @@ export function UserMessage({ n, project, session, onFork }: { n: Extract<Node, 
 				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-[10px]">中途发的</Badge>}
 				<span className="tabular-nums">{clock(n.ts)}</span>
 				{onFork && (
-					<Button variant="ghost" size="sm" onClick={() => onFork(n)} className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
+					<Button variant="ghost" size="sm" onClick={() => onFork(n)} className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
 						<GitFork className="size-3" />
-						从这里分叉
+						改写后分叉
 					</Button>
 				)}
 			</div>
@@ -45,10 +46,16 @@ export function UserMessage({ n, project, session, onFork }: { n: Extract<Node, 
 	);
 }
 
-export function AssistantMessage({ n }: { n: Extract<Node, { k: "assistant" }> }) {
+export function AssistantMessage({ n, onFork }: { n: Extract<Node, { k: "assistant" }>; onFork?: (n: Extract<Node, { k: "assistant" }>) => void }) {
 	return (
-		<div id={`n-${n.uuid}`} className="scroll-mt-24">
+		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col gap-1 outline-none">
 			<Markdown text={n.text} />
+			{onFork && (
+				<Button variant="ghost" size="sm" onClick={() => onFork(n)} className="h-6 gap-1 self-start px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+					<GitFork className="size-3" />
+					从这里分叉
+				</Button>
+			)}
 		</div>
 	);
 }
@@ -64,7 +71,9 @@ export function EventLine({ n }: { n: Extract<Node, { k: "event" }> }) {
 }
 
 /** 连在一起的工具调用、思考：收成一组，默认只显示一行概览 */
-export function Steps({ nodes, project, session, agent, onAgent }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void }) {
+type OnFile = (path: string, diff: boolean) => void;
+
+export function Steps({ nodes, project, session, agent, onAgent, onFile }: { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile }) {
 	const tools = nodes.filter((n): n is ToolNode => n.k === "tool");
 	const errors = tools.filter((t) => t.result?.error).length;
 	const names = [...new Set(tools.map((t) => toolName(t.name)))];
@@ -91,7 +100,7 @@ export function Steps({ nodes, project, session, agent, onAgent }: { nodes: Node
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
-						<ToolCall key={n.uuid} t={n} project={project} session={session} agent={agent} onAgent={onAgent} />
+						<ToolCall key={n.uuid} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} />
 					) : n.k === "thinking" ? (
 						<Collapsible key={n.uuid}>
 							<CollapsibleTrigger className="flex items-center gap-2 py-1 text-xs text-muted-foreground hover:text-foreground">
@@ -107,8 +116,19 @@ export function Steps({ nodes, project, session, agent, onAgent }: { nodes: Node
 	);
 }
 
-function ToolCall({ t, project, session, agent, onAgent }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void }) {
+/** 改文件的工具：它碰的文件能在右边的面板里打开 */
+const EDITS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+export const filePath = (t: ToolNode) => {
+	if (!EDITS.has(t.name) && t.name !== "Read") return null;
+	const m = /"(?:file_path|notebook_path)": "((?:[^"\\]|\\.)*)"/.exec(t.input);
+	if (!m) return null;
+	try { return JSON.parse(`"${m[1]}"`) as string; } catch { return null; }
+};
+export const edited = (t: ToolNode) => (EDITS.has(t.name) ? filePath(t) : null);
+
+function ToolCall({ t, project, session, agent, onAgent, onFile }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile }) {
 	const I = toolIcon(t.name);
+	const file = onFile ? filePath(t) : null;
 	const [full, setFull] = useState<string | null>(null);
 	const more = async () => {
 		const r = await api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/result/${t.id}${agent ? `?agent=${agent}` : ""}`);
@@ -122,6 +142,11 @@ function ToolCall({ t, project, session, agent, onAgent }: { t: ToolNode; projec
 					<span className="shrink-0 font-medium">{toolName(t.name)}</span>
 					<span className="truncate font-mono text-xs text-muted-foreground">{t.summary}</span>
 				</CollapsibleTrigger>
+				{file && onFile && (
+					<Button variant="ghost" size="icon" className="size-6 shrink-0 text-muted-foreground" onClick={() => onFile(file, EDITS.has(t.name))} aria-label={EDITS.has(t.name) ? "看改动" : "看文件"} title={EDITS.has(t.name) ? "在右边看这个文件的改动" : "在右边打开这个文件"}>
+						{EDITS.has(t.name) ? <FileDiff className="size-3.5" /> : <FileText className="size-3.5" />}
+					</Button>
+				)}
 				{t.agent && onAgent && (
 					<Button variant="outline" size="sm" className="h-6 shrink-0 gap-1 px-2 text-[11px]" onClick={() => onAgent(t.agent as string)}>
 						<Bot className="size-3" />

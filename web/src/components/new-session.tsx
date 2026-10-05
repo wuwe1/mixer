@@ -7,12 +7,10 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { api, type Dirs, type Project, type Run } from "@/lib/api";
-import { useEvent } from "@/lib/events";
-import { go } from "@/lib/route";
-import { PERMISSIONS } from "./conversation";
+import { api, type Dirs, type ProjectTree, type Run } from "@/lib/api";
+import { askNotify, useLive } from "@/lib/live";
+import { PermissionSelect } from "./conversation";
 
 const tilde = (p: string, home: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
 
@@ -48,7 +46,7 @@ function Crumbs({ d, open }: { d: Dirs; open: (p: string) => void }) {
 	);
 }
 
-function Picker({ start, projects, pick }: { start: string | null; projects: Project[]; pick: (path: string) => void }) {
+function Picker({ start, projects, pick }: { start: string | null; projects: ProjectTree[]; pick: (path: string) => void }) {
 	const [d, setD] = useState<Dirs | null>(null);
 	const [q, setQ] = useState("");
 	const open = useCallback((path: string) => {
@@ -116,7 +114,9 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 	);
 }
 
-function Prompt({ cwd, back, started }: { cwd: string; back: () => void; started: (r: Run) => void }) {
+/** 写第一句话、选权限、开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话 */
+export function StartBox({ target, autoFocus, placeholder, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; placeholder?: string; onStarted?: () => void }) {
+	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("default");
 	const [busy, setBusy] = useState(false);
@@ -124,7 +124,12 @@ function Prompt({ cwd, back, started }: { cwd: string; back: () => void; started
 		if (!text.trim() || busy) return;
 		setBusy(true);
 		try {
-			started(await api<Run>("/api/runs", { mode: "new", cwd, prompt: text, permission }));
+			askNotify();
+			const r = await api<Run>("/api/runs", { mode: "new", ...target, prompt: text, permission });
+			follow(r);
+			setText("");
+			toast.success("开始了：会话一建好就跳过去");
+			onStarted?.();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
 		} finally {
@@ -132,51 +137,30 @@ function Prompt({ cwd, back, started }: { cwd: string; back: () => void; started
 		}
 	};
 	return (
-		<div className="flex flex-col gap-3">
-			<div className="flex min-w-0 items-center gap-1">
-				<Button variant="ghost" size="icon" className="-ml-1.5 size-7 shrink-0" onClick={back} aria-label="换文件夹">
-					<ChevronLeft className="size-4" />
+		<div className="flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-[3px] focus-within:ring-ring/30">
+			<Textarea
+				autoFocus={autoFocus}
+				value={text}
+				onChange={(e) => setText(e.target.value)}
+				onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
+				placeholder={placeholder ?? "要 Claude 做什么……"}
+				className="max-h-[40svh] min-h-24 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+			/>
+			<div className="flex items-center gap-1.5">
+				<PermissionSelect value={permission} onChange={setPermission} />
+				<Button size="icon" className="ml-auto size-8 rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
+					{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
 				</Button>
-				<span className="truncate font-mono text-xs text-muted-foreground">{cwd}</span>
-			</div>
-			<div className="flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-[3px] focus-within:ring-ring/30">
-				<Textarea
-					autoFocus
-					value={text}
-					onChange={(e) => setText(e.target.value)}
-					onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-					placeholder="要 Claude 做什么……"
-					className="max-h-[40svh] min-h-28 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
-				/>
-				<div className="flex items-center gap-1.5">
-					<Select value={permission} onValueChange={setPermission}>
-						<SelectTrigger size="sm" className="h-7 w-auto gap-1.5 border-0 bg-muted/60 px-2 text-xs shadow-none">
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{PERMISSIONS.map((p) => <SelectItem key={p.v} value={p.v}>{p.label}</SelectItem>)}
-						</SelectContent>
-					</Select>
-					<Button size="icon" className="ml-auto size-8 rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
-						{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-					</Button>
-				</div>
 			</div>
 		</div>
 	);
 }
 
-export function NewSession({ open, onOpenChange, projects }: { open: boolean; onOpenChange: (o: boolean) => void; projects: Project[] }) {
+export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+	const { tree } = useLive();
 	const [cwd, setCwd] = useState<string | null>(null);
 	const [last, setLast] = useState<string | null>(null);
-	const [run, setRun] = useState<Run | null>(null);
 	useEffect(() => { if (open) { setCwd(null); setLast(null); } }, [open]);
-	// 会话 id 一出来就跳过去（对话框关了也还在听）
-	useEvent("run", useCallback((r: Run) => {
-		if (!run || r.id !== run.id || !r.session) return;
-		go({ project: r.project, session: r.session, tab: "chat", leaf: null, file: null });
-		setRun(null);
-	}, [run]));
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="top-[max(1rem,env(safe-area-inset-top))] translate-y-0 gap-4 sm:top-[12vh] sm:max-w-lg">
@@ -185,9 +169,17 @@ export function NewSession({ open, onOpenChange, projects }: { open: boolean; on
 					<DialogDescription className="sr-only">选一个文件夹，Claude 在那里开一个新会话</DialogDescription>
 				</DialogHeader>
 				{cwd ? (
-					<Prompt cwd={cwd} back={() => { setLast(cwd); setCwd(null); }} started={(r) => { setRun(r); onOpenChange(false); toast.success("开始了：会话一建好就跳过去"); }} />
+					<div className="flex flex-col gap-3">
+						<div className="flex min-w-0 items-center gap-1">
+							<Button variant="ghost" size="icon" className="-ml-1.5 size-7 shrink-0" onClick={() => { setLast(cwd); setCwd(null); }} aria-label="换文件夹">
+								<ChevronLeft className="size-4" />
+							</Button>
+							<span className="truncate font-mono text-xs text-muted-foreground">{cwd}</span>
+						</div>
+						<StartBox target={{ cwd }} autoFocus onStarted={() => onOpenChange(false)} />
+					</div>
 				) : (
-					<Picker start={last} projects={projects} pick={setCwd} />
+					<Picker start={last} projects={tree ?? []} pick={setCwd} />
 				)}
 			</DialogContent>
 		</Dialog>

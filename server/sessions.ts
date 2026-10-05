@@ -8,6 +8,7 @@
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { ourLastWrite, unread } from "./state.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
 
@@ -50,11 +51,18 @@ export type SessionMeta = {
 	title: string | null;
 	first: string | null;
 	last: string | null;
+	/** 这个文件自己的第一句（分叉出来的会话，前面的记录是从原会话复制来的，时间早于文件建立） */
+	fresh: string | null;
 	prompts: number;
 	size: number;
 	mtime: string;
 	active: boolean;
-	branch: string | null;
+	/** 第一条记录的 uuid。分叉（--fork-session）出来的会话把原会话的记录原样复制过去，第一条 uuid 相同，靠它认出谁从谁分出来 */
+	root: string | null;
+	born: number;
+	/** 从哪个会话分叉出来的（同一个项目里 root 相同、比它早建的那个） */
+	parent: string | null;
+	unread: "done" | "error" | null;
 };
 
 const CUT = 4000;
@@ -96,7 +104,8 @@ async function scanMeta(file: string): Promise<SessionMeta> {
 	let first: string | null = null;
 	let last: string | null = null;
 	let prompts = 0;
-	let branch: string | null = null;
+	let root: string | null = null;
+	let fresh: string | null = null;
 	for await (const line of lines(file)) {
 		// 只解析可能有用的行，图片 base64 那种大行先看开头
 		if (line.startsWith('{"type":"ai-title"')) {
@@ -106,23 +115,28 @@ async function scanMeta(file: string): Promise<SessionMeta> {
 		if (!line.includes('"type":"user"') || line.includes('"tool_result"')) continue;
 		let d: Raw;
 		try { d = JSON.parse(line); } catch { continue; }
+		if (d.uuid) root ??= d.uuid;
 		const t = promptText(d);
 		if (t === null) continue;
 		prompts++;
 		first ??= t.slice(0, 200);
 		last = t.slice(0, 200);
-		branch = d.gitBranch ?? branch;
+		if (!fresh && Date.parse(d.timestamp) >= st.birthtimeMs - 2000) fresh = t.slice(0, 200);
 	}
 	const meta: SessionMeta = {
 		id: basename(file, ".jsonl"),
 		title,
 		first,
 		last,
+		fresh,
 		prompts,
 		size: st.size,
 		mtime: st.mtime.toISOString(),
 		active: Date.now() - st.mtimeMs < 90_000,
-		branch,
+		root,
+		born: st.birthtimeMs,
+		parent: null,
+		unread: null,
 	};
 	metaCache.set(file, { mtime: st.mtimeMs, meta });
 	return meta;
@@ -132,8 +146,25 @@ export async function listSessions(project: string): Promise<SessionMeta[]> {
 	const dir = join(PROJECTS, safe(project));
 	if (!existsSync(dir)) return [];
 	const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
-	const metas = await Promise.all(files.map((f) => scanMeta(join(dir, f))));
+	const metas = (await Promise.all(files.map((f) => scanMeta(join(dir, f))))).map((m) => ({
+		...m,
+		active: Date.now() - Date.parse(m.mtime) < 90_000 && !ourLastWrite(m.id, Date.parse(m.mtime)),
+		unread: unread(m.id),
+	}));
+	// 分叉：root 相同的一家，最早建的是原会话，其余都挂在它下面
+	const families = new Map<string, SessionMeta[]>();
+	for (const m of metas) if (m.root) families.set(m.root, [...(families.get(m.root) ?? []), m]);
+	for (const fam of families.values()) {
+		if (fam.length < 2) continue;
+		fam.sort((a, b) => a.born - b.born);
+		for (const m of fam.slice(1)) m.parent = fam[0].id;
+	}
 	return metas.sort((a, b) => b.mtime.localeCompare(a.mtime));
+}
+
+/** 所有项目和它们的会话（侧栏用） */
+export async function tree() {
+	return Promise.all(listProjects().map(async (p) => ({ ...p, sessions: await listSessions(p.id) })));
 }
 
 /** user 记录里的文字（字符串或 text 块拼起来）；工具结果、元信息返回 null */
@@ -272,8 +303,8 @@ export const agentFile = (project: string, id: string, agent: string) => join(PR
 
 export async function session(project: string, id: string) {
 	const file = sessionFile(project, id);
-	const [{ nodes }, meta] = await Promise.all([parse(file), scanMeta(file)]);
-	return { meta, nodes };
+	const [{ nodes }, metas] = await Promise.all([parse(file), listSessions(project)]);
+	return { meta: metas.find((m) => m.id === id) ?? (await scanMeta(file)), nodes };
 }
 
 export async function agent(project: string, id: string, agentId: string) {

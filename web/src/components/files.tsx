@@ -1,4 +1,5 @@
-// 文件页：左边是目录树（可筛选），右边看文件（代码高亮带行号；Markdown 能切预览；图片直接显示）。手机上先看树，点了文件再看内容。
+// 文件：左边是目录树（可筛选），右边看文件（代码高亮带行号；Markdown 能切预览；能看它没提交的改动；图片直接显示）。
+// 按容器宽度排：放在窄的面板里、手机上，先看树，点了文件再看内容。
 import { ChevronLeft, ChevronRight, File, Folder, FolderOpen, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, enc, type RepoFile } from "@/lib/api";
+import { Diff } from "./changes";
 import { go } from "@/lib/route";
 import { bytes } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -66,7 +68,7 @@ function TreeView({ dir, depth, open, toggle, current }: { dir: Dir; depth: numb
 	);
 }
 
-export function Files({ project, file }: { project: string; file: string | null }) {
+export function Files({ project, file, view }: { project: string; file: string | null; view: "diff" | null }) {
 	const [list, setList] = useState<string[] | null>(null);
 	const [q, setQ] = useState("");
 	const [open, setOpen] = useState<Set<string>>(new Set());
@@ -86,8 +88,8 @@ export function Files({ project, file }: { project: string; file: string | null 
 	const filtering = q.length > 0;
 
 	return (
-		<div className="flex min-h-0 flex-1">
-			<div className={cn("flex w-full shrink-0 flex-col border-r md:w-72", file && "max-md:hidden")}>
+		<div className="@container/files flex min-h-0 flex-1">
+			<div className={cn("flex w-full shrink-0 flex-col @3xl/files:w-72 @3xl/files:border-r", file && "@max-3xl/files:hidden")}>
 				<div className="relative border-b p-2">
 					<Search className="pointer-events-none absolute top-1/2 left-4 size-3.5 -translate-y-1/2 text-muted-foreground" />
 					<Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="筛选文件" className="h-8 pl-7 text-[13px]" />
@@ -107,41 +109,52 @@ export function Files({ project, file }: { project: string; file: string | null 
 				</ScrollArea>
 				{list && <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">{list.length} 个文件</div>}
 			</div>
-			<div className={cn("flex min-w-0 flex-1 flex-col", !file && "max-md:hidden")}>
-				{file ? <Viewer project={project} path={file} /> : <div className="m-auto text-sm text-muted-foreground">选一个文件</div>}
+			<div className={cn("flex min-w-0 flex-1 flex-col", !file && "@max-3xl/files:hidden")}>
+				{file ? <Viewer project={project} path={file} view={view} /> : <div className="m-auto text-sm text-muted-foreground">选一个文件</div>}
 			</div>
 		</div>
 	);
 }
 
-function Viewer({ project, path }: { project: string; path: string }) {
+function Viewer({ project, path, view }: { project: string; path: string; view: "diff" | null }) {
 	const [f, setF] = useState<RepoFile | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	const [diff, setDiff] = useState<string | null>(null);
 	const isMd = /\.md$/i.test(path);
-	const [mode, setMode] = useState<"source" | "preview">(isMd ? "preview" : "source");
+	const initial = view === "diff" ? "diff" : isMd ? "preview" : "source";
+	const [mode, setMode] = useState<"source" | "preview" | "diff">(initial);
 	useEffect(() => {
 		setF(null);
 		setErr(null);
-		setMode(/\.md$/i.test(path) ? "preview" : "source");
+		setDiff(null);
+		setMode(initial);
 		api<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`).then(setF, (e: Error) => setErr(e.message));
-	}, [project, path]);
+	}, [project, path, initial]);
+	useEffect(() => {
+		if (mode === "diff" && diff === null) api<{ diff: string }>(`/api/repo/${enc(project)}/diff?path=${enc(path)}`).then((r) => setDiff(r.diff), () => setDiff(""));
+	}, [mode, diff, project, path]);
 	const raw = `/api/repo/${enc(project)}/raw?path=${enc(path)}`;
 	return (
 		<>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-				<Button variant="ghost" size="icon" className="size-7 md:hidden" onClick={() => go({ file: null })} aria-label="返回">
+				<Button variant="ghost" size="icon" className="size-7 @3xl/files:hidden" onClick={() => go({ file: null, view: null })} aria-label="返回">
 					<ChevronLeft className="size-4" />
 				</Button>
 				<span className="min-w-0 truncate font-mono text-xs">{path}</span>
 				{f && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{bytes(f.size)}</span>}
-				{isMd && f?.kind === "text" && (
+				{(f?.kind === "text" || mode === "diff") && (
 					<ToggleGroup type="single" size="sm" value={mode} onValueChange={(v) => v && setMode(v as typeof mode)} className="ml-auto">
-						<ToggleGroupItem value="preview" className="h-7 px-2 text-xs">预览</ToggleGroupItem>
+						{isMd && <ToggleGroupItem value="preview" className="h-7 px-2 text-xs">预览</ToggleGroupItem>}
 						<ToggleGroupItem value="source" className="h-7 px-2 text-xs">原文</ToggleGroupItem>
+						<ToggleGroupItem value="diff" className="h-7 px-2 text-xs">改动</ToggleGroupItem>
 					</ToggleGroup>
 				)}
 			</div>
 			<ScrollArea className="min-h-0 flex-1">
+				{mode === "diff" ? (
+					diff === null ? <Skeleton className="m-4 h-40" /> : diff ? <Diff text={diff} /> : <p className="p-4 text-sm text-muted-foreground">这个文件没有没提交的改动。</p>
+				) : (
+				<>
 				{err && <p className="p-4 text-sm text-destructive">{err}</p>}
 				{!f && !err && <div className="flex flex-col gap-2 p-4">{[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-4" style={{ width: `${40 + ((i * 37) % 55)}%` }} />)}</div>}
 				{f?.kind === "image" && <img src={raw} alt="" className="m-4 max-w-[calc(100%-2rem)] rounded-lg border" />}
@@ -151,6 +164,8 @@ function Viewer({ project, path }: { project: string; path: string }) {
 				) : (
 					<Code code={f.text} lang={langOf(path)} lines className="min-w-max py-3 pr-6" />
 				))}
+				</>
+				)}
 			</ScrollArea>
 		</>
 	);

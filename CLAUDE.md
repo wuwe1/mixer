@@ -1,6 +1,15 @@
 # mixer
 
-远程看、远程驱动本机的 Claude Code 会话：浏览仓库文件、把会话当成一棵树来看（分支、subagent、问题目录、搜索），在网页上续接或分叉会话，Claude 要执行命令、改文件时在网页上点允许或拒绝。只给自己用。
+远程看、远程驱动本机的 Claude Code 会话。只给自己用。
+
+## 用的人只需要懂这些
+
+- **项目**：一个文件夹。侧栏按项目列会话，项目页能开新会话、看文件和改动
+- **会话**：前面一个状态记号，平时看侧栏就知道哪些跑好了、哪些在跑：等你确认（琥珀色）、在跑（转圈）、跑完了没看（圆点）、出错了、终端里开着
+- **开 agent 只有两种办法**：选文件夹开新会话；从一个会话分叉（在任意一条 Claude 的回答后面「从这里分叉」，或「改写后分叉」一条你的消息）。分叉出来的会话挂在原会话下面
+- **接着说**：只有看着最新处、没在跑、终端里没开着时才行；其余情况输入框自动变成分叉，并写明原因
+- **版本**：一条消息在终端里改写过（回退重写），那里有「第 i / n 版」切换。只是看，不产生新东西
+- **确认**：Claude 动手前问你。当前会话的出现在对话里；别的会话的浮在右下角
 
 ## 跑
 
@@ -15,10 +24,12 @@
 | `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树 |
 | `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库 |
 | `server/dirs.ts` | 新会话选文件夹：列子文件夹、新建，只认家目录里面的 |
+| `server/state.ts` | `data/state.json`（不进 git）：每个会话在 mixer 里最后跑完的时间、人最后看它的时间 →「跑完了没看」 |
 | `server/runs.ts` | 起 `claude -p` 跑一次（新会话 / 续接 / 分叉 / 从中间分叉），管确认请求 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
 | `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录 |
 | `web/` | Vite + React + Tailwind v4 + shadcn（radix-nova），组件在 `web/src/components/ui` |
+| `web/src/lib/live.tsx` | 全页面共用的项目树、运行、确认请求，和会话状态的算法 |
 
 ## 会话记录的坑（`server/sessions.ts`）
 
@@ -31,11 +42,11 @@
 ## 运行（`server/runs.ts`）
 
 - 只用本机的 `claude` 命令行，走用户自己的订阅。不用 Agent SDK：它要 API key，而且不允许拿 claude.ai 的登录给别人用
-- 参数：`claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> [--resume <id> [--fork-session]]`，问题从 stdin 写入
+- 参数：`claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> [--resume <id> [--fork-session [--resume-session-at <uuid>]]]`，问题从 stdin 写入
+- 分叉全交给命令行：`--fork-session` 开新会话、原会话不动；`--resume-session-at` 是一条 assistant 记录的 uuid，只带到它为止的上下文（命令行帮助里没写，试过可用）。新会话文件里原会话的记录原样复制（uuid 不变），所以「第一条记录的 uuid 相同」= 一家；文件建立之后的第一句是它自己的标题
 - 确认：Claude 要用需要许可的工具时调 `mcp__mixer__approve`，它 POST 到 `/api/approvals`（带 `x-mixer-token`，每次启动随机生成），挂起直到网页上点了允许或拒绝；10 分钟没人管按拒绝处理。只读的命令（如 `echo`）Claude Code 自己会放行，不会来问
-- 会话 90 秒内有写入（终端里可能正开着）就不让续接，免得两边同时写一个会话；最近那次写入是 mixer 自己跑完的就放行
+- 会话 90 秒内有写入（终端里可能正开着）就不让续接，免得两边同时写一个会话；最近那次写入是 mixer 自己跑完的就放行（按 `state.json` 判断，mixer 重启了也认得）
 - 新会话可以开在家目录里任意文件夹（`server/dirs.ts`，没开过会话的也行）。项目 id 是 claude 的规则：路径里非字母数字的字符都换成 `-`
-- 「从中间分叉」：命令行只能从末尾分叉，所以把到那个节点为止的记录链复制成一个新会话文件，再续接它。实验性的
 
 ## 安全
 

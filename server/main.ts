@@ -11,7 +11,8 @@ import { gzipSync } from "node:zlib";
 import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session } from "./sessions.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, session, tree } from "./sessions.ts";
+import * as state from "./state.ts";
 
 const PORT = Number(process.env.MIXER_PORT ?? 4848);
 const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
@@ -82,6 +83,7 @@ type Handler = (req: IncomingMessage, res: ServerResponse, m: string[], url: URL
 const GET: [RegExp, Handler][] = [
 	[/^\/api\/health$/, (_q, res) => json(res, 200, { app: "mixer", pid: process.pid })],
 	[/^\/api\/projects$/, (_q, res) => json(res, 200, (projCache = { at: 0, list: [] }, projects()))],
+	[/^\/api\/tree$/, async (_q, res) => json(res, 200, await tree())],
 	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m) => json(res, 200, await session(m[1], m[2]))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m) => {
@@ -117,12 +119,18 @@ const POST: [RegExp, Handler][] = [
 		const b = JSON.parse(await body(req));
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
 		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
-		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at, prompt: String(b.prompt ?? ""), permission: b.permission ?? "default" });
+		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), permission: b.permission ?? "default" });
 		json(res, 200, r);
 	}],
 	[/^\/api\/dirs$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
 		json(res, 200, dirs.create(String(b.parent ?? ""), String(b.name ?? "").trim()));
+	}],
+	[/^\/api\/seen$/, async (req, res) => {
+		const b = JSON.parse(await body(req));
+		state.seen(String(b.session ?? ""));
+		emit("state", { project: b.project, session: b.session });
+		json(res, 200, { ok: true });
 	}],
 	[/^\/api\/runs\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
 	[/^\/api\/approvals\/([\w-]+)$/, async (req, res, m) => {
@@ -169,4 +177,8 @@ const server = createServer(async (req, res) => {
 		json(res, status, { error: e instanceof Error ? e.message : String(e) });
 	}
 });
-server.listen(PORT, "127.0.0.1", () => console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`));
+server.listen(PORT, "127.0.0.1", () => {
+	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
+	// 先把所有会话扫一遍（第一次要读完所有记录，之后按修改时间缓存），侧栏第一次打开就快
+	tree().catch((e) => console.error(e));
+});

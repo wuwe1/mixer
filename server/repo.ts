@@ -48,7 +48,7 @@ export function file(root: string, rel: string) {
 
 export function status(root: string) {
 	if (!isGit(root)) return { git: false as const };
-	const lines = git(root, ["status", "--porcelain=v1", "-b"]).split("\n").filter(Boolean);
+	const lines = git(root, ["status", "--porcelain=v1", "-b", "--untracked-files=all"]).split("\n").filter(Boolean);
 	const head = lines.shift() ?? "";
 	const changes = lines.map((l) => ({ code: l.slice(0, 2), path: l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop() as string }));
 	const log = git(root, ["log", "-20", "--pretty=format:%h%x09%s%x09%cr%x09%an"])
