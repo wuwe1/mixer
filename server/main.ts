@@ -349,7 +349,7 @@ const POST: [RegExp, Handler][] = [
 
 /**
  * 改了 mixer 自己的代码：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）再换上，免得打断正在跑的、丢了排着的。
- *   服务端的代码（server/、mcp/、两边共用的 web/src/lib/tail.ts）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
+ *   服务端的代码（server/、mcp/、两边共用的 web/src/lib/tail.ts、visual.ts）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
  *   检查没过不重启，等下次改；终端里 pnpm start 的退出了没人拉，只提示一句。
  *   只改了页面：重新打包，刷新就是新的
  */
@@ -361,7 +361,8 @@ const touched = (kind: keyof typeof dirty) => (_: unknown, f: string | Buffer | 
 watch(join(ROOT, "server"), { recursive: true }, touched("server"));
 watch(join(ROOT, "mcp"), { recursive: true }, touched("server"));
 watch(join(ROOT, "web", "index.html"), touched("web"));
-watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(String(f ?? "").split(sep).join("/") === "lib/tail.ts" ? "server" : "web")(e, f));
+const SHARED = new Set(["lib/tail.ts", "lib/visual.ts"]);
+watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(SHARED.has(String(f ?? "").split(sep).join("/")) ? "server" : "web")(e, f));
 setInterval(() => {
 	const last = Math.max(dirty.server, dirty.web);
 	if (swapping || !last || Date.now() - last < 3000 || !runs.idle()) return;

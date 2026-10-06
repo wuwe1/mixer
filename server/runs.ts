@@ -19,6 +19,7 @@ import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as usage from "./usage.ts";
 import { coalesce, emptyTail, project, step, type Tail } from "../web/src/lib/tail.ts";
+import { prompt as visual } from "../web/src/lib/visual.ts";
 
 export type RunStatus = "running" | "done" | "error" | "stopped";
 export type Run = {
@@ -64,6 +65,7 @@ type Approval = { id: string; run: string; tool: string; input: unknown; at: str
  */
 type Live = Run & { host?: Proc; halt?: () => void; tail: Tail; stopping?: boolean; out: ReturnType<typeof coalesce> };
 const runs = new Map<string, Live>();
+const VISUAL = visual();
 /**
  * 服务端自己用的 claude 进程：permission / model 是现在用的（下一轮不一样就先发 control_request 换掉）；
  * files：后台任务开它的工具调用 → 输出文件（工具结果里写的）；result：这一轮的 result 事件（idle 时才结束这一轮）；
@@ -153,6 +155,8 @@ function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: strin
 	writeFileSync(cfg, JSON.stringify({ mcpServers: { mixer: { command: process.execPath, args: [MCP], env: { MIXER_URL: `http://127.0.0.1:${process.env.MIXER_PORT ?? 4848}`, MIXER_TOKEN: TOKEN, MIXER_RUN: id } } } }));
 	// --thinking-display summarized：思考给摘要（流里有、也写进记录）。不加的话 -p 下大多只有签名、没有文字。帮助里没写，试过可用
 	const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--thinking-display", "summarized", "--permission-mode", o.permission, "--permission-prompt-tool", "mcp__mixer__approve", "--mcp-config", cfg];
+	// 告诉 Claude 网页能画 ```ui 图解（visual.ts）。只在 mixer 起的进程里带：终端里画不出来
+	args.push("--append-system-prompt", VISUAL);
 	if (model) args.push("--model", model);
 	if (resume) args.push("--resume", resume);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
