@@ -32,10 +32,11 @@ import { UsageFooter } from "./usage";
 
 /** ok / failed 是一步工具调用跑完了：成功、失败 */
 type Mark = Status | "ok" | "failed";
-const STATUS_LABEL: Record<Exclude<Mark, null>, string> = { waiting: "待确认", running: "运行中", done: "已完成，未读", error: "出错，未读", terminal: "终端中打开", ok: "成功", failed: "失败" };
+const STATUS_LABEL: Record<Exclude<Mark, null>, string> = { waiting: "待确认", running: "运行中", background: "后台任务在跑", done: "已完成，未读", error: "出错，未读", terminal: "终端中打开", ok: "成功", failed: "失败" };
 
 /**
- * 状态标记，全站一套：点 = 要你注意（琥珀待确认，带一圈扩散；蓝已完成未读；红出错未读）；转圈 = 运行中；灰色空心圈 = 终端中打开。
+ * 状态标记，全站一套：点 = 要你注意（琥珀待确认，带一圈扩散；蓝已完成未读；红出错未读）；带扩散的蓝点 = 运行中；
+ * 带扩散的蓝色空心圈 = 后台任务在跑（Claude 闲着，跑完了会叫醒它）；灰色空心圈 = 终端中打开。
  * 一步工具调用跑完了：绿点成功、红点失败。
  * 颜色只有这几种意思：琥珀要你确认，红出错，蓝没看过，绿这一步成功了，灰中性
  */
@@ -51,6 +52,12 @@ export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 			<span className="relative flex size-2">
 				<span className="absolute inset-0 animate-ping rounded-full bg-unread opacity-60" />
 				<span className="relative size-2 rounded-full bg-unread" />
+			</span>
+		)
+		: s === "background" ? (
+			<span className="relative flex size-2">
+				<span className="absolute inset-0 animate-ping rounded-full border border-unread opacity-60" />
+				<span className="relative size-2 rounded-full border border-unread" />
 			</span>
 		)
 		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
@@ -222,10 +229,10 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	const busy = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
 	const shown = all ? fams : fams.filter((f, i) => i < SHOWN || busy(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
 	const counts = useMemo(() => {
-		const c = { waiting: 0, running: 0, done: 0, error: 0 };
+		const c = { waiting: 0, running: 0, background: 0, done: 0, error: 0 };
 		for (const s of g.sessions) {
 			const st = status(s);
-			if (st === "waiting" || st === "running" || st === "done" || st === "error") c[st]++;
+			if (st === "waiting" || st === "running" || st === "background" || st === "done" || st === "error") c[st]++;
 		}
 		return c;
 	}, [g.sessions, status]);
@@ -249,7 +256,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 								</Tooltip>
 								{!open && (
 									<span className="flex shrink-0 items-center gap-0.5">
-										{(["waiting", "running", "error", "done"] as const).map((k) => counts[k] > 0 && <StatusIcon key={k} s={k} />)}
+										{(["waiting", "running", "background", "error", "done"] as const).map((k) => counts[k] > 0 && <StatusIcon key={k} s={k} />)}
 									</span>
 								)}
 							</SidebarMenuButton>
@@ -297,110 +304,17 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	);
 }
 
-/**
- * 手机上横着滑开关侧栏：往右滑打开，往左滑关上。
- * iOS 从屏幕最左边往右滑是「返回上一页」，Safari 里和加到主屏幕的 app 里都有，滑快了系统会抢先：
- * - Safari 里离左边 EDGE 以内起手的不管，留给返回
- * - 主屏幕 app 里没有地址栏、用不着它：这一条里一按下就拦掉，系统就不返回了，从边上滑也能开侧栏。
- *   拦了 touchstart 浏览器就不再发 click，手指没动的点按自己补一个
- * 手指一动就定方向：横着的（而且是要开 / 关的方向）就拦下这次滑动，底下的内容不跟着上下滚；竖着的就放手，照常滚。
- */
-const EDGE = 24;
-/** 松手时速度超过它（px/ms）就算甩：按甩的方向开或关 */
-const FLING = 0.5;
-function useSwipe() {
+/** 手机上横着滑开关侧栏：往右滑打开，往左滑关上 */
+function useSidebarSwipe() {
 	const { isMobile, openMobile, setOpenMobile } = useSidebar();
-	useEffect(() => {
-		if (!isMobile) return;
-		const standalone = (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
-		// from：按下时抽屉开到哪（动画途中按住的，停在看到的位置）；pts：最近的手指位置，松手时算速度
-		let g: { x: number; y: number; dir: "h" | null; track: boolean; tap: Element | null; from: number; w: number; pts: [number, number][] } | null = null;
-		/** 没拖成（竖着滑、反方向、取消）：按下时停住的动画接着走完 */
-		const settle = () => drawer.to(openMobile ? 1 : 0);
-		const down = (e: TouchEvent) => {
-			g = null;
-			if (e.touches.length !== 1) return;
-			// 开着别的对话框（看大图、分叉、浏览会话、用量）时不管：侧栏自己开着时也是 role="dialog"，要除掉；长按出来的菜单、要确认的对话框开着时也不管
-			if (document.querySelector('[role="dialog"]:not([data-mobile]), [role="menu"], [role="alertdialog"]')) return;
-			const t = e.touches[0];
-			const edge = t.clientX < EDGE;
-			let tap: Element | null = null;
-			if (edge && standalone && e.cancelable) {
-				e.preventDefault();
-				tap = e.target as Element;
-			}
-			let track = openMobile || standalone || !edge;
-			// 在往右滚过的代码、表格上横滑，是在滚它
-			if (track && !openMobile) for (let el = e.target as Element | null; el; el = el.parentElement) if (el.scrollLeft > 0) track = false;
-			g = { x: t.clientX, y: t.clientY, dir: null, track, tap, from: track ? drawer.grab() : 0, w: drawer.width(), pts: [[e.timeStamp, t.clientX]] };
-		};
-		const move = (e: TouchEvent) => {
-			if (!g?.track) return;
-			const t = e.touches[0];
-			const dx = t.clientX - g.x;
-			const dy = t.clientY - g.y;
-			if (!g.dir) {
-				// 按住不动到菜单出来（长按）再挪手指：是在菜单上，不是开关侧栏
-				if (document.querySelector('[role="menu"]')) {
-					g.track = false;
-					return settle();
-				}
-				if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-				// 竖着为主，或者横着但不是要的方向：不管这次了
-				if (Math.abs(dy) >= Math.abs(dx) || (dx > 0) === openMobile) {
-					g.track = false;
-					return settle();
-				}
-				g.dir = "h";
-			}
-			if (e.cancelable) e.preventDefault();
-			// 跟手：抽屉的边贴着手指走
-			drawer.drag(g.from + dx / g.w);
-			g.pts.push([e.timeStamp, t.clientX]);
-			if (g.pts.length > 8) g.pts.shift();
-		};
-		const up = (e: TouchEvent) => {
-			if (!g) return;
-			const t = e.changedTouches[0];
-			const dx = t.clientX - g.x;
-			const dy = t.clientY - g.y;
-			const { dir, tap, track, from, w, pts } = g;
-			g = null;
-			if (tap && !dir && Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-				(tap.closest("input, textarea, select, [contenteditable]") as HTMLElement | null)?.focus();
-				tap.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-			}
-			if (dir) {
-				// 甩得够快就按甩的方向，不然看拉开了没有一半
-				const [t0, x0] = pts.find(([at]) => e.timeStamp - at <= 100) ?? pts[pts.length - 1];
-				const v = e.timeStamp > t0 ? (t.clientX - x0) / (e.timeStamp - t0) : 0;
-				const open = v > FLING ? true : v < -FLING ? false : from + dx / w > 0.5;
-				drawer.to(open ? 1 : 0);
-				if (open !== openMobile) setOpenMobile(open);
-			} else if (track) settle();
-		};
-		const cancel = () => {
-			if (g?.track) settle();
-			g = null;
-		};
-		document.addEventListener("touchstart", down, { passive: false });
-		document.addEventListener("touchmove", move, { passive: false });
-		document.addEventListener("touchend", up, { passive: true });
-		document.addEventListener("touchcancel", cancel, { passive: true });
-		return () => {
-			document.removeEventListener("touchstart", down);
-			document.removeEventListener("touchmove", move);
-			document.removeEventListener("touchend", up);
-			document.removeEventListener("touchcancel", cancel);
-		};
-	}, [isMobile, openMobile, setOpenMobile]);
+	drawer.useSwipe(drawer.sidebar, { on: isMobile, open: openMobile, setOpen: setOpenMobile });
 }
 
 /** 拖动只上下走 */
 const vertical: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
 export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
-	useSwipe();
+	useSidebarSwipe();
 	const { workspace, change } = useLive();
 	const online = useOnline();
 	const { setOpenMobile } = useSidebar();

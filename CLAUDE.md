@@ -6,21 +6,23 @@
 
 - **项目**：一个文件夹。项目页能开新会话、看文件和改动
 - **侧栏是工作区**：只放你放进来的文件夹和会话，一开始是空的。新会话、分叉、在 mixer 里跑过的会话自动放进来；已有的从「浏览会话」里挑（点一个就打开并放进来）。文件夹按你拖的顺序（按住文件夹图标拖），新放进来的在最上面；文件夹里的会话按时间排，新的在上面。移出：电脑上指着会话点 ×、文件夹的「…」；手机上在会话顶栏的图钉；长按（手机）、右键（电脑）一行也有菜单。移出不删记录，移出后提示里能「撤销」（文件夹连同里面的会话放回原处）。手机上侧栏的行高 44px 好按。手机上侧栏从左边拉出来，跟着手指走，松手时甩得快或拉过一半就打开
-- **Codex**：开新会话时选 Claude Code 还是 Codex（记在这台设备上）；本机 Codex 的会话也在「浏览会话」里（标着 Codex），和同一个文件夹的 Claude 会话在一组。一个会话只能是一种。Codex 的会话和 Claude 的一样能继续、排队、停止、确认、分叉，只是分叉按轮：从一条回复分叉带上的是它那一整轮
-- **会话**：侧栏每行右边是时间和状态标记，看侧栏就知道哪些完成了、哪些在运行。标记全站一套，都是小点：待确认是琥珀点、带一圈扩散；运行中是蓝点、带一圈扩散；已完成未读是蓝点；出错未读是红点；终端中打开是灰色空心圈。颜色只有这几种意思：琥珀要你确认、红出错、蓝 Claude 在跑或跑完没看、绿一步工具调用成功了、灰中性。Claude Code 会在启动时删掉 `cleanupPeriodDays`（默认 30）天没动的会话：7 天内要被清理的，时间那里换成灰色的「N 天后清理」/「今天清理」（Codex 不清理）
-- **删除**：侧栏长按 / 右键会话的菜单里「删除…」，先问一句。Claude 的会话记录（和旁边的子代理文件夹）挪进废纸篓里「mixer 删除的会话 …」文件夹，带一份「原来的位置.txt」，挪回去就恢复，终端里 `claude --resume` 也看不到了；Codex 的用 `codex archive` 归档，`codex unarchive` 恢复。在 mixer 里运行中、有排队的、待确认的、终端中打开的不让删。分叉出来的会话是完整的一份，留着
-- **开 agent 只有两种办法**：选文件夹开新会话；从一个会话分叉（每条 Claude 的回复、每组工具调用后面的分叉图标「从这里分叉」，每条你的消息后面的铅笔图标「编辑并分叉」）。分叉出来的会话挂在原会话下面
+- **面板**：会话右边的目录、文件、改动。顶栏右边一个按钮开关，三个 tab 在面板顶上（目录带你的消息条数、改动带这个会话改过几个文件），打开的是这台设备上次看的那个。手机上是整屏一页，也能从右边往左拉出来（和侧栏一样跟手），往右滑关上；按在能横着滚的代码、表格上是在滚它
+- **Codex**：开新会话时在模型菜单里选（Claude Code、Codex 的模型分两组列在一起，选了哪组的就是哪个；记在这台设备上）；本机 Codex 的会话也在「浏览会话」里（标着 Codex），和同一个文件夹的 Claude 会话在一组。一个会话只能是一种。Codex 的会话和 Claude 的一样能继续、排队、停止、确认、分叉，只是分叉按轮：从一条回复分叉带上的是它那一整轮
+- **会话**：侧栏每行右边是时间和状态标记，看侧栏就知道哪些完成了、哪些在运行。标记全站一套，都是小点：待确认是琥珀点、带一圈扩散；运行中是蓝点、带一圈扩散；后台任务在跑（Claude 闲着，跑完了会叫醒它）是蓝色空心圈、带一圈扩散；已完成未读是蓝点；出错未读是红点；终端中打开是灰色空心圈。颜色只有这几种意思：琥珀要你确认、红出错、蓝 Claude 在跑或跑完没看、绿一步工具调用成功了、灰中性。Claude Code 会在启动时删掉 `cleanupPeriodDays`（默认 30）天没动的会话：7 天内要被清理的，时间那里换成灰色的「N 天后清理」/「今天清理」（Codex 不清理）
+- **删除**：侧栏长按 / 右键会话的菜单里「删除…」，先问一句。Claude 的会话记录（和旁边的子代理文件夹）挪进废纸篓里「mixer 删除的会话 …」文件夹，带一份「原来的位置.txt」，挪回去就恢复，终端里 `claude --resume` 也看不到了；Codex 的用 `codex archive` 归档，`codex unarchive` 恢复。在 mixer 里运行中、有后台任务在跑的、有排队的、待确认的、终端中打开的不让删。分叉出来的会话是完整的一份，留着
+- **开 agent 只有两种办法**：选文件夹开新会话；从一个会话分叉（每条 Claude 的回复、每组工具调用后面的分叉图标「从这里分叉」，每条你的消息后面的铅笔图标「编辑并分叉」；平时收着，电脑上指着、手机上点一下那条才出现，最后一条回复的常驻，手机上工具组的常驻）。从最新处分叉就是最后一条后面的那个图标，输入框里不另选。分叉出来的会话挂在原会话下面
 - **继续**：Claude 正在 mixer 里运行时发送的会排队，本次运行结束（或被中断）后一起发出，排队中的可以取消；看着旧版本、终端中打开时不行，输入框自动变成分叉，并写明原因
+- **后台任务**：Claude 开的后台命令、Monitor、后台子代理在跑时，这个会话的 claude 进程一直开着，跑完了通知会叫醒 Claude 接着做（和终端里一样）。输入框那一排有「后台 N」（手机上只有个数），点开列出每一个：是什么、跑了多久、停止；后台命令能展开看输出的最后一段。这时 Claude 闲着，发的消息直接接着跑，不排队。停止（输入框那一排的方块）只停 Claude 这一轮，后台任务接着跑
 - **用时**：每条回复后面、复制和分叉的左边，是从这一轮开头（你的消息，或叫醒 Claude 的后台任务通知）到这条回复用了多久
 - **版本**：一条消息在终端里编辑过（回退重写），那里有「第 i / n 版」切换。只是看，不产生新东西
 - **子代理**：Claude 开的子代理（Agent 工具调用）在跑时，那一行带蓝色 ping 点和耗时，下面一行灰字是它现在在做什么（最后一个工具调用，或者最后一段回复的第一行）；工具组收着时在跑的子代理每个都露出来（最多 3 个，再多写「还有 N 个」）。点那一行打开它的对话，开着时跟着它往下长；跑完了那一行留着，点开看完整的。往上翻着时「↓」左上角的灰色小数字是还在跑的子代理有几个
 - **不是人和 Claude 说的话**：小结、上下文已压缩（点开看压缩前的摘要）、系统提示是分隔线；后台任务的通知是一行；子代理的回报是单独的卡片
-- **运行中**：你发的消息、正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样，刷新也还在；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来；跑完了那一行留着，成功绿点、失败红点），什么都没在动时末尾留一个 ping 点；输入框那一排有时长和停止。虚线框只用在排队的消息上，意思是「还没发出」
+- **运行中**：你发的消息、正在写的回复、正在写参数的工具调用直接接在对话末尾，样子和写完的一样，刷新也还在；正在执行的那一步带蓝色 ping 点和耗时（工具组收着也露出来；跑完了的组收着只剩一行，就是最后那一步，成功绿点、失败红点，后面跟着「N 次」），什么都没在动时末尾留一个 ping 点；输入框那一排有停止，带着时长。虚线框只用在排队的消息上，意思是「还没发出」
 - **滚动**：停在底部时新内容长出来跟着滚，往上翻了就不跟；右下角「↓」回到最新，离开后有新内容带蓝点。长对话先只画最后一段，往上翻快到顶时自动接上更早的，位置不跳；目录里点到还没画的那条，先画出来再跳过去。切走再切回来，先显示上次的内容、停在离开时的位置（当时在底部就还在底部），新的随后补上
 - **主屏幕**：添加到主屏幕后，打开时回到上次看的地方
 - **消息不丢**：输入框随打随存（这台设备上）；发出去的真写进会话记录才算数，没发出去的放回输入框
-- **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（手机上只有百分比）
-- **输入框底下**：权限、模型（选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、skill（打「/」或点按钮，选了在开头插入「/名字 」）、图片（选图或粘贴，点缩略图画箭头、随手画线）
+- **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（只有百分比，多少 token 指着看）
+- **输入框底下**：权限、模型（选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、「+」里是图片（选图或粘贴，点缩略图画箭头、随手画线）和 skill（也可以打「/」，选了在开头插入「/名字 」）。只能分叉时发送按钮是分叉的图标
 - **用量**：侧栏最底下一行是 Claude、Codex 所有窗口里用得最多的那个（「Codex · 5 小时 82% · 10/6 19:40 重置」）和一条灰色细条，点开「用量」看每个账号的每个窗口（电脑上是浮层，手机上从下面出来）；用 pi 花了钱的，每个 provider 一段「pi · deepseek」，今天、本月花了多少美元（按 pi 自己记的价，本月花得多的在前，不算进侧栏那一行）。Claude 的 mixer 里每次运行时更新，终端里用掉的要等下次 mixer 运行才算进来；Codex 的每 10 分钟读一次、跑完一轮也读；pi 的每分钟读一次。旧了写明多久前更新。正在看的会话那个 agent 有窗口用到 80% 以上，输入框里上下文旁边多一句「5 小时 82%」
 - **确认**：Claude 动手前请求确认。当前会话的出现在对话里；别的会话的浮在右下角
 - **用词**：你的「消息」、Claude 的「回复」、「继续」、「分叉」、「编辑并分叉」、「排队」、「运行中」；权限是「自动 / 每次询问 / 计划模式」。界面上的字照这套来
@@ -29,7 +31,7 @@
 
 token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不直接写 `amber-500`、`text-[13px]` 这种具体值；review 时看到具体值就是要改的地方。
 
-- **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）；工具组收着时露出的最后一步，跑完了是绿点（成功）/ 红点（失败）
+- **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，带扩散的蓝色空心圈 = 后台任务在跑（Claude 闲着），灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）；工具组收着时露出的最后一步，跑完了是绿点（成功）/ 红点（失败）
 - **颜色**：`waiting` 琥珀 = 要你确认（待确认的点、确认卡片）；`unread` 蓝 = 在跑（带扩散）/ 跑完没看过；`success` 绿 = 一步工具调用成功了；`destructive` 红 = 出错；`muted-foreground` 灰 = 中性。只有这五种意思，别的地方不上色（比如「后台任务 · 完成」是灰的）
 - **改动色**：`added` / `removed` / `modified` / `renamed`，只用在文件改动和 diff 上（git 工具的习惯配色）
 - **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）、`text-lg` 18px（标题：侧栏的 mixer、项目页的项目名）；代码块、diff 的行高用 `leading-code`。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
@@ -63,18 +65,19 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/usage.ts` | 用量：每个账号一样的样子（`web/src/lib/usage.ts` 的 `Account`：`quota` 是窗口，`spend` 是花的钱、`budget` 还没地方设），`hello` 里带整张表，变了推 `usage`。Claude 的来自 `rate_limit_event`；Codex 的是 app-server 的 `account/rateLimits/read`（借 `codex-run.ts` 的连接：起来 15 秒后、每 10 分钟、`account/rateLimits/updated` 和 `turn/completed` 后攒 3 秒，没登录不读、出错不吵）；pi 的是 `~/.pi/agent/sessions/<目录>/*.jsonl` 里每条回复（`message` 的 role assistant）的 `provider` 和 `usage.cost.total`（美元），按 provider、本地日期（回复自己的 `message.timestamp`，毫秒）按天记在内存，算出今天、本月，本月花了钱的一个 provider 一个账号 `pi:<provider>`；每个文件记读到第几个字节、只读新写的（半行等写完，变短、换了 ino 从头读，没了不算），起来 5 秒后、之后每分钟扫一遍（换天换月也靠它），数变了才推，不进 `state.json`。压缩、分支小结的花费没有 provider，不算。`web/src/lib/usage.ts` 挑最紧的窗口（过了重置时间的不算，`spend` 不参与）给侧栏、输入框，`money` 写钱（`$0.42`，不到一分「<$0.01」） |
 | `server/workspace.ts` | `/api/workspace`：工作区的文件夹带上放进来的会话（`add` 可带 `sessions`：撤销移出文件夹时一起放回）。第一次（还没有工作区）把运行中、跑完没看的放进去。`/api/tree`（扫所有会话）只有「浏览会话」用 |
 | `server/trash.ts` | 删会话（`POST /api/sessions/:项目/:会话/delete`）：Claude 的 jsonl 和 `<会话>/` 用 rename 挪进 `~/.Trash/mixer 删除的会话 <标题前 20 字> (<id 前 8 位>)`，写 `原来的位置.txt`；Codex 的 `codex archive <id>`（execFile，失败 500 带 stderr）。`runs.busy()`（运行中、从它分叉中、排队、待确认）和 90 秒内不是 mixer 的写入回 409。删完 `state.forget`（移出工作区、忘掉跑完 / 看过 / 模型）、丢 `sessions.ts` / `codex.ts` 的缓存，推 `workspace` |
-| `server/runs.ts` | 起 `claude -p` 跑一次（新会话 / 续接 / 分叉 / 从中间分叉），管确认请求 |
+| `server/runs.ts` | 起 `claude -p`（新会话 / 续接 / 分叉 / 从中间分叉），一个会话一个进程（`Proc`），一轮是一次运行（`Run`）；管确认请求、后台任务（`stopTask`、`taskOutput`），开着的进程推 `host`、在 hello 的 `hosts` 里 |
 | `server/skills.ts` | 输入框里能选的 skill：名字按 init 事件记下的，加上扫 skill 文件夹补的新建的，描述从 `SKILL.md` 读 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
-| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号，重新打包后再发一次），再发 `hello`（`sse.ts`）；每 25 秒一个 `ping`。`keepAliveTimeout` 120 秒：cloudflared 会把空闲连接留约 90 秒，Node 默认的 5 秒会偶发 502。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
+| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。接口的 JSON 大于 8KB 就压（br 质量 5，不收 br 的 gzip），在线程池里压、不挡别的请求和推送。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号，重新打包后再发一次），再发 `hello`（`sse.ts`）；每 25 秒一个 `ping`。`keepAliveTimeout` 120 秒：cloudflared 会把空闲连接留约 90 秒，Node 默认的 5 秒会偶发 502。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
 | `server/sse.ts` | SSE 的连接们。连上先发 `hello`（运行、确认请求、排队、用量、工作区、在跑的那几次正在写的那几段），和之后的事件在同一条流里、先后不会乱；算 hello 期间的事件攒着接在后面。页面拿它整个换掉，不再另外拉 |
 | `web/` | Vite + React + Tailwind v4 + shadcn（radix-nova），组件在 `web/src/components/ui` |
 | `side.tsx` / `browse.tsx` | 侧栏（工作区，文件夹用 dnd-kit 拖；行上的 ContextMenu 长按 / 右键出菜单，菜单只挂在文件夹那一行，免得长按会话两个菜单一起开；菜单开着时 `useSwipe` 不接手势、行的点按不算；删除的 AlertDialog；别的对话框开着时 `useSwipe` 也不接）/ 浏览会话的对话框 |
+| `tasks.tsx` | 输入框那一排的「后台 N」和点开的后台任务列表（电脑上 Popover，手机上底部 Sheet）：类型图标、说明、跑了多久、停止，› 展开输出（开着时每 2 秒拿 `/api/hosts/:进程/tasks/:任务/output`） |
 | `usage.tsx` | 侧栏最底下那行用量和点开的「用量」（电脑上 Popover，手机上底部 Sheet）；`pct` / `resets` 输入框的提醒也用 |
 | `web/src/components/lazy.tsx` | 首屏用不着的按需加载：浏览会话、新会话、skill 选择第一次打开才拿，项目页、文件、改动面板加载时是 Spinner |
 | `composer.tsx` / `fork-dialog.tsx` | 输入框和底下那排选项 / 从这里分叉、编辑并分叉的对话框 |
 | `web/src/components/login.tsx` | `Gate`：上次认出来了的设备先画应用、同时问 `/api/auth/status`，没认出来再换成登录页（配对码建 passkey / passkey 登录）；第一次打开的先问。接口回 401 时也换成它 |
-| `web/src/lib/live.tsx` | 全页面共用的工作区、运行、确认请求，和会话状态的算法。`change` 移出后弹「已移出工作区 · 撤销」。`session` 通知带的那一行攒 1.5 秒就地换掉（parent 留原来的）；运行结束、看过了、放进来移出去这些才整个重拉工作区。第一次和重连全靠 `hello`（用量也在这里）：hello 来了，攒着的侧栏行作废，hello 之前发出的工作区请求回来就丢掉 |
+| `web/src/lib/live.tsx` | 全页面共用的工作区、运行、开着的 claude 进程（`hosts`，带后台任务）、确认请求，和会话状态的算法。`change` 移出后弹「已移出工作区 · 撤销」。`session` 通知带的那一行攒 1.5 秒就地换掉（parent 留原来的）；运行结束、看过了、放进来移出去这些才整个重拉工作区。第一次和重连全靠 `hello`（用量也在这里）：hello 来了，攒着的侧栏行作废，hello 之前发出的工作区请求回来就丢掉 |
 | `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端把 `stream_event` 缩成短事件（`project`：`["m",消息id]` / `["b",第几段,种类,…]` / `["d",第几段,字]`；签名、stop、`message_delta`、空增量不推），同一段连着的增量攒 60ms 合成一个（`coalesce`），再攒一份、编序号（只数推出去的）。Codex 的流也走这一套。快照在 `hello` 里带着，新开始的运行、接不上的才拿 `/api/runs/:id/tail`（先把攒着的推出去），再按序号接推送（`run-event` 带 `seq`） |
 | `web/src/lib/thread.ts` | 会话记录 → 对话的纯函数：节点树、走成一条路、工具调用收成一组、分叉点、正在写的段变成节点；增量合并（`merge`，会话、子代理的对话共用） |
 | `web/src/lib/agents.ts` | 子代理：`useSubs`（会话里有 Agent 调用才拿 `/agents`，跟着 `agent` 事件、重连再拿）按 toolUseId 存；`spawns` 算每个 Agent 调用的子代理在不在跑（前台的：没结果、会话在跑、是这一轮的；后台的：结果是「Async agent launched」，会话在跑或 90 秒内写过，且最后写的时间晚于它的结束通知）。`SessionView` 算好传给对话（只给有 Agent 调用的那几组，`Steps` 的 memo 不破），「↓」上的数字也从这里来；对话里的 `AgentSheet` 开着时收到 `agent` 事件就带 version 拉增量 |
@@ -83,7 +86,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `web/src/lib/highlight-worker.ts` | 代码高亮在 Worker 里：`shiki/core` + JS 正则引擎（没有 wasm），语言按需加载 |
 | `web/src/lib/route.ts` | 地址就是状态（`/p/<项目>/s/<会话>?panel=…`）。记下最后的地址，主屏幕 App 冷启动时跳回去（iOS 记的是添加时那页，不一定认 manifest 的 `start_url`）；manifest 用 `crossorigin="use-credentials"` 拿，不然被 Access 转去登录页 |
 | `SessionView`（`session.tsx`） | 会话在内存里留最近 12 个，切回来先画上次的、带 version 拉增量；失效靠服务端的「epoch:rev」（同一个 epoch 里节点只增不删，测试钉着）。离开时记下最上面那条和偏移，回来用 `Reveal` 的 `offset` 放回去 |
-| `web/src/lib/drawer.ts` | 手机上的侧栏抽屉：位置是进度 0–1，拖的时候直接改样式跟手（不经过 React），松手按速度或过没过半动画到底；手势在 `side.tsx` 的 `useSwipe` |
+| `web/src/lib/drawer.ts` | 手机上的两个抽屉：左边的侧栏（`sidebar`）、右边的面板（`panel`，`session.tsx` 的 `PanelDrawer`）。位置是进度 0–1，拖的时候直接改样式跟手（不经过 React），松手按速度或过没过半动画到底；手势 `useSwipe` 两边共用、方向相反，另一边的抽屉开着（`role="dialog"`、`data-drawer`）时不接。面板拖开时先画上次的 tab，关到底藏起来才卸掉里面的东西 |
 | `web/src/lib/outbox.ts` | 草稿随打随存；发件箱：发出去的写进记录才删，没发出去的放回输入框，其实发出去了的把输入框里原样的清掉 |
 
 ## 会话记录的坑（`server/sessions.ts`）
@@ -128,14 +131,17 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 ## 运行（`server/runs.ts`）
 
 - 只用本机的 `claude` 命令行，走用户自己的订阅。不用 Agent SDK：它要 API key，而且不允许拿 claude.ai 的登录给别人用
-- 参数：`claude -p --output-format stream-json --verbose --include-partial-messages --thinking-display summarized --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> [--model <别名>] [--input-format stream-json] [--resume <id> [--fork-session [--resume-session-at <uuid>]]]`，问题从 stdin 写入
+- 参数：`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --thinking-display summarized --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> [--model <别名>] [--resume <id> [--fork-session [--resume-session-at <uuid>]]]`，环境变量 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`。stdin 一行一条：`{"type":"user","message":{"role":"user","content":文字或[文字块, 图片块…]}}`，`/名字` 照样展开成 skill
+- 进程跑完一轮不退（stdin 不关）：`claude -p` 一关 stdin 就退出，Claude 开的后台命令被它杀掉（输出里只剩 `[killed]`），通知也就没了。每一轮开始、结束有 `system` 的 `session_state_changed`（`running` / `idle`）；没写消息却来了 `running` 是后台任务的通知叫醒了 Claude（这一轮的 `result.origin.kind` 是 `task-notification`），另起一次运行，`prompt` 是空的。`idle` 时这一轮才结束（`result` 先到，记下是否出错）；结束后没有后台任务、没有排队的就关 stdin。停掉后台任务之后会补一个 `idle`：刚写进去、还没来过 `running` 的那一轮不能被它结束
+- 后台任务：`background_tasks_changed` 是整张表（`task_id`、`task_type`：`local_bash` / `local_agent` / …、`description`），`task_started` 带开它的 `tool_use_id`，那个工具结果里写着输出文件（「Output is being written to: ….output」）。停一个：`control_request` 的 `stop_task`（`task_id`），Claude 不会被叫醒
+- 进程开着、Claude 闲着时接着说：直接写进 stdin（不另起进程）；权限、模型和上一轮不同先发 `control_request` 的 `set_permission_mode`（`mode`）/ `set_model`（`model`，`default` 是默认）
+- 确认请求：MCP 的 `MIXER_RUN` 是进程的 id，`ask` 归到它正在跑的那一轮
 - `--thinking-display summarized`（帮助里没写）：思考给摘要，流里有 `thinking_delta`、记录里也有文字。不加的话 `-p` 下思考大多是空的、只有签名，没东西可看
-- 带图片时加 `--input-format stream-json`，stdin 写一行 `{"type":"user","message":{"role":"user","content":[文字块, 图片块…]}}`。这样发的「/名字」不会被当成命令直接展开，Claude 会自己调 Skill 工具，结果一样
 - 用量：流里的 `rate_limit_event` 的 `rate_limit_info.unifiedWindows` 有 `five_hour`、`seven_day` 的 `utilization`（0–1）和 `resetsAt`（秒），交给 `usage.ts`（记进 `state.json`，推 `usage` 事件）
 - init 事件里有这个文件夹能用的全部 `skills` 和 `plugins`（内置的 skill 磁盘上没有文件），每次运行都按项目记进 `state.json`
 - 分叉全交给命令行：`--fork-session` 开新会话、原会话不动；`--resume-session-at` 是一条 assistant 记录的 uuid，只带到它为止的上下文（命令行帮助里没写，试过可用）。新会话文件里原会话的记录原样复制（uuid 不变），所以「第一条记录的 uuid 相同」= 一家；文件建立之后的第一句是它自己的标题
 - 确认：Claude 要用需要许可的工具时调 `mcp__mixer__approve`，它 POST 到 `/api/approvals`（带 `x-mixer-token`，每次启动随机生成），挂起直到网页上点了允许或拒绝；10 分钟没人管按拒绝处理，MCP 那边断开了也作废（卡片消失）。`approve.ts` 用 `node:http` 不用 fetch：fetch 等响应头最多 5 分钟。只读的命令（如 `echo`）Claude Code 自己会放行，不会来问
-- 停止：进程真退出了才算结束（之前状态还是运行中），这期间发的照样排队，免得两个进程同时写一个会话；Codex 10 秒没回音也按停止结束
+- 停止：发 `control_request` 的 `interrupt`，只停这一轮（`result` 是 `error_during_execution`），后台任务接着跑；这一轮真结束了（`idle`）才算，之前状态还是运行中，这期间发的照样排队。10 秒还没停下来就 SIGINT 整个进程（后台任务一起没了），再 5 秒 SIGKILL。Codex 10 秒没回音也按停止结束
 - 会话正在 mixer 里跑时续接就进队列（`runs.ts` 的 `queue`，只在内存里，重启就没了）；运行结束时（跑完、出错、被停）把这个会话排着的话按顺序用空行连成一条续接
 - 会话 90 秒内有写入（终端里可能正开着）就不让续接，免得两边同时写一个会话；最近那次写入是 mixer 自己跑完的就放行（按 `state.json` 判断，mixer 重启了也认得）
 - 新会话可以开在家目录里任意文件夹（`server/dirs.ts`，没开过会话的也行）。项目 id 是 claude 的规则：路径里非字母数字的字符都换成 `-`
@@ -155,5 +161,5 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 - Node `^22.18.0 || >=23.6.0`（直接跑 `.ts`），`.nvmrc` 是 24
 - 常驻：`pnpm mixer service install` 写 launchd `~/Library/LaunchAgents/com.mixer.server.plist` 并装上（已经有了要 `--force`；不带参数只显示要写的；`uninstall` 卸掉）（`KeepAlive`，PATH 里要有 `claude`、node、git），日志 `~/Library/Logs/mixer.log`
-- 改了自己的代码会自动换上（`main.ts`）：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）之后，服务端的代码（`server/`、`mcp/`、`web/src/lib/tail.ts`）类型检查过了就退出、launchd 拉起新的；只改了页面就重新打包。检查没过不重启，日志里有原因。要马上重启：`launchctl kickstart -k gui/$(id -u)/com.mixer.server`
+- 改了自己的代码会自动换上（`main.ts`）：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认、开着的 claude 进程：等后台任务的进程一重启就没了）之后，服务端的代码（`server/`、`mcp/`、`web/src/lib/tail.ts`）类型检查过了就退出、launchd 拉起新的；只改了页面就重新打包。检查没过不重启，日志里有原因。要马上重启：`launchctl kickstart -k gui/$(id -u)/com.mixer.server`
 - 这台机器上的外网地址、隧道这些写在 `CLAUDE.local.md`（不进 git）

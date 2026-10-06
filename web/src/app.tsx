@@ -1,19 +1,18 @@
 // 外框：左边侧栏（项目 → 会话，带状态）；右边是当前的页面：会话、项目页（开新会话、看文件和改动），或者什么都没选。
 // 开 agent 只有两种办法：选一个文件夹开新会话（侧栏的新会话、项目页的输入框），或者从一个会话分叉。
-import { ChevronRight, GitFork, MessageSquare, Pin, PinOff, SquarePen } from "lucide-react";
+import { ChevronRight, GitFork, MessageSquare, PanelRight, Pin, PinOff, SquarePen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FloatingApprovals } from "@/components/approvals";
 import { NewSession, ProjectHome } from "@/components/lazy";
-import { PANELS, panelOf, SessionView } from "@/components/session";
+import { lastPanel, openPanel, panelOf, SessionView } from "@/components/session";
 import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
 import { useLive } from "@/lib/live";
-import { go, openSession, type Route, useRoute, useWide } from "@/lib/route";
+import { go, openSession, useRoute, useWide } from "@/lib/route";
+import { cn } from "@/lib/utils";
 
 
 export function App() {
@@ -68,21 +67,19 @@ export function App() {
 							{inWorkspace(r.session) ? <PinOff className="size-4" /> : <Pin className="size-4" />}
 						</Button>
 					)}
+					{/* 右边的面板（目录、文件、改动）：顶栏只有这一个开关，tab 在面板里，打开上次看的那个 */}
 					{r.session && (
-						<ToggleGroup type="single" size="sm" value={panelOf(r, wide) ?? ""} onValueChange={(v) => go({ panel: (v || "none") as Route["panel"] })}>
-							{PANELS.map(({ v, label, icon: I }) => {
-								return (
-									<Tooltip key={v}>
-										<TooltipTrigger asChild>
-											<ToggleGroupItem value={v} className="size-8 px-0 aria-checked:bg-muted" aria-label={label}>
-												<I className="size-4" />
-											</ToggleGroupItem>
-										</TooltipTrigger>
-										<TooltipContent>{label}</TooltipContent>
-									</Tooltip>
-								);
-							})}
-						</ToggleGroup>
+						<Button
+							variant="ghost"
+							size="icon"
+							className={cn("text-muted-foreground", panelOf(r, wide) && "bg-muted text-foreground")}
+							onClick={() => (panelOf(r, wide) ? go({ panel: "none" }) : openPanel(lastPanel()))}
+							aria-pressed={!!panelOf(r, wide)}
+							aria-label="目录、文件、改动"
+							title="目录、文件、改动"
+						>
+							<PanelRight className="size-4" />
+						</Button>
 					)}
 				</header>
 				<div className="flex min-h-0 flex-1 flex-col">

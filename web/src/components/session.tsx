@@ -1,15 +1,17 @@
-// 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏从右边滑出来）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
+// 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏是从右边拉出来的整屏一页，往左滑打开、往右滑关上）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
+// 顶栏只有一个开关，三个 tab 在面板顶上，写字不用图标；开的是这台设备上次看的那个 tab。
 // 打开着的会话跑完了，就算看过了。
-import { ArrowDown, ChevronLeft, FolderTree, GitCompareArrows, ListTree, X } from "lucide-react";
-import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ChevronLeft, X } from "lucide-react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { spawner, spawns, useSubs } from "@/lib/agents";
 import { api, enc, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
+import * as drawer from "@/lib/drawer";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
@@ -22,14 +24,70 @@ import { Changes, Files } from "./lazy";
 import { edited } from "./message";
 import { Boundary } from "./placeholder";
 
-export const PANELS: { v: Panel; label: string; icon: typeof ListTree }[] = [
-	{ v: "outline", label: "目录", icon: ListTree },
-	{ v: "files", label: "文件", icon: FolderTree },
-	{ v: "changes", label: "改动", icon: GitCompareArrows },
+const PANELS: { v: Panel; label: string }[] = [
+	{ v: "outline", label: "目录" },
+	{ v: "files", label: "文件" },
+	{ v: "changes", label: "改动" },
 ];
 
-/** 现在开着哪个面板：地址里没写时，宽屏开目录、窄屏不开 */
-export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? "outline" : null)));
+const LAST = "mixer:panel";
+/** 这台设备上次看的 tab：顶栏的开关打开它 */
+export const lastPanel = (): Panel => {
+	const v = localStorage.getItem(LAST);
+	return v === "files" || v === "changes" ? v : "outline";
+};
+export const openPanel = (v: Panel) => {
+	try { localStorage.setItem(LAST, v); } catch {}
+	go({ panel: v });
+};
+
+/** 现在开着哪个面板：地址里没写时，宽屏开上次看的、窄屏不开 */
+export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? lastPanel() : null)));
+
+/**
+ * 窄屏的面板：从右边拉出来的整屏一页，一直挂在页面上，位置由 lib/drawer 管（拖的时候跟手）。
+ * 不用 Sheet：它关着时会卸掉，拖的时候没东西可动。onHidden：关到底、藏起来了，里面的东西可以卸了
+ */
+function PanelDrawer({ open, onHidden, children }: { open: boolean; onHidden: () => void; children: ReactNode }) {
+	const el = useRef<HTMLDivElement>(null);
+	const ov = useRef<HTMLDivElement>(null);
+	const hidden = useRef(onHidden);
+	hidden.current = onHidden;
+	useLayoutEffect(() => (el.current && ov.current ? drawer.panel.attach(el.current, ov.current, () => hidden.current()) : undefined), []);
+	useEffect(() => drawer.panel.to(open ? 1 : 0), [open]);
+	useEffect(() => {
+		if (!open) return;
+		const esc = (e: KeyboardEvent) => { if (e.key === "Escape") go({ panel: "none" }); };
+		document.addEventListener("keydown", esc);
+		return () => document.removeEventListener("keydown", esc);
+	}, [open]);
+	return createPortal(
+		<>
+			<div ref={ov} aria-hidden className="fixed inset-0 z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs" onClick={() => go({ panel: "none" })} />
+			<div ref={el} role={open ? "dialog" : undefined} aria-modal={open || undefined} aria-label="目录、文件、改动" data-drawer="right" className="fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-lg">
+				{children}
+			</div>
+		</>,
+		document.body,
+	);
+}
+
+/** 面板顶上的三个 tab：目录带你的消息条数，改动带这个会话改过几个文件 */
+function PanelTabs({ panel, counts }: { panel: Panel; counts: Partial<Record<Panel, { n: number; hint: string }>> }) {
+	return (
+		<ToggleGroup type="single" size="sm" value={panel} onValueChange={(v) => v && openPanel(v as Panel)}>
+			{PANELS.map(({ v, label }) => {
+				const c = counts[v];
+				return (
+					<ToggleGroupItem key={v} value={v} className="gap-1 px-2.5 text-muted-foreground aria-checked:bg-muted aria-checked:text-foreground" title={c?.hint}>
+						{label}
+						{!!c?.n && <span className="text-muted-foreground tabular-nums">{c.n}</span>}
+					</ToggleGroupItem>
+				);
+			})}
+		</ToggleGroup>
+	);
+}
 
 /**
  * 贴底：停在底部附近时，新内容长出来就跟着滚到底；往上翻离开了就不跟，滚回底部又贴上。
@@ -192,7 +250,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	// 子代理（Codex 没有）：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
 	const spawning = useMemo(() => !codex && !!nodes?.some(spawner), [codex, nodes]);
 	const subs = useSubs(project, session, spawning);
-	const busy = st === "running" || st === "waiting" || st === "terminal";
+	const busy = st === "running" || st === "waiting" || st === "background" || st === "terminal";
 	const spawned = useMemo(() => (w && !codex ? spawns(w.path, subs, busy) : null), [w, codex, subs, busy]);
 	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
@@ -239,8 +297,16 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		go({ panel: "files", file: p, view: diff ? "diff" : null });
 	}, [rel]);
 
+	// 窄屏：拖开时先画上次看的 tab（peek），关到底、藏起来之后才卸掉里面的东西
+	const narrow = wide ? null : panelOf(r, wide);
+	const [peek, setPeek] = useState<Panel | null>(null);
+	useEffect(() => { if (narrow) setPeek(narrow); }, [narrow]);
+	const onStart = useCallback(() => setPeek(lastPanel()), []);
+	const setOpen = useCallback((o: boolean) => (o ? openPanel(lastPanel()) : go({ panel: "none" })), []);
+	drawer.useSwipe(drawer.panel, { on: !wide, open: !!narrow, setOpen, onStart });
+
 	if (error) return <p className="p-6 text-sm text-destructive">{error}</p>;
-	const panel = panelOf(r, wide);
+	const panel = wide ? panelOf(r, wide) : (narrow ?? peek);
 	const prompts = w?.path.filter((n): n is Extract<Node, { k: "user" }> => n.k === "user") ?? [];
 	const jump = (uuid: string) => {
 		if (!wide) go({ panel: "none" });
@@ -264,7 +330,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		) : panel === "changes" ? (
 			<Changes project={project} touched={touched} />
 		) : null;
-	const title = panel === "outline" ? `你的 ${prompts.length} 条消息` : PANELS.find((p) => p.v === panel)?.label;
+	const counts = { outline: { n: prompts.length, hint: `你的 ${prompts.length} 条消息` }, changes: { n: touched.length, hint: `这个会话改过 ${touched.length} 个文件` } };
 
 	return (
 		<div className="flex min-h-0 flex-1">
@@ -272,7 +338,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				<div className="relative flex min-h-0 flex-1 flex-col">
 					{/* 原生滚动：shadcn 的 ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
 					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
+						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary key={session}>
 									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
@@ -291,14 +357,14 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} stream={stream} agent={codex ? "codex" : "claude"} />}
+				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} run={stream.run} agent={codex ? "codex" : "claude"} />}
 			</div>
 
 			{wide && panel && (
 				<aside className={cn("flex shrink-0 flex-col border-l", panel === "outline" ? "w-72" : "w-[min(44rem,45vw)]")}>
-					<div className="flex h-11 shrink-0 items-center gap-2 border-b pr-1.5 pl-4 text-xs font-medium text-muted-foreground">
-						<span className="flex-1">{title}</span>
-						<Button variant="ghost" size="icon-sm" onClick={() => go({ panel: "none" })} aria-label="关掉面板">
+					<div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-1.5">
+						<PanelTabs panel={panel} counts={counts} />
+						<Button variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => go({ panel: "none" })} aria-label="关掉面板">
 							<X className="size-3.5" />
 						</Button>
 					</div>
@@ -306,32 +372,18 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				</aside>
 			)}
 			{!wide && (
-				// 手机上面板是整屏的一页：左上角回到对话，旁边直接切目录 / 文件 / 改动；上下让开刘海和 Home 条
-				<Sheet open={!!panel} onOpenChange={(o) => !o && go({ panel: "none" })}>
-					<SheetContent
-						side="right"
-						showCloseButton={false}
-						className="gap-0 p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] data-[side=right]:w-full data-[side=right]:border-l-0 data-[side=right]:sm:max-w-none"
-						onOpenAutoFocus={(e) => e.preventDefault()}
-					>
-						<SheetHeader className="flex-row items-center gap-1 border-b p-1.5 pr-2">
-							<Button variant="ghost" size="icon" onClick={() => go({ panel: "none" })} aria-label="回到对话">
-								<ChevronLeft className="size-4" />
-							</Button>
-							<SheetTitle className="sr-only">{title}</SheetTitle>
-							<SheetDescription className="sr-only">这个会话的{title}</SheetDescription>
-							<ToggleGroup type="single" size="sm" value={panel ?? ""} onValueChange={(v) => v && go({ panel: v as Panel })} className="ml-auto">
-								{PANELS.map(({ v, label, icon: I }) => (
-									<ToggleGroupItem key={v} value={v} className="gap-1.5 px-3 aria-checked:bg-muted">
-										<I className="size-3.5" />
-										{label}
-									</ToggleGroupItem>
-								))}
-							</ToggleGroup>
-						</SheetHeader>
-						{body}
-					</SheetContent>
-				</Sheet>
+				// 窄屏的面板是整屏的一页：左上角回到对话，旁边直接切目录 / 文件 / 改动；上下让开刘海和 Home 条
+				<PanelDrawer open={!!narrow} onHidden={() => setPeek(null)}>
+					<div className="flex shrink-0 items-center gap-1 border-b p-1.5 pr-2">
+						<Button variant="ghost" size="icon" onClick={() => go({ panel: "none" })} aria-label="回到对话">
+							<ChevronLeft className="size-4" />
+						</Button>
+						<span className="ml-auto">
+							<PanelTabs panel={panel ?? lastPanel()} counts={counts} />
+						</span>
+					</div>
+					{body}
+				</PanelDrawer>
 			)}
 		</div>
 	);

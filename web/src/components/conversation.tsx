@@ -179,7 +179,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 						) : b.n.k === "user" ? (
 							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : forkEdit} />
 						) : b.n.k === "assistant" ? (
-							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} />
+							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} last={b === tail} />
 						) : b.n.k === "event" ? (
 							<EventLine n={b.n} onAgent={setAgent} />
 						) : null}

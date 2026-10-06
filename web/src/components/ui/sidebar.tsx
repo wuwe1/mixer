@@ -142,14 +142,14 @@ function SidebarProvider({
 }
 
 /**
- * 手机上的侧栏：从左边拉出来的抽屉，一直挂在页面上，位置由 lib/drawer 管（拖的时候跟手，见 side.tsx 的 useSwipe）。
+ * 手机上的侧栏：从左边拉出来的抽屉，一直挂在页面上，位置由 lib/drawer 管（拖的时候跟手，见 lib/drawer 的 useSwipe）。
  * 不用 Sheet：它关着时会卸掉，拖的时候没东西可动；强行挂着又会把整页的滚动、点击锁住
  */
 function MobileDrawer({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
   const panel = React.useRef<HTMLDivElement>(null)
   const overlay = React.useRef<HTMLDivElement>(null)
-  React.useLayoutEffect(() => (panel.current && overlay.current ? drawer.attach(panel.current, overlay.current) : undefined), [])
-  React.useEffect(() => drawer.to(open ? 1 : 0), [open])
+  React.useLayoutEffect(() => (panel.current && overlay.current ? drawer.sidebar.attach(panel.current, overlay.current) : undefined), [])
+  React.useEffect(() => drawer.sidebar.to(open ? 1 : 0), [open])
   React.useEffect(() => {
     if (!open) return
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onOpenChange(false) }
@@ -167,6 +167,7 @@ function MobileDrawer({ open, onOpenChange, children }: { open: boolean; onOpenC
         data-sidebar="sidebar"
         data-slot="sidebar"
         data-mobile="true"
+        data-drawer="left"
         className="fixed inset-y-0 left-0 z-50 flex w-(--sidebar-width) flex-col border-r bg-sidebar text-sm text-sidebar-foreground shadow-lg"
         style={{ "--sidebar-width": SIDEBAR_WIDTH_MOBILE } as React.CSSProperties}
       >

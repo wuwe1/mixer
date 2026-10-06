@@ -1,14 +1,14 @@
 // 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话，订阅用量。
-// 会话的「状态」由这三样合起来算：等你确认 > 在跑 > 跑完了没看 / 出错了 > 终端里开着。
+// 会话的「状态」由这几样合起来算：等你确认 > 在跑 > 后台任务在跑（Claude 闲着，跑完了会叫醒它）> 跑完了没看 / 出错了 > 终端里开着。
 // 都从 SSE 连上时的 hello 来（第一次、每次重连），之后按推来的事件改；只有工作区有时还要整个拉一次。
 import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type Approval, type Group, type Hello, type Queued, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type Group, type Hello, type Host, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
 import type { Account } from "./usage";
 
-export type Status = "waiting" | "running" | "done" | "error" | "terminal" | null;
+export type Status = "waiting" | "running" | "background" | "done" | "error" | "terminal" | null;
 
 /** 工作区的改动：放进来（不给 session 就只放文件夹；sessions 是撤销移出文件夹时一起放回去的）、移出去（不给 session 就是整个文件夹）、文件夹的新顺序 */
 export type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string; sessions?: string[] } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
@@ -20,6 +20,8 @@ type Live = {
 	/** 改工作区：先改本地（拖完马上就是新顺序），再告诉服务端；失败了重新拉。移出去的给一个「撤销」 */
 	change: (op: WorkspaceOp) => Promise<void>;
 	runs: Run[];
+	/** mixer 开着的 claude 进程（各带着后台任务） */
+	hosts: Host[];
 	approvals: Approval[];
 	queue: Queued[];
 	/** 用量：各个账号（Claude、Codex）的窗口用了多少 */
@@ -46,6 +48,7 @@ const keep = <T,>(set: Dispatch<SetStateAction<T>>) => (v: T) => set((old) => (J
 export function LiveProvider({ children }: { children: ReactNode }) {
 	const [workspace, setWorkspace] = useState<Group[] | null>(null);
 	const [runs, setRuns] = useState<Run[]>([]);
+	const [hosts, setHosts] = useState<Host[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
 	const [usage, setUsage] = useState<Account[]>([]);
@@ -107,6 +110,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		if (h.workspace) putWorkspace(h.workspace);
 		else setWorkspace((w) => w ?? []);
 		putRuns(h.runs);
+		setHosts(h.hosts ?? []);
 		putApprovals(h.approvals);
 		putQueue(h.queue);
 		setUsage(h.usage ?? []);
@@ -131,6 +135,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		}
 		if (r.status !== "running") loadWorkspace();
 	}, [loadWorkspace]));
+	// 进程变了（开始、结束一轮，后台任务多了少了）：整个换掉；gone 是退出了
+	useEvent("host", useCallback((h: Host | { id: string; gone: true }) => setHosts((l) => ("gone" in h ? l.filter((x) => x.id !== h.id) : [...l.filter((x) => x.id !== h.id), h])), []));
 	useEvent("approval", useCallback((a: Approval) => {
 		setApprovals((l) => [...l.filter((x) => x.id !== a.id), a]);
 		navigator.vibrate?.(80);
@@ -145,6 +151,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			const mine = runs.filter((r) => r.session === s.id);
 			if (approvals.some((a) => mine.some((r) => r.id === a.run))) return "waiting";
 			if (mine.some((r) => r.status === "running")) return "running";
+			if (hosts.some((h) => h.session === s.id && h.tasks.length)) return "background";
 			if (s.unread) return s.unread;
 			if (s.active && mine.length === 0) return "terminal";
 			return null;
@@ -175,8 +182,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			};
 			toast("已移出工作区", { action: { label: "撤销", onClick: () => void undo() } });
 		};
-		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, usage, status, follow };
-	}, [workspace, runs, approvals, queue, usage, pullWorkspace]);
+		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, hosts, approvals, queue, usage, status, follow };
+	}, [workspace, runs, hosts, approvals, queue, usage, pullWorkspace]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

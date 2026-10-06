@@ -1,6 +1,6 @@
 // 消息里带图片：选图（或粘贴），点缩略图打开批注，画箭头、随手画线。发送时把批注画进图里，缩到长边 2000px 以内再发。
 // 批注按原图的像素坐标存，显示、导出都从同一张 canvas 来，手机上看到什么发出去就是什么。
-import { ImagePlus, MoveUpRight, Pencil, Undo2, X } from "lucide-react";
+import { MoveUpRight, Pencil, Undo2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -86,29 +86,6 @@ export async function encode(s: Shot): Promise<{ media: string; data: string }> 
 		r.readAsDataURL(blob);
 	});
 	return { media: blob.type || s.media, data };
-}
-
-/** 选图的按钮 */
-export function AttachButton({ onAdd }: { onAdd: (s: Shot[]) => void }) {
-	const file = useRef<HTMLInputElement>(null);
-	return (
-		<>
-			<Button variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => file.current?.click()} aria-label="加图片" title="加图片">
-				<ImagePlus className="size-4" />
-			</Button>
-			<input
-				ref={file}
-				type="file"
-				accept="image/*"
-				multiple
-				hidden
-				onChange={(e) => {
-					if (e.target.files) onAdd(toShots(e.target.files));
-					e.target.value = "";
-				}}
-			/>
-		</>
-	);
 }
 
 /** 输入框上方的缩略图：点开批注，× 去掉 */

@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type Project, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
 import type { Agent } from "@/lib/model";
-import { AgentSelect, ModelSelect, PermissionSelect } from "./composer";
+import { AgentModelSelect, PermissionSelect } from "./composer";
 
 /** 上次开新会话用的 agent（这台设备上） */
 const AGENT_KEY = "mixer.agent";
@@ -120,13 +120,13 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 	);
 }
 
-/** 写第一句话、选 agent（Claude Code / Codex）、权限、模型，开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话。lead：放在提示语前面 */
+/** 写第一句话、选权限、模型（连带 agent：Claude Code / Codex），开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话。lead：放在提示语前面 */
 export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; lead?: string; onStarted?: () => void }) {
 	const { follow } = useLive();
 	const [agent, setAgent] = useState<Agent>(lastAgent);
-	const pick = (a: Agent) => {
+	const pick = (a: Agent, m: string) => {
 		setAgent(a);
-		setModel("");
+		setModel(m);
 		try { localStorage.setItem(AGENT_KEY, a); } catch {}
 	};
 	const [text, setText] = useState("");
@@ -160,9 +160,8 @@ export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd
 				className="max-h-[40svh] min-h-24 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 			/>
 			<div className="flex items-center gap-1.5">
-				<AgentSelect value={agent} onChange={pick} />
 				<PermissionSelect value={permission} onChange={setPermission} />
-				<ModelSelect value={model} onChange={setModel} agent={agent} />
+				<AgentModelSelect agent={agent} model={model} onChange={pick} />
 				<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
 					{busy ? <Spinner /> : <Send className="size-4" />}
 				</Button>

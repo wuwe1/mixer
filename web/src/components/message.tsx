@@ -1,6 +1,7 @@
 // 一条一条消息怎么画：你的消息（右边的气泡）、Claude 的回复（Markdown）、连在一起的工具调用和思考（收成一组，点开看）、
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
-// 每条消息、每组工具调用后面常驻几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。图片点了在当前页面放大。
+// 每条消息、每组工具调用后面几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。平时收着，指着、点一下那条才出现，
+// 最后一条回复的常驻；手机上工具组的分叉常驻（点工具组是展开）。图片点了在当前页面放大。
 import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, ListChecks, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -37,6 +38,9 @@ export function Elapsed({ since, className }: { since: number; className?: strin
 /** 一组里正在进行的那一步（执行中的工具、正在写的思考）和它开始的时间 */
 export type Now = { node: Node; since: number };
 
+/** 指着、点一下（消息自己能拿焦点）才出现；藏起来时不占地方，时间贴着右边 */
+const reveal = "hidden group-hover:flex group-focus-within:flex";
+
 /** 消息后面的小图标按钮 */
 function Action({ icon: I, label, onClick }: { icon: typeof Wrench; label: string; onClick: () => void }) {
 	return (
@@ -67,7 +71,7 @@ export const UserMessage = memo(function UserMessage({ n, project, session, onFo
 			<div className="flex items-center gap-2 px-1 text-2xs text-muted-foreground">
 				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-2xs" title="运行中发的，插进了这次运行">排队</Badge>}
 				<span className="tabular-nums">{clock(n.ts)}</span>
-				<span className="flex items-center">
+				<span className={cn("items-center", reveal)}>
 					<CopyAction text={n.text} />
 					{onFork && <Action icon={Pencil} label="编辑并分叉" onClick={() => onFork(n)} />}
 				</span>
@@ -76,15 +80,17 @@ export const UserMessage = memo(function UserMessage({ n, project, session, onFo
 	);
 });
 
-/** spent：从你发出这一轮的消息到这条回复用了多久（毫秒）；还在写的不显示 */
-export const AssistantMessage = memo(function AssistantMessage({ n, spent, onFork }: { n: Extract<Node, { k: "assistant" }>; spent?: number; onFork?: (n: Extract<Node, { k: "assistant" }>) => void }) {
+/** spent：从你发出这一轮的消息到这条回复用了多久（毫秒）；还在写的不显示。last：对话最后一条，复制、分叉常驻 */
+export const AssistantMessage = memo(function AssistantMessage({ n, spent, onFork, last }: { n: Extract<Node, { k: "assistant" }>; spent?: number; onFork?: (n: Extract<Node, { k: "assistant" }>) => void; last?: boolean }) {
 	return (
 		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col gap-1 outline-none">
 			<Markdown text={n.text} />
 			<div className="-my-1 flex items-center self-end">
 				{spent !== undefined && <span className="px-1 text-2xs tabular-nums text-muted-foreground" title="从你发出消息到这条回复">{took(spent)}</span>}
-				<CopyAction text={n.text} />
-				{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(n)} />}
+				<span className={cn("items-center", last ? "flex" : reveal)}>
+					<CopyAction text={n.text} />
+					{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(n)} />}
+				</span>
 			</div>
 		</div>
 	);
@@ -215,21 +221,19 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 	const subs = spawns ? tools.filter((t) => spawns.get(t.id)?.running) : [];
 	const shownSub = shown?.k === "tool" && subs.includes(shown);
 	const shownAgent = shown?.k === "tool" && spawns ? (shown.agent ?? spawns.get(shown.id)?.agentId ?? null) : null;
+	// 跑完了、没有在跑的子代理：收着时只一行，就是最后那一步（几次调用、几个出错跟在后面）；展开了这一行换回「N 次工具调用」
+	const flat = !running && !thinking && !subs.length && shown?.k === "tool" ? shown : null;
+	const label = (
+		<span className={cn(flat && "hidden group-data-[state=open]/stepbox:inline")}>
+			{tools.length ? `${tools.length} 次工具调用` : "思考"}
+			{tools.length > 0 && <span className="ml-1.5 opacity-70">{names.slice(0, 4).join("、")}{names.length > 4 ? "…" : ""}</span>}
+		</span>
+	);
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<div className="flex items-center gap-1">
 			<CollapsibleTrigger className="group/steps flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
 				<ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/steps:rotate-90" />
-				<span className="flex -space-x-1">
-					{names.slice(0, 5).map((nm) => {
-						const I = toolIcon(nm);
-						return (
-							<span key={nm} className="flex size-5 items-center justify-center rounded-full border bg-background">
-								<I className="size-3" />
-							</span>
-						);
-					})}
-				</span>
 				{thinking ? (
 					<>
 						<StatusIcon s="running" className="size-3.5" />
@@ -237,20 +241,32 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 						<span className="min-w-0 truncate opacity-70 group-data-[state=open]/stepbox:hidden">{latest(thinking.node)}</span>
 						<Elapsed since={thinking.since} className="ml-auto shrink-0 text-2xs" />
 					</>
+				) : flat ? (
+					<>
+						<span className="flex min-w-0 items-center gap-2 text-md text-foreground group-data-[state=open]/stepbox:hidden">
+							<StatusIcon s={flat.result?.error ? "failed" : "ok"} className="size-3.5" />
+							<span className="shrink-0 font-medium">{toolName(flat.name)}</span>
+							<span className="truncate font-mono text-xs text-muted-foreground">{flat.summary}</span>
+						</span>
+						{label}
+						{tools.length > 1 && <span className="shrink-0 tabular-nums opacity-70 group-data-[state=open]/stepbox:hidden">{tools.length} 次</span>}
+					</>
 				) : (
-					<span>
-						{tools.length ? `${tools.length} 次工具调用` : "思考"}
-						{tools.length > 0 && <span className="ml-1.5 opacity-70">{names.slice(0, 4).join("、")}{names.length > 4 ? "…" : ""}</span>}
-					</span>
+					label
 				)}
-				{errors > 0 && <span className="flex items-center gap-1 text-destructive"><TriangleAlert className="size-3" />{errors}</span>}
+				{errors > (flat?.result?.error && tools.length === 1 ? 1 : 0) && <span className="flex shrink-0 items-center gap-1 text-destructive"><TriangleAlert className="size-3" />{errors}</span>}
 			</CollapsibleTrigger>
-			{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />}
+			{flat && shownAgent && onAgent && <Action icon={Bot} label="看子代理的对话" onClick={() => onAgent(shownAgent)} />}
+			{onFork && (
+				<span className="md:invisible md:group-hover/stepbox:visible md:group-focus-within/stepbox:visible">
+					<Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />
+				</span>
+			)}
 			</div>
 			{spawns && subs.slice(0, 3).map((t) => <SpawnRow key={t.id} t={t} s={spawns.get(t.id) as Spawn} onAgent={onAgent} />)}
 			{subs.length > 3 && <div className="py-1 pl-5.5 text-xs text-muted-foreground group-data-[state=open]/stepbox:hidden">还有 {subs.length - 3} 个</div>}
 			{/* 收着的时候最后一步也露出来：在跑是蓝点带耗时，跑完了留着，成功绿点、失败红点 */}
-			{shown && !shownSub && (
+			{shown && !shownSub && !flat && (
 				// 跑完的子代理也留着这一行，点了看它的对话
 				<button type="button" disabled={!shownAgent || !onAgent} onClick={() => shownAgent && onAgent?.(shownAgent)} className="flex w-full min-w-0 items-center gap-2 py-1 pl-5.5 text-left text-md group-data-[state=open]/stepbox:hidden" title={shownAgent ? "看子代理的对话" : undefined}>
 					<StatusIcon s={running ? "running" : shown.k === "tool" && shown.result?.error ? "failed" : "ok"} className="size-3.5" />

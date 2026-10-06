@@ -1,11 +1,12 @@
 // 输入框：只有两种发送方式，继续（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
 // Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
-// 下面一排：发送方式、权限、模型、skill、图片；右边是运行中的时长和停止、订阅快用完的窗口、上下文用了多少、发送。
-import { Bot, ChevronDown, Code, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, SquareSlash } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+// 分叉不用另选：从最新处分叉是最后一条回复后面的分叉图标；只能分叉时发送按钮换成分叉的图标。
+// 下面一排：权限、模型、「+」（图片、skill）；右边是后台任务、运行中的停止和时长、订阅快用完的窗口、上下文用了多少、发送。
+import { Bot, Code, GitFork, Hand, ImagePlus, ListChecks, Plus, Send, Sparkles, Square, SquareSlash } from "lucide-react";
+import { Fragment, memo, type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Node, type Run } from "@/lib/api";
@@ -14,37 +15,50 @@ import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf
 import { useDraft, useOutbox } from "@/lib/outbox";
 import { forkPoint, type Walk } from "@/lib/thread";
 import { nearLimit } from "@/lib/usage";
-import type { Stream } from "@/lib/use-stream";
-import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
+import { AttachStrip, encode, type Shot, toShots } from "./attach";
 import { start } from "./fork-dialog";
 import { Elapsed } from "./message";
 import { SkillPicker } from "./lazy";
+import { BackgroundTasks } from "./tasks";
 import { pct, resets } from "./usage";
 
-type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
+type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean; group?: string };
 
-/** 输入框下面的小选项：平时只是个图标，点开才写每一项是什么意思；给了 text 就显示成文字（模型名） */
-function OptionMenu({ title, options, value, onChange, text }: { title: string; options: Option[]; value: string; onChange: (v: string) => void; text?: ReactNode }) {
+/** 输入框下面的小选项：平时只是个图标（不带箭头），点开才写每一项是什么意思；给了 text 就显示成文字（模型名）。选项带 group 的按组列，组名代替标题 */
+function OptionMenu({ title, options, value, onChange, text, onOpenChange }: { title: string; options: Option[]; value: string; onChange: (v: string) => void; text?: ReactNode; onOpenChange?: (open: boolean) => void }) {
 	const cur = options.find((o) => o.v === value) ?? options[0];
 	return (
-		<DropdownMenu>
+		<DropdownMenu onOpenChange={onOpenChange}>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="sm" className="gap-0.5 px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
-					{text ? <span className="text-2xs">{text}</span> : <cur.icon className="size-4" />}
-					<ChevronDown className="size-3 opacity-60" />
-				</Button>
+				{text ? (
+					<Button variant="ghost" size="sm" className="px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+						<span className="text-2xs">{text}</span>
+					</Button>
+				) : (
+					<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+						<cur.icon className="size-4" />
+					</Button>
+				)}
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start" className="w-72">
-				<DropdownMenuLabel>{title}</DropdownMenuLabel>
+				{!options[0]?.group && <DropdownMenuLabel>{title}</DropdownMenuLabel>}
 				<DropdownMenuRadioGroup value={value} onValueChange={onChange}>
-					{options.map((o) => (
-						<DropdownMenuRadioItem key={o.v} value={o.v} disabled={o.disabled} className="items-start gap-2.5 py-2">
-							<o.icon className="mt-0.5 size-4 text-muted-foreground" />
-							<span className="flex flex-col gap-0.5">
-								<span className="font-medium">{o.label}</span>
-								<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
-							</span>
-						</DropdownMenuRadioItem>
+					{options.map((o, i) => (
+						<Fragment key={o.v}>
+							{o.group && o.group !== options[i - 1]?.group && (
+								<>
+									{i > 0 && <DropdownMenuSeparator />}
+									<DropdownMenuLabel>{o.group}</DropdownMenuLabel>
+								</>
+							)}
+							<DropdownMenuRadioItem value={o.v} disabled={o.disabled} className="items-start gap-2.5 py-2">
+								<o.icon className="mt-0.5 size-4 text-muted-foreground" />
+								<span className="flex flex-col gap-0.5">
+									<span className="font-medium">{o.label}</span>
+									<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
+								</span>
+							</DropdownMenuRadioItem>
+						</Fragment>
 					))}
 				</DropdownMenuRadioGroup>
 			</DropdownMenuContent>
@@ -71,13 +85,23 @@ function useCodexModels(on: boolean) {
 	return list;
 }
 
-/** 新会话用哪个 agent */
-export function AgentSelect({ value, onChange }: { value: Kind; onChange: (v: Kind) => void }) {
+/** 新会话用哪个 agent、哪个模型：两边的模型按 agent 分组列在一个菜单里，选了哪个模型就是哪个 agent。"" 是那个 agent 的默认；Codex 的模型第一次点开才拿 */
+export function AgentModelSelect({ agent, model, onChange }: { agent: Kind; model: string; onChange: (agent: Kind, model: string) => void }) {
+	const [opened, setOpened] = useState(false);
+	const codex = useCodexModels(agent === "codex" || opened);
+	const def = codex.find((m) => m.isDefault)?.id;
 	const options: Option[] = [
-		{ v: "claude", icon: Sparkles, label: "Claude Code", desc: "用本机的 claude 命令行" },
-		{ v: "codex", icon: Code, label: "Codex", desc: "用本机的 Codex（codex app-server）" },
+		{ v: "claude:", group: "Claude Code", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
+		...MODELS.map((m) => ({ v: `claude:${m.v}`, group: "Claude Code", icon: Bot, label: m.label, desc: `最新的 ${m.label}` })),
+		{ v: "codex:", group: "Codex", icon: Code, label: "默认", desc: def ? `Codex 的默认（${def}）` : "Codex 的默认" },
+		...codex.map((m) => ({ v: `codex:${m.id}`, group: "Codex", icon: Code, label: m.label, desc: m.id })),
 	];
-	return <OptionMenu title="Agent" options={options} value={value} onChange={(v) => onChange(v as Kind)} />;
+	const text = `${agent === "codex" ? "Codex" : "Claude"} · ${!model ? "默认" : agent === "codex" ? model : pretty(model)}`;
+	const pick = (v: string) => {
+		const i = v.indexOf(":");
+		onChange(v.slice(0, i) as Kind, v.slice(i + 1));
+	};
+	return <OptionMenu title="模型" options={options} value={`${agent}:${model}`} onChange={pick} text={text} onOpenChange={(o) => o && setOpened(true)} />;
 }
 
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -121,28 +145,17 @@ function noContinue(w: Walk, status: Status): { reason: string; hint: string } |
 
 const wan = (n: number) => (n >= 10_000 ? `${Math.round(n / 10_000)} 万` : String(n));
 
-/** 运行中：在做什么、跑了多久、停止。手机上地方不够，只有时长和停止（在做什么看对话末尾带 ping 点的那一步） */
-function RunStatus({ run, stream, waiting, path }: { run: Run; stream: Stream; waiting: boolean; path: Node[] }) {
-	const b = stream.blocks[stream.blocks.length - 1];
-	// 运行到一半才打开的页面没收到前面的流：从记录里看最后一步是不是还没结果的工具
-	const tail = path[path.length - 1];
-	const doing = waiting
-		? "待确认"
-		: b
-			? b.k === "text" ? "写回复" : b.k === "thinking" ? "思考" : b.name.replace(/^mcp__[^_]+__/, "")
-			: tail?.k === "tool" && !tail.result ? tail.name.replace(/^mcp__[^_]+__/, "") : "等 Claude";
+/** 运行中：停止和跑了多久合成一个按钮。在做什么看对话末尾带 ping 点的那一步 */
+function RunStatus({ run }: { run: Run }) {
 	return (
-		<span className="flex min-w-0 shrink items-center gap-1 text-2xs text-muted-foreground">
-			<span className="hidden min-w-0 truncate md:inline">运行中 · {doing} ·</span>
-			<Elapsed since={Date.parse(run.started)} className="shrink-0" />
-			<Button variant="ghost" size="icon-sm" className="shrink-0 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止运行">
-				<Square className="size-3 fill-current" />
-			</Button>
-		</span>
+		<Button variant="ghost" size="xs" className="shrink-0 gap-1 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止运行">
+			<Square className="size-2.5 fill-current" />
+			<Elapsed since={Date.parse(run.started)} />
+		</Button>
 	);
 }
 
-/** 上下文用了多少：你正在看的那条路上最后一条回复发出时的量，按下一条要用的模型的窗口算。手机上只有百分比 */
+/** 上下文用了多少：你正在看的那条路上最后一条回复发出时的量，按下一条要用的模型的窗口算。只有圆环和百分比，多少 token 在 title 里 */
 function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<string, number>; model: string }) {
 	const ctx = lastCtx(path);
 	if (!ctx) return null;
@@ -158,7 +171,6 @@ function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<
 				<circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)} />
 			</svg>
 			{pct}%
-			<span className="hidden md:inline">· {wan(ctx.used)} / {wan(size)}</span>
 		</span>
 	);
 }
@@ -177,33 +189,67 @@ function QuotaHint({ agent }: { agent: Kind }) {
 /** 消息开头换成「/名字 」：原来就有一个 /xxx 的话替换掉 */
 const withSkill = (text: string, name: string) => `/${name} ${text.replace(/^\/\S+\s*/, "")}`;
 
-/** 选 skill 的按钮；列表在 skills.tsx，点了才加载 */
-function SkillButton({ onClick }: { onClick: () => void }) {
-	return (
-		<Button variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={onClick} aria-label="选 skill" title="选 skill">
-			<SquareSlash className="size-4" />
+/** 「+」：加图片、选 skill（列表在 skills.tsx，点了才加载）。没有 skill（Codex）就直接选图 */
+function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill?: () => void }) {
+	const file = useRef<HTMLInputElement>(null);
+	const pick = () => file.current?.click();
+	const button = (
+		<Button variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={onSkill ? undefined : pick} aria-label={onSkill ? "加图片、选 skill" : "加图片"} title={onSkill ? "加图片、选 skill" : "加图片"}>
+			<Plus className="size-4" />
 		</Button>
+	);
+	return (
+		<>
+			{onSkill ? (
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
+					<DropdownMenuContent align="start">
+						<DropdownMenuItem onSelect={pick}>
+							<ImagePlus />
+							图片
+						</DropdownMenuItem>
+						<DropdownMenuItem onSelect={onSkill}>
+							<SquareSlash />
+							skill
+						</DropdownMenuItem>
+					</DropdownMenuContent>
+				</DropdownMenu>
+			) : (
+				button
+			)}
+			<input
+				ref={file}
+				type="file"
+				accept="image/*"
+				multiple
+				hidden
+				onChange={(e) => {
+					if (e.target.files) onAdd(toShots(e.target.files));
+					e.target.value = "";
+				}}
+			/>
+		</>
 	);
 }
 
 /** 发出去之后，输入框里去掉发出去的那段：请求还没回来时接着打的字留着 */
 const unsent = (t: string, sent: string) => (t === sent ? "" : t.startsWith(sent) ? t.slice(sent.length).replace(/^\s+/, "") : t);
 
-export function Composer({ project, session, w, status, windows, chosen, stream, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; stream: Stream; agent?: Kind }) {
+/** run：这个会话正在跑的那一次。只拿它不拿整个 stream：回复写着的时候每来一段字，输入框不跟着重画 */
+export const Composer = memo(function Composer({ project, session, w, status, windows, chosen, run, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; run: Run | null; agent?: Kind }) {
 	const { follow, runs, queue } = useLive();
 	const [text, setText] = useDraft(session);
 	// 发出去的先记着，真写进会话记录才算数；没发出去的放回输入框
 	const track = useOutbox(session, w.path, runs, queue, text, setText);
 	const why = noContinue(w, status);
 	const busyRun = status === "running" || status === "waiting";
-	const [mode, setMode] = useState<"resume" | "fork">(why ? "fork" : "resume");
+	const mode = why ? "fork" : "resume";
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState(() => modelFor(agent, w.path, chosen) ?? "");
 	const [busy, setBusy] = useState(false);
 	const [skills, setSkills] = useState(false);
 	const [shots, setShots] = useState<Shot[]>([]);
 	const input = useRef<HTMLTextAreaElement>(null);
-	useEffect(() => setMode(why ? "fork" : "resume"), [why]);
 	// 换了会话、或者在别处（终端、另一个页面）换了模型：跟着变
 	const fallback = modelFor(agent, w.path, chosen) ?? "";
 	useEffect(() => setModel(fallback), [session, fallback]);
@@ -231,8 +277,8 @@ export function Composer({ project, session, w, status, windows, chosen, stream,
 		}
 	};
 	return (
-		<div className="border-t bg-background/80 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:px-6">
-			<div className="mx-auto flex w-full max-w-3xl flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-3 focus-within:ring-ring/30">
+		<div className="bg-background/80 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur md:px-6">
+			<div className="mx-auto flex w-full max-w-3xl flex-col gap-1 rounded-xl border bg-card p-1.5 shadow-xs transition-colors focus-within:border-ring">
 				<AttachStrip shots={shots} onChange={setShots} />
 				<Textarea
 					value={text}
@@ -247,32 +293,23 @@ export function Composer({ project, session, w, status, windows, chosen, stream,
 						const s = toShots(e.clipboardData.files);
 						if (s.length) { e.preventDefault(); setShots((x) => [...x, ...s]); }
 					}}
-					placeholder={why?.hint ?? (mode === "fork" ? "分叉出新会话…" : busyRun ? "运行中，发送后排队…" : "继续…")}
-					className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+					placeholder={why?.hint ?? (busyRun ? "运行中，发送后排队…" : "继续…")}
+					className="max-h-48 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
 				/>
-				<div className="flex items-center gap-1.5">
-					<OptionMenu
-						title="发送方式"
-						value={mode}
-						onChange={(v) => setMode(v as "resume" | "fork")}
-						options={[
-							{ v: "resume", icon: MessageSquareText, label: "继续", desc: why ? `不可用：${why.reason}` : busyRun ? "运行中，先排队，结束后发出" : "接着这个会话", disabled: !!why },
-							{ v: "fork", icon: GitFork, label: "分叉", desc: w.atLatest ? "开新会话，带上到最新处的对话，原会话不变" : "开新会话，带上到你正在看的地方的对话，原会话不变" },
-						]}
-					/>
+				<div className="flex items-center gap-1">
 					<PermissionSelect value={permission} onChange={setPermission} />
 					<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
-					{agent === "claude" && <SkillButton onClick={() => setSkills(true)} />}
-					<AttachButton onAdd={(s) => setShots((x) => [...x, ...s])} />
+					<AddMenu onAdd={(s) => setShots((x) => [...x, ...s])} onSkill={agent === "claude" ? () => setSkills(true) : undefined} />
 					<span className="ml-auto" />
-					{stream.run && <RunStatus run={stream.run} stream={stream} waiting={status === "waiting"} path={w.path} />}
-					{/* 手机上运行中地方不够：先不显示上下文、用量 */}
-					<span className={stream.run ? "hidden md:contents" : "contents"}>
+					{agent === "claude" && <BackgroundTasks session={session} />}
+					{run && <RunStatus run={run} />}
+					{/* 手机上运行中地方不够：先不显示用量 */}
+					<span className={run ? "hidden md:contents" : "contents"}>
 						<QuotaHint agent={agent} />
-						<ContextUsage path={w.path} windows={windows} model={model} />
 					</span>
-					<Button size="icon" className="shrink-0 rounded-lg" disabled={(!text.trim() && !shots.length) || busy} onClick={send} aria-label="发送">
-						{busy ? <Spinner /> : <Send className="size-4" />}
+					<ContextUsage path={w.path} windows={windows} model={model} />
+					<Button size="icon" className="shrink-0 rounded-lg" disabled={(!text.trim() && !shots.length) || busy} onClick={send} aria-label={why ? "分叉" : "发送"} title={why ? `${why.reason}，发送后分叉` : undefined}>
+						{busy ? <Spinner /> : why ? <GitFork className="size-4" /> : <Send className="size-4" />}
 					</Button>
 				</div>
 			</div>
@@ -287,4 +324,4 @@ export function Composer({ project, session, w, status, windows, chosen, stream,
 			/>
 		</div>
 	);
-}
+});

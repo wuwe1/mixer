@@ -9,7 +9,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, type S
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, sep } from "node:path";
 import { promisify } from "node:util";
-import { brotliCompress, constants, gzip, gzipSync } from "node:zlib";
+import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
 import * as codex from "./codex.ts";
 import * as codexRun from "./codex-run.ts";
@@ -94,12 +94,25 @@ const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'u
 /** 页面本身不许被别的网站嵌进去（点击劫持） */
 const PAGE = { "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'" };
 
-/** JSON；大于 8KB 且对方收 gzip 就压缩（会话一个就一两 MB，手机上省流量） */
+const brotli = promisify(brotliCompress);
+const gz = promisify(gzip);
+/** 已经在回了、正在压缩的响应：处理函数回完之后又出错，不再回第二遍 */
+const answering = new WeakSet<ServerResponse>();
+/**
+ * JSON；大于 8KB 就压缩（会话大的压之前有半 MB 多，走隧道、手机上省流量）：对方收 br 用 br（质量 5，和 gzip 一样快、小一成多），不然 gzip。
+ * 在线程池里压，不挡别的请求和推送
+ */
 const json = (res: ServerResponse, status: number, v: unknown) => {
 	const buf = Buffer.from(JSON.stringify(v));
-	const gz = buf.length > 8192 && /\bgzip\b/.test(String(res.req?.headers["accept-encoding"] ?? ""));
-	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...(gz ? { "content-encoding": "gzip" } : {}) });
-	res.end(gz ? gzipSync(buf) : buf);
+	const head = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+	const accept = String(res.req?.headers["accept-encoding"] ?? "");
+	const how = buf.length <= 8192 ? null : /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
+	if (!how) return void res.writeHead(status, head).end(buf);
+	answering.add(res);
+	(how === "br" ? brotli(buf, { params: { [constants.BROTLI_PARAM_QUALITY]: 5, [constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }) : gz(buf)).then(
+		(z) => { if (!res.headersSent && !res.destroyed) res.writeHead(status, { ...head, "content-encoding": how }).end(z); },
+		() => { if (!res.headersSent && !res.destroyed) res.writeHead(status, head).end(buf); },
+	);
 };
 // 先攒 Buffer 再一起解码：按块拼字符串，中文会在块的边界被切坏（带图片时请求体很大，一定会分块）。
 // 最多 20MB（10 张图片也够），再大回 413
@@ -258,6 +271,7 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/runs\/([\w-]+)\/tail$/, (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
+	[/^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/output$/, (_q, res, m) => { const o = runs.taskOutput(m[1], m[2]); return o ? json(res, 200, o) : json(res, 404, { error: "没有这个后台任务的输出" }); }],
 	[/^\/api\/usage$/, (_q, res) => json(res, 200, usage.list())],
 	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
 	[/^\/api\/queue\/([\w-]+)\/image\/(\d+)$/, (_q, res, m) => {
@@ -325,6 +339,7 @@ const POST: [RegExp, Handler][] = [
 		json(res, 200, { ok: true });
 	}],
 	[/^\/api\/runs\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
+	[/^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stopTask(m[1], m[2]) })],
 	[/^\/api\/queue\/([\w-]+)\/cancel$/, (_q, res, m) => json(res, 200, { ok: runs.unqueue(m[1]) })],
 	[/^\/api\/approvals\/([\w-]+)$/, async (req, res, m) => {
 		const b = JSON.parse(await body(req));
@@ -425,7 +440,7 @@ const server = createServer(async (req, res) => {
 		// 文件刚好没了（会话被删、临时文件）：404，不算服务出错
 		const status = (e as { status?: number }).status ?? ((e as { code?: string }).code === "ENOENT" ? 404 : 500);
 		if (status === 500) console.error(e);
-		if (res.headersSent) return void res.destroy();
+		if (res.headersSent || answering.has(res)) return void res.destroy();
 		// 请求体太大：回完就断开，剩下的不读了
 		if (status === 413) {
 			res.setHeader("connection", "close");

@@ -1,4 +1,5 @@
 // Claude 回复的 Markdown：GFM（表格、任务列表），代码块用 shiki 高亮，链接新窗口打开。
+import { useDeferredValue } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Code } from "./code";
@@ -16,7 +17,12 @@ const COMPONENTS: Components = {
 	},
 };
 
-export function Markdown({ text }: { text: string }) {
+/**
+ * 正在写的回复每来一段字整条重新解析，长了很费（10KB 一次好几毫秒，手机上再慢几倍）：用 deferred 的那一份画，
+ * 忙不过来时 React 跳过中间几版、直接画最新的，滚动、打字不卡
+ */
+export function Markdown({ text: now }: { text: string }) {
+	const text = useDeferredValue(now);
 	return (
 		<div className="prose prose-sm prose-neutral max-w-none break-words dark:prose-invert prose-headings:font-semibold prose-headings:tracking-tight prose-a:underline-offset-4 prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0 prose-table:text-md">
 			<ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>

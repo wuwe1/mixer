@@ -49,11 +49,15 @@ export type Run = {
 	prompt: string; permission: string; model: string | null; status: "running" | "done" | "error" | "stopped"; started: string; ended: string | null; error: string | null; events: number;
 };
 export type Dirs = { path: string; home: string; parent: string | null; git: boolean; entries: { name: string; path: string; git: boolean; project: boolean }[] };
+/** Claude 开着的一个后台任务（后台命令、Monitor、后台子代理）：type 是 Claude Code 的（local_bash、local_agent…）；tool：开它的工具调用；output：能看输出 */
+export type Task = { id: string; type: string; description: string; started: string; tool: string | null; output: boolean };
+/** mixer 开着的一个 claude 进程：turn 是正在跑的那一轮（运行 id），null 是 Claude 闲着、在等后台任务 */
+export type Host = { id: string; project: string; session: string | null; turn: string | null; tasks: Task[] };
 /** 会话在跑时发的「接着说」：排着，这次跑完一起发 */
 export type Queued = { id: string; project: string; session: string; prompt: string; images: number; permission: string; model: string | null; at: string };
 export type Approval = { id: string; run: string; tool: string; input: Record<string, unknown>; at: string };
-/** SSE 连上时先来的（server/sse.ts）：这时的全部状态（用量是各个账号的，lib/usage.ts）。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
-export type Hello = { runs: Run[]; approvals: Approval[]; queue: Queued[]; usage: Account[]; workspace: Group[] | null; tails: Record<string, Tail> };
+/** SSE 连上时先来的（server/sse.ts）：这时的全部状态（hosts：开着的 claude 进程和它们的后台任务；用量是各个账号的，lib/usage.ts）。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
+export type Hello = { runs: Run[]; hosts: Host[]; approvals: Approval[]; queue: Queued[]; usage: Account[]; workspace: Group[] | null; tails: Record<string, Tail> };
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {
 	const r = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
