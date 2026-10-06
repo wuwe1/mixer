@@ -2,12 +2,13 @@
 // 跑完的时间晚于打开的时间，就是「跑完了，还没看」。还有工作区：侧栏里放了哪些文件夹（按人拖的顺序）、哪些会话。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Account } from "../web/src/lib/usage.ts";
 import { DATA } from "./access.ts";
 
 const FILE = join(DATA, "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; caps: Record<string, Caps>; limits: Limits | null; workspace: Workspace | null };
-let state: State = { finished: {}, seen: {}, windows: {}, models: {}, caps: {}, limits: null, workspace: null };
+type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; limits?: Record<string, unknown> | null; workspace: Workspace | null };
+let state: State = { finished: {}, seen: {}, windows: {}, models: {}, caps: {}, usage: {}, workspace: null };
 try { state = { ...state, ...JSON.parse(readFileSync(FILE, "utf8")) }; } catch {}
 
 function save() {
@@ -68,18 +69,18 @@ const capsOf = (project: string): Caps | undefined => state.caps[project] ?? Obj
 export const skills = (project: string) => capsOf(project)?.skills ?? [];
 export const plugins = (project: string) => (capsOf(project)?.plugins ?? []).filter((p) => p.path !== "builtin");
 
-/** 订阅的用量：5 小时、7 天两个窗口用了多少（0–1）、什么时候重置（秒）。每次运行的 rate_limit_event 里有，记下最新的；终端里用掉的要等下次 mixer 运行才知道 */
-type Window = { utilization: number; resetsAt: number };
-export type Limits = { five_hour: Window | null; seven_day: Window | null; at: string };
-const win = (w: unknown): Window | null => {
-	const x = w as Partial<Window> | undefined;
-	return typeof x?.utilization === "number" && typeof x.resetsAt === "number" ? { utilization: x.utilization, resetsAt: x.resetsAt } : null;
-};
-export function learnLimits(windows: Record<string, unknown>) {
-	state.limits = { five_hour: win(windows.five_hour), seven_day: win(windows.seven_day), at: new Date().toISOString() };
+/** 用量（usage.ts）：每个账号最后一次的样子，按 id */
+export const usage = () => state.usage;
+export function setUsage(a: Account) {
+	state.usage[a.id] = a;
 	save();
 }
-export const limits = () => state.limits;
+/** 旧版本记的 limits（只有 Claude 的两个窗口）：usage.ts 起来时拿走一次换成新的样子，之后就没有了 */
+export function takeLimits() {
+	const l = state.limits;
+	delete state.limits;
+	return l ?? null;
+}
 
 /**
  * 工作区：groups 是文件夹，顺序就是侧栏里的顺序（人拖的，新加的放最上面）；sessions 是放进来的会话 → 它的文件夹。
@@ -91,14 +92,14 @@ export function setWorkspace(w: Workspace) {
 	state.workspace = w;
 	save();
 }
-/** 放进工作区（session 不给就只放文件夹）；本来就在返回 false */
-export function addToWorkspace(project: string, path: string | null, session?: string | null) {
+/** 放进工作区（会话不给就只放文件夹；给一串是撤销「移出整个文件夹」时放回去）；本来就在返回 false */
+export function addToWorkspace(project: string, path: string | null, session?: string | string[] | null) {
 	const w = state.workspace ?? { groups: [], sessions: {} };
 	let changed = !state.workspace;
 	const g = w.groups.find((x) => x.id === project);
 	if (!g) { w.groups.unshift({ id: project, path }); changed = true; }
 	else if (!g.path && path) { g.path = path; changed = true; }
-	if (session && w.sessions[session] !== project) { w.sessions[session] = project; changed = true; }
+	for (const s of [session ?? []].flat()) if (w.sessions[s] !== project) { w.sessions[s] = project; changed = true; }
 	if (changed) setWorkspace(w);
 	return changed;
 }
@@ -115,6 +116,17 @@ export function removeFromWorkspace(project: string, session?: string | null) {
 	}
 	setWorkspace(w);
 	return true;
+}
+/** 会话删掉了：移出工作区，跑完没看、看过、选过的模型都忘掉。返回工作区变了没有 */
+export function forget(session: string) {
+	const w = state.workspace;
+	const inside = !!w && session in w.sessions;
+	if (w && inside) delete w.sessions[session];
+	delete state.finished[session];
+	delete state.seen[session];
+	delete state.models[session];
+	save();
+	return inside;
 }
 /** 拖完的顺序：只认已有的文件夹，漏掉的接在后面 */
 export function orderWorkspace(ids: string[]) {

@@ -1,6 +1,6 @@
 // 输入框：只有两种发送方式，继续（续接这个会话），或者分叉（开一个新会话，带着到某一处为止的上下文，原会话不动）。
 // Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
-// 下面一排：发送方式、权限、模型、skill、图片；右边是运行中的时长和停止、上下文用了多少、发送。
+// 下面一排：发送方式、权限、模型、skill、图片；右边是运行中的时长和停止、订阅快用完的窗口、上下文用了多少、发送。
 import { Bot, ChevronDown, Code, GitFork, Hand, ListChecks, MessageSquareText, Send, Sparkles, Square, SquareSlash } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -13,11 +13,13 @@ import { type Status, useLive } from "@/lib/live";
 import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf } from "@/lib/model";
 import { useDraft, useOutbox } from "@/lib/outbox";
 import { forkPoint, type Walk } from "@/lib/thread";
+import { nearLimit } from "@/lib/usage";
 import type { Stream } from "@/lib/use-stream";
 import { AttachButton, AttachStrip, encode, type Shot, toShots } from "./attach";
 import { start } from "./fork-dialog";
 import { Elapsed } from "./message";
 import { SkillPicker } from "./lazy";
+import { pct, resets } from "./usage";
 
 type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean };
 
@@ -161,6 +163,17 @@ function ContextUsage({ path, windows, model }: { path: Node[]; windows: Record<
 	);
 }
 
+/** 这个会话的 agent 有窗口用到 80% 以上：上下文旁边小小一句「5 小时 82%」，平时不显示 */
+function QuotaHint({ agent }: { agent: Kind }) {
+	const w = nearLimit(useLive().usage, agent);
+	if (!w) return null;
+	return (
+		<span className="shrink-0 px-1 text-2xs whitespace-nowrap text-muted-foreground tabular-nums" title={`${agent === "codex" ? "Codex" : "Claude"} ${w.label}用量 ${pct(w.used)}%${w.resetsAt ? `，${resets(w.resetsAt)}` : ""}`}>
+			{w.label} {pct(w.used)}%
+		</span>
+	);
+}
+
 /** 消息开头换成「/名字 」：原来就有一个 /xxx 的话替换掉 */
 const withSkill = (text: string, name: string) => `/${name} ${text.replace(/^\/\S+\s*/, "")}`;
 
@@ -253,8 +266,9 @@ export function Composer({ project, session, w, status, windows, chosen, stream,
 					<AttachButton onAdd={(s) => setShots((x) => [...x, ...s])} />
 					<span className="ml-auto" />
 					{stream.run && <RunStatus run={stream.run} stream={stream} waiting={status === "waiting"} path={w.path} />}
-					{/* 手机上运行中地方不够：先不显示上下文 */}
+					{/* 手机上运行中地方不够：先不显示上下文、用量 */}
 					<span className={stream.run ? "hidden md:contents" : "contents"}>
+						<QuotaHint agent={agent} />
 						<ContextUsage path={w.path} windows={windows} model={model} />
 					</span>
 					<Button size="icon" className="shrink-0 rounded-lg" disabled={(!text.trim() && !shots.length) || busy} onClick={send} aria-label="发送">

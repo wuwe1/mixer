@@ -95,6 +95,8 @@ export type SessionMeta = {
 	/** 从哪个会话分叉出来的（同一个项目里 root 相同、比它早建的那个） */
 	parent: string | null;
 	unread: "done" | "error" | null;
+	/** Claude Code 什么时候会把它删掉（最后修改 + cleanupPeriodDays，它启动时清理）；Codex 不清理，是 null */
+	expires: string | null;
 };
 
 const CUT = 4000;
@@ -153,6 +155,23 @@ export function listProjects() {
 	return [...by.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
+/** Claude Code 启动时删掉多少天没动的会话：~/.claude/settings.json 的 cleanupPeriodDays（默认 30），文件改了再读 */
+const SETTINGS = join(homedir(), ".claude", "settings.json");
+let cleanup = { mtime: -1, days: 30 };
+function cleanupDays() {
+	let m = 0;
+	try { m = statSync(SETTINGS).mtimeMs; } catch {}
+	if (m !== cleanup.mtime) {
+		let days = 30;
+		try {
+			const d = JSON.parse(readFileSync(SETTINGS, "utf8")).cleanupPeriodDays;
+			if (typeof d === "number" && d >= 0) days = d;
+		} catch {}
+		cleanup = { mtime: m, days };
+	}
+	return cleanup.days;
+}
+
 type Scan = Cursor & { title: string | null; first: string | null; last: string | null; prompts: number; root: string | null; fresh: string | null };
 const metaCache = new Map<string, Scan>();
 
@@ -201,6 +220,7 @@ async function scan(file: string): Promise<SessionMeta> {
 		born: st.birthtimeMs,
 		parent: null,
 		unread: null,
+		expires: new Date(st.mtimeMs + cleanupDays() * 86_400_000).toISOString(),
 	};
 }
 
@@ -235,6 +255,14 @@ export async function row(project: string, id: string): Promise<SessionMeta | nu
 	if (!existsSync(file)) return null;
 	const m = await scanMeta(file);
 	return { ...m, active: Date.now() - Date.parse(m.mtime) < 90_000 && !ourLastWrite(m.id, Date.parse(m.mtime)), unread: unread(m.id) };
+}
+
+/** 会话删掉了（trash.ts）：读过的记录、扫过的信息、它的子代理都丢掉 */
+export function forget(project: string, id: string) {
+	const file = sessionFile(project, id);
+	const dir = `${file.slice(0, -".jsonl".length)}/`;
+	metaCache.delete(file);
+	for (const f of cache.keys()) if (f === file || f.startsWith(dir)) cache.delete(f);
 }
 
 /** 所有项目和它们的会话（侧栏用） */
@@ -522,20 +550,64 @@ export async function session(project: string, id: string, since?: string | null
 	const file = sessionFile(project, id);
 	const [p, metas] = await Promise.all([parse(file), listSessions(project)]);
 	const meta = metas.find((m) => m.id === id) ?? (await scanMeta(file));
+	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id) };
+}
+
+/** since 是「epoch:rev」：epoch 对得上就只给 rev 之后新建、改过的节点（delta），对不上给全部 */
+function changes(p: Parsed, since?: string | null) {
 	const [epoch, rev] = (since ?? "").split(":");
 	const after = epoch === p.epoch ? Number(rev) : Number.NaN;
 	const delta = Number.isInteger(after) && after <= p.rev;
-	const nodes = delta ? p.nodes.filter((n) => (p.revs.get(n.uuid) ?? 0) > after) : p.nodes;
-	return { meta, nodes, delta, version: `${p.epoch}:${p.rev}`, windows: windows(), model: chosenModel(id) };
+	return { nodes: delta ? p.nodes.filter((n) => (p.revs.get(n.uuid) ?? 0) > after) : p.nodes, delta, version: `${p.epoch}:${p.rev}` };
 }
 
-export async function agent(project: string, id: string, agentId: string) {
+/** 子代理的对话。since 和 session() 一样：对得上就只给之后变了的节点，开着看它跑的时候每次只拉一点 */
+export async function agent(project: string, id: string, agentId: string, since?: string | null) {
 	const file = agentFile(project, id, agentId);
 	if (!existsSync(file)) return null;
-	const { nodes } = await parse(file);
-	let info: Raw = {};
-	try { info = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8")); } catch {}
-	return { id: agentId, info, nodes };
+	return { id: agentId, info: info(file), ...changes(await parse(file), since) };
+}
+
+/** agent-<id>.meta.json：{agentType, description, toolUseId（开它的那个 Agent 工具调用）, …}；子代理一开始就写 */
+const info = (file: string): Raw => {
+	try { return JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8")); } catch { return {}; }
+};
+
+/** 子代理现在在做什么，一行：最后一个工具调用（工具名 + 摘要），或者最后一段回复的第一行 */
+export function activity(nodes: Node[]): string | null {
+	const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 80)}…` : t);
+	for (let i = nodes.length - 1; i >= 0; i--) {
+		const n = nodes[i];
+		if (n.k === "tool") return clip(`${n.name.replace(/^mcp__[^_]+__/, "")} ${n.summary}`.trim());
+		if (n.k === "assistant") return clip(n.text.trim().split("\n")[0].trim());
+	}
+	return null;
+}
+
+export type Sub = { agentId: string; toolUseId: string | null; agentType: string | null; description: string | null; latest: string | null; mtime: number };
+/** 10 分钟没动的子代理不可能还在跑：不读它的记录，latest 给 null（列表打开时不用把一个会话的子代理全读一遍） */
+const RECENT = 10 * 60_000;
+
+/** 一个子代理：meta 里的身份、在做什么、最后写的时间（毫秒）。meta 和记录都没有就是 null */
+export async function sub(project: string, id: string, agentId: string): Promise<Sub | null> {
+	const file = agentFile(project, id, agentId);
+	let mtime = 0;
+	for (const f of [file, file.replace(/\.jsonl$/, ".meta.json")]) {
+		try { mtime = Math.max(mtime, statSync(f).mtimeMs); } catch {}
+	}
+	if (!mtime) return null;
+	const m = info(file);
+	const str = (v: unknown) => (typeof v === "string" ? v : null);
+	const latest = Date.now() - mtime < RECENT && existsSync(file) ? activity((await parse(file)).nodes) : null;
+	return { agentId, toolUseId: str(m.toolUseId), agentType: str(m.agentType), description: str(m.description), latest, mtime };
+}
+
+/** 会话开过的子代理（<会话>/subagents/ 里的）：网页靠 toolUseId 把它们对上各自的 Agent 工具调用 */
+export async function subs(project: string, id: string): Promise<Sub[]> {
+	let names: string[] = [];
+	try { names = readdirSync(join(PROJECTS, safe(project), safe(id), "subagents")); } catch {}
+	const ids = new Set(names.flatMap((f) => /^agent-(a[0-9a-f]+)\.(?:jsonl|meta\.json)$/.exec(f)?.[1] ?? []));
+	return (await Promise.all([...ids].map((a) => sub(project, id, a)))).filter((x): x is Sub => !!x);
 }
 
 /** 点开一个工具调用：完整参数，结果先给前 4000 字（再要完整的走 fullResult） */

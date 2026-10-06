@@ -13,7 +13,7 @@ type Raw = Record<string, any>; // biome-ignore lint: app-server 的消息
 const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 
 /** codex 命令：MIXER_CODEX、PATH 里的、Codex.app 带的 */
-function bin(): string | null {
+export function bin(): string | null {
 	for (const c of [process.env.MIXER_CODEX, "codex", "/Applications/Codex.app/Contents/Resources/codex"]) {
 		if (!c) continue;
 		if (c.startsWith("/") ? existsSync(c) : spawnSync(c, ["--version"], { stdio: "ignore" }).status === 0) return c;
@@ -32,6 +32,9 @@ process.once("exit", () => proc?.kill());
 /** 各个线程在跑的那次运行：通知、确认请求按 threadId 分给它 */
 const threads = new Map<string, Handler>();
 type Handler = { note: (m: Raw) => void; request: (m: Raw) => Promise<unknown> };
+/** 谁都能听的通知（不分线程）：usage.ts 听 account/rateLimits/updated、turn/completed */
+const listeners = new Set<(m: Raw) => void>();
+export const onNote = (f: (m: Raw) => void) => { listeners.add(f); };
 
 function connect(): Promise<Server> {
 	if (server) return server;
@@ -76,7 +79,9 @@ function connect(): Promise<Server> {
 					(h ? h.request(m) : Promise.resolve(deny(m))).then((result) => send({ id: m.id, result }), (e: Error) => send({ id: m.id, error: { code: -32000, message: e.message } }));
 					continue;
 				}
-				if (m.method) h?.note(m);
+				if (!m.method) continue;
+				h?.note(m);
+				for (const f of listeners) try { f(m); } catch {}
 			}
 		});
 		let err = "";
@@ -105,6 +110,9 @@ function connect(): Promise<Server> {
 	me.catch(() => { if (server === me) server = null; });
 	return me;
 }
+
+/** 调一个方法（usage.ts 读用量）：app-server 没起就起 */
+export const request = async (method: string, params?: unknown) => (await connect()).call(method, params);
 
 /** 没人认领的请求（运行已经结束了）：拒绝 */
 function deny(m: Raw): unknown {

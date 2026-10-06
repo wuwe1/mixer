@@ -47,6 +47,20 @@ export function walk(t: Tree, leaf: string | null) {
 	return { path, versions, end, latest, atLatest: !end || end === latest };
 }
 
+/** 拉回来的是增量（delta）：改过的节点按 uuid 换掉，新的接在后面；没变的原样留着（消息组件按对象认，不用重画）。会话、子代理的对话都用它 */
+export function merge<T extends { nodes: Node[]; delta: boolean }>(old: T | null, d: T): T {
+	if (!d.delta || !old) return d;
+	if (!d.nodes.length) return { ...d, nodes: old.nodes };
+	const at = new Map(old.nodes.map((n, i) => [n.uuid, i]));
+	const nodes = old.nodes.slice();
+	for (const n of d.nodes) {
+		const i = at.get(n.uuid);
+		if (i === undefined) nodes.push(n);
+		else nodes[i] = n;
+	}
+	return { ...d, nodes };
+}
+
 /** 记录里有的段：「消息 id : 第几段」 */
 export const keysOf = (nodes: Node[]) => new Set(nodes.flatMap((n) => ("key" in n && n.key ? [n.key] : [])));
 

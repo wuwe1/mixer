@@ -106,6 +106,14 @@ export function find(id: string): Info | null {
 	const i = byId.get(id);
 	return i && !i.hidden && existsSync(i.file) ? i : null;
 }
+/** 归档了（codex archive，文件挪去了 archived_sessions）：忘掉，find 不再认它 */
+export function forget(id: string) {
+	const i = byId.get(id);
+	if (!i) return;
+	byId.delete(id);
+	infos.delete(i.file);
+	cache.delete(i.file);
+}
 /** 监视到的文件名（年/月/日/rollout-…-<id>.jsonl）→ 会话；没见过的直接读这个文件，不扫整个目录 */
 export function fromPath(rel: string) {
 	const m = /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(rel);
@@ -419,6 +427,8 @@ export async function metaOf(i: Info) {
 		// 分叉出来的（forked_from_id）：挂在原会话下面
 		parent: p.meta.parent,
 		unread: null,
+		// Codex 不会自己清理会话
+		expires: null,
 	};
 }
 

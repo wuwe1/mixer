@@ -4,13 +4,15 @@ import { ChevronLeft, ChevronRight, Clock, Square, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { type Agent, api, enc, type Node, type Run } from "@/lib/api";
+import { Spinner } from "@/components/ui/spinner";
+import { type Spawn, spawner } from "@/lib/agents";
+import { type Agent, api, enc, type Node, type Run, type Sub } from "@/lib/api";
+import { useEvent } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
 import { type Agent as Kind, pretty } from "@/lib/model";
 import { go } from "@/lib/route";
-import { append, type Block, blocks, headOf, isLive, keysOf, liveNodes, liveUser, pointOf, sentNode, type Tree, type User, type Walk } from "@/lib/thread";
+import { append, type Block, blocks, headOf, isLive, keysOf, liveNodes, liveUser, merge, pointOf, sentNode, type Tree, type User, type Walk } from "@/lib/thread";
 import type { Stream } from "@/lib/use-stream";
 import { ApprovalCard } from "./approvals";
 import { ForkDialog, type ForkTarget } from "./fork-dialog";
@@ -113,10 +115,11 @@ function useIds(bs: Block[], run: Run | null, path: Node[]) {
 	return ids;
 }
 
-/** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样） */
-export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, kind = "claude" }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind }) {
+/** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样）；spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts） */
+export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
 	const { approvals, runs } = useLive();
-	const [agent, setAgent] = useState<Agent | null>(null);
+	/** 开着看的子代理 */
+	const [agent, setAgent] = useState<string | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
 	// 看的是最新处：正在写的接在末尾
 	const keys = useMemo(() => keysOf(w.path), [w.path]);
@@ -155,13 +158,8 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 	}
 	const mine = approvals.filter((a) => runs.some((r) => r.id === a.run && r.session === session));
 
-	const openAgent = useCallback(async (id: string) => {
-		try {
-			setAgent(await api<Agent>(`/api/sessions/${enc(project)}/${enc(session)}/agents/${id}`));
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
-		}
-	}, [project, session]);
+	const closeAgent = useCallback(() => setAgent(null), []);
+	const agentRunning = !!agent && !!spawned && [...spawned.values()].some((s) => s.agentId === agent && s.running);
 	// 不变的回调：消息组件是 memo 的
 	const forkEdit = useCallback((n: User) => setFork({ kind: "edit", n }), []);
 	const forkReply = useCallback((n: Node) => setFork({ kind: "at", at: n.uuid, what: "这条回复" }), []);
@@ -177,13 +175,13 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 						{v && <VersionSwitch v={v} best={t.best} />}
 						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
 						{b.kind === "steps" ? (
-							<Steps nodes={b.nodes} project={project} session={session} onAgent={openAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} />
+							<Steps nodes={b.nodes} project={project} session={session} onAgent={setAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} spawns={spawned && b.nodes.some(spawner) ? spawned : undefined} />
 						) : b.n.k === "user" ? (
 							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : forkEdit} />
 						) : b.n.k === "assistant" ? (
 							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} />
 						) : b.n.k === "event" ? (
-							<EventLine n={b.n} onAgent={openAgent} />
+							<EventLine n={b.n} onAgent={setAgent} />
 						) : null}
 					</div>
 				);
@@ -197,31 +195,106 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 			<QueuedMessages session={session} />
 			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-waiting/50" />)}
 
-			<Sheet open={!!agent} onOpenChange={(o) => !o && setAgent(null)}>
-				<SheetContent side="right" className="w-full p-0 sm:max-w-2xl">
-					<SheetHeader className="border-b">
-						<SheetTitle>子代理：{agent?.info.agentType ?? agent?.id}</SheetTitle>
-						<SheetDescription>{agent?.info.description}</SheetDescription>
-					</SheetHeader>
-					<ScrollArea className="min-h-0 flex-1">
-						<div className="flex flex-col gap-4 p-4">
-							{agent &&
-								blocks(agent.nodes).map((b) =>
-									b.kind === "steps" ? (
-										<Steps key={b.nodes[0].uuid} nodes={b.nodes} project={project} session={session} agent={agent.id} onFile={onFile} />
-									) : b.n.k === "assistant" ? (
-										<AssistantMessage key={b.n.uuid} n={b.n} />
-									) : b.n.k === "user" ? (
-										<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-md whitespace-pre-wrap">{b.n.text}</div>
-									) : null,
-								)}
-						</div>
-					</ScrollArea>
-				</SheetContent>
-			</Sheet>
+			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
 			<ForkDialog project={project} session={session} w={w} chosen={chosen} target={fork} agent={kind} onClose={() => setFork(null)} />
 		</>
+	);
+}
+
+/**
+ * 子代理的对话（从 Agent 工具调用、后台任务通知、子代理回报点开）。开着的时候它的记录一变（agent 事件）就带 version 拉增量，
+ * 上一次还没回来就等它回来再拉一次；还在跑的，正在执行的那一步带 ping 点和耗时。停在底部时跟着往下滚，一打开就在最新处
+ */
+function AgentSheet({ project, session, id, running, onClose, onFile }: { project: string; session: string; id: string | null; running: boolean; onClose: () => void; onFile: (path: string, diff: boolean) => void }) {
+	const [a, setA] = useState<Agent | null>(null);
+	const cur = useRef<Agent | null>(null);
+	const pulling = useRef<{ id: string; again: boolean } | null>(null);
+	const box = useRef<HTMLDivElement>(null);
+	const near = useRef(true);
+	const load = useCallback((agentId: string) => {
+		if (pulling.current?.id === agentId) return void (pulling.current.again = true);
+		pulling.current = { id: agentId, again: false };
+		const done = () => {
+			const p = pulling.current;
+			if (p?.id !== agentId) return;
+			pulling.current = null;
+			if (p.again) load(agentId);
+		};
+		const since = cur.current?.id === agentId ? `?since=${enc(cur.current.version)}` : "";
+		api<Agent>(`/api/sessions/${enc(project)}/${enc(session)}/agents/${agentId}${since}`).then(
+			(d) => {
+				if (pulling.current?.id === agentId) {
+					cur.current = merge(cur.current?.id === agentId ? cur.current : null, d);
+					setA(cur.current);
+				}
+				done();
+			},
+			(e: Error) => {
+				// 第一次就没拿到（还没有记录）：说一声、关上；跟着拉的时候出错，等下次
+				if (pulling.current?.id === agentId && cur.current?.id !== agentId) {
+					toast.error(e.message);
+					onClose();
+				}
+				done();
+			},
+		);
+	}, [project, session, onClose]);
+	useEffect(() => {
+		pulling.current = null;
+		if (!id) return;
+		cur.current = null;
+		setA(null);
+		near.current = true;
+		load(id);
+	}, [id, load]);
+	useEvent("agent", useCallback((e: Sub & { project: string; session: string }) => { if (id && e.project === project && e.session === session && e.agentId === id) load(id); }, [id, project, session, load]));
+	useEvent("reconnect", useCallback(() => { if (id) load(id); }, [id, load]));
+	useLayoutEffect(() => {
+		const el = box.current;
+		if (el && a && near.current) el.scrollTop = el.scrollHeight;
+	}, [a]);
+	const bs = useMemo(() => (a ? blocks(a.nodes) : []), [a]);
+	const tail = bs[bs.length - 1];
+	const last = running && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
+	const now = last?.k === "tool" && !last.result ? { node: last, since: Date.parse(last.ts) } : null;
+	return (
+		<Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
+			<SheetContent side="right" className="w-full p-0 sm:max-w-2xl">
+				<SheetHeader className="border-b">
+					<SheetTitle className="flex items-center gap-2">
+						{running && <StatusIcon s="running" />}
+						子代理：{a?.info.agentType ?? id}
+					</SheetTitle>
+					<SheetDescription>{a?.info.description}</SheetDescription>
+				</SheetHeader>
+				{/* 原生滚动：ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
+				<div ref={box} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onScroll={(e) => { const el = e.currentTarget; near.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48; }}>
+					{a ? (
+						<div className="flex flex-col gap-4 p-4">
+							{bs.map((b) =>
+								b.kind === "steps" ? (
+									<Steps key={b.nodes[0].uuid} nodes={b.nodes} project={project} session={session} agent={a.id} onFile={onFile} now={b === tail ? now : null} />
+								) : b.n.k === "assistant" ? (
+									<AssistantMessage key={b.n.uuid} n={b.n} />
+								) : b.n.k === "user" ? (
+									<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-md whitespace-pre-wrap">{b.n.text}</div>
+								) : null,
+							)}
+							{running && !now && (
+								<div className="-mt-3 flex py-1 pl-5.5">
+									<StatusIcon s="running" className="size-3.5" />
+								</div>
+							)}
+						</div>
+					) : (
+						<div className="flex h-full">
+							<Spinner className="m-auto text-muted-foreground" />
+						</div>
+					)}
+				</div>
+			</SheetContent>
+		</Sheet>
 	);
 }
 

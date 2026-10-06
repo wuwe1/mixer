@@ -1,7 +1,7 @@
 // mixer 的服务：127.0.0.1:4848（MIXER_PORT 可改），手机经隧道访问：Cloudflare Tunnel + Access，或 Tailscale Funnel + passkey（access.ts 认人，这个服务能在本机跑 claude）。
 //   读：项目、会话（显示节点树）、子 agent、工具的完整结果、会话里的图片；仓库的文件、内容、git 状态、改动、提交
-//   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹
-//   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化
+//   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹；删掉会话（移到废纸篓 / codex archive）
+//   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化、子代理在做什么
 // 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
 // 写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）；MCP 工具发来的确认请求要带 MIXER_TOKEN。
 import { execFile, execFileSync } from "node:child_process";
@@ -18,9 +18,11 @@ import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
 import * as sse from "./sse.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, thought, toolDetail, tree } from "./sessions.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, sub, subs, thought, toolDetail, tree } from "./sessions.ts";
 import * as state from "./state.ts";
+import * as trash from "./trash.ts";
 import * as tunnel from "./tunnel.ts";
+import * as usage from "./usage.ts";
 import * as workspace from "./workspace.ts";
 
 const PORT = Number(process.env.MIXER_PORT ?? 4848);
@@ -166,10 +168,25 @@ const changed = (project: string, id: string) => {
 		emit("session", meta ? { project, id, meta } : { project, id });
 	}, 500));
 };
+// 子代理的记录（<项目>/<会话>/subagents/agent-<id>.jsonl，开的时候先写 .meta.json）：推 agent，带上它现在在做什么（sub），
+// 网页把它放在开它的那个 Agent 工具调用下面。同样每个子代理 0.5 秒最多一次；记录是接着上次读的，不贵
+const subTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const subChanged = (project: string, session: string, agentId: string) => {
+	const key = `${project}/${session}/${agentId}`;
+	if (subTimers.has(key)) return;
+	subTimers.set(key, setTimeout(async () => {
+		subTimers.delete(key);
+		const a = await sub(project, session, agentId).catch(() => null);
+		if (a) emit("agent", { project, session, ...a });
+	}, 500));
+};
 if (existsSync(PROJECTS)) {
 	watch(PROJECTS, { recursive: true }, (_, f) => {
-		const m = /^([^/]+)\/([0-9a-f-]{36})\.jsonl$/.exec(String(f ?? "").split(sep).join("/"));
-		if (m) changed(m[1], m[2]);
+		const p = String(f ?? "").split(sep).join("/");
+		const m = /^([^/]+)\/([0-9a-f-]{36})\.jsonl$/.exec(p);
+		if (m) return changed(m[1], m[2]);
+		const a = /^([^/]+)\/([0-9a-f-]{36})\/subagents\/agent-(a[0-9a-f]+)\.(?:jsonl|meta\.json)$/.exec(p);
+		if (a) subChanged(a[1], a[2], a[3]);
 	});
 }
 // Codex 的会话：年/月/日/rollout-…-<id>.jsonl，项目按它的 cwd 算
@@ -193,8 +210,10 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/codex\/models$/, async (_q, res) => json(res, 200, await codexRun.listModels())],
 	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m) => {
-		const a = await agent(m[1], m[2], m[3]);
+	// 会话开过的子代理：各自对应哪个 Agent 工具调用、现在在做什么
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents$/, async (_q, res, m) => json(res, 200, await subs(m[1], m[2]))],
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m, url) => {
+		const a = await agent(m[1], m[2], m[3], url.searchParams.get("since"));
 		return a ? json(res, 200, a) : json(res, 404, { error: "没有这个子 agent 的记录" });
 	}],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/tool\/([\w-]+)$/, async (_q, res, m, url) => {
@@ -239,7 +258,7 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/runs\/([\w-]+)\/tail$/, (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
 	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
-	[/^\/api\/limits$/, (_q, res) => json(res, 200, state.limits())],
+	[/^\/api\/usage$/, (_q, res) => json(res, 200, usage.list())],
 	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
 	[/^\/api\/queue\/([\w-]+)\/image\/(\d+)$/, (_q, res, m) => {
 		const img = runs.queuedImage(m[1], Number(m[2]));
@@ -277,19 +296,26 @@ const POST: [RegExp, Handler][] = [
 		const b = JSON.parse(await body(req));
 		json(res, 200, dirs.create(String(b.parent ?? ""), String(b.name ?? "").trim()));
 	}],
-	// 工作区：add（放进来；不给 session 就只放文件夹）/ remove（不给 session 就移掉整个文件夹）/ order（文件夹拖完的顺序）
+	// 工作区：add（放进来；不给 session 就只放文件夹，sessions 是撤销移出文件夹时一起放回去的）/ remove（不给 session 就移掉整个文件夹）/ order（文件夹拖完的顺序）
 	[/^\/api\/workspace$/, async (req, res) => {
 		const b = JSON.parse(await body(req));
 		const id = (v: unknown) => (typeof v === "string" && /^[\w.-]+$/.test(v) ? v : null);
 		const project = id(b.project);
 		const session = id(b.session);
+		const sessions = Array.isArray(b.sessions) ? b.sessions.flatMap((x: unknown) => id(x) ?? []) : [];
 		const changed =
-			b.op === "add" && project ? state.addToWorkspace(project, typeof b.path === "string" ? b.path : null, session)
+			b.op === "add" && project ? state.addToWorkspace(project, typeof b.path === "string" ? b.path : null, session ? [session, ...sessions] : sessions)
 			: b.op === "remove" && project ? state.removeFromWorkspace(project, session)
 			: b.op === "order" && Array.isArray(b.order) ? state.orderWorkspace(b.order.flatMap((x: unknown) => id(x) ?? []))
 			: null;
 		if (changed === null) throw fail(400, "不认识的操作");
 		if (changed) emit("workspace", null);
+		json(res, 200, { ok: true });
+	}],
+	// 删掉一个会话（trash.ts）：Claude 的移到废纸篓，Codex 的 codex archive。在跑、排队、待确认、终端里开着的回 409
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, async (_q, res, m) => {
+		await trash.remove(m[1], m[2]);
+		emit("workspace", null);
 		json(res, 200, { ok: true });
 	}],
 	[/^\/api\/seen$/, async (req, res) => {
@@ -376,8 +402,7 @@ const server = createServer(async (req, res) => {
 			res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
 			res.on("close", () => sse.leave(res));
 			res.on("error", () => sse.leave(res));
-			// 工作区先算（要读会话），运行这些在它之后同步拿，是发出去那一刻的
-			return void sse.join(res, async () => ({ workspace: await workspace.view().catch(() => null), ...runs.snapshot(), limits: state.limits() })).catch((e) => console.error(e));
+			return void sse.join(res, workspace.hello).catch((e) => console.error(e));
 		}
 		const table = req.method === "POST" ? POST : req.method === "GET" ? GET : [];
 		if (req.method === "POST" && (!req.headers["content-type"]?.startsWith("application/json") || !ours(req))) return json(res, 403, { error: "只收自己页面的 JSON" });
@@ -421,6 +446,7 @@ server.on("error", (e) => {
 server.listen(PORT, "127.0.0.1", () => {
 	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
 	tunnel.keep(PORT);
+	usage.start();
 	// 先把所有会话扫一遍（第一次要读完所有记录，之后按修改时间缓存），侧栏第一次打开就快
 	tree().catch((e) => console.error(e));
 });

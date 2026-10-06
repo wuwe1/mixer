@@ -8,11 +8,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { spawner, spawns, useSubs } from "@/lib/agents";
 import { api, enc, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
-import { keysOf, tree, walk } from "@/lib/thread";
+import { keysOf, merge, tree, walk } from "@/lib/thread";
 import { useStream } from "@/lib/use-stream";
 import { cn } from "@/lib/utils";
 import { Composer } from "./composer";
@@ -88,20 +89,6 @@ function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject
 		};
 	}, [scroller, content]);
 	return { away, unseen, toBottom };
-}
-
-/** 拉回来的是增量：改过的节点按 uuid 换掉，新的接在后面；没变的原样留着（消息组件按对象认，不用重画） */
-function merge(old: Session | null, d: Session): Session {
-	if (!d.delta || !old) return d;
-	if (!d.nodes.length) return { ...d, nodes: old.nodes };
-	const at = new Map(old.nodes.map((n, i) => [n.uuid, i]));
-	const nodes = old.nodes.slice();
-	for (const n of d.nodes) {
-		const i = at.get(n.uuid);
-		if (i === undefined) nodes.push(n);
-		else nodes[i] = n;
-	}
-	return { ...d, nodes };
 }
 
 // 切走再切回来不从空白开始：先画上次拿到的，再带着它的 version 去拉增量。
@@ -202,6 +189,12 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
 	const st = status(meta ?? data?.meta ?? { id: session, active: false, unread: null });
 	const codex = (meta ?? data?.meta)?.agent === "codex";
+	// 子代理（Codex 没有）：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
+	const spawning = useMemo(() => !codex && !!nodes?.some(spawner), [codex, nodes]);
+	const subs = useSubs(project, session, spawning);
+	const busy = st === "running" || st === "waiting" || st === "terminal";
+	const spawned = useMemo(() => (w && !codex ? spawns(w.path, subs, busy) : null), [w, codex, subs, busy]);
+	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
 	// 开着的会话跑完了（页面在前台）：算看过了
 	useEffect(() => {
@@ -282,7 +275,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary key={session}>
-									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} />
+									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -290,9 +283,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</div>
 					</div>
 					{away && (
-						<Button variant="outline" size="icon" className="absolute right-4 bottom-3 rounded-full shadow-md" onClick={() => toBottom(true)} aria-label="回到最新" title="回到最新">
+						<Button variant="outline" size="icon" className="absolute right-4 bottom-3 rounded-full shadow-md" onClick={() => toBottom(true)} aria-label="回到最新" title={working ? `回到最新 · ${working} 个子代理在跑` : "回到最新"}>
 							<ArrowDown className="size-4" />
 							{unseen && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-unread" />}
+							{/* 还在跑的子代理有几个：灰的小数字，不抢眼 */}
+							{working > 0 && <span className="absolute -top-1 -left-1 flex h-4 min-w-4 items-center justify-center rounded-full border bg-background px-1 text-2xs leading-none tabular-nums text-muted-foreground">{working}</span>}
 						</Button>
 					)}
 				</div>

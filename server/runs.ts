@@ -14,6 +14,7 @@ import * as codex from "./codex.ts";
 import * as codexRun from "./codex-run.ts";
 import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
+import * as usage from "./usage.ts";
 import { coalesce, emptyTail, project, step, type Tail } from "../web/src/lib/tail.ts";
 
 export type RunStatus = "running" | "done" | "error" | "stopped";
@@ -156,10 +157,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 			for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
 		if (ev.type === "rate_limit_event") {
 			const w = (ev.rate_limit_info as { unifiedWindows?: unknown } | undefined)?.unifiedWindows;
-			if (w && typeof w === "object") {
-				state.learnLimits(w as Record<string, unknown>);
-				emit("limits", state.limits());
-			}
+			if (w && typeof w === "object") usage.claude(w as Record<string, unknown>);
 		}
 		push(run, ev);
 	};
@@ -365,6 +363,15 @@ export function answer(id: string, allow: boolean, message?: string) {
 
 /** mixer 里没在干活：没有运行、排队的消息、待确认（这时重启不会打断谁、也不会丢东西） */
 export const idle = () => ![...runs.values()].some((r) => r.status === "running") && !queue.length && !approvals.size;
+
+/** 这个会话在 mixer 里还有事（等确认、在跑、正从它分叉、排着队）：这时不许删，返回原因 */
+export function busy(session: string): string | null {
+	const mine = [...runs.values()].filter((r) => r.status === "running" && (r.session === session || r.from === session));
+	if ([...approvals.values()].some((a) => mine.some((r) => r.id === a.run))) return "这个会话有待确认的请求：先处理了再删";
+	if (mine.length) return "这个会话正在 mixer 里运行：停止后再删";
+	if (queue.some((q) => q.session === session)) return "这个会话还有排队的消息：取消后再删";
+	return null;
+}
 
 export const pending = () => [...approvals.values()].map(({ resolve: _r, ...a }) => a);
 /** 页面连上时的 hello（sse.ts）里这边的：运行、确认请求、排队，在跑的那几次正在写的那几段（攒着的增量先推出去） */

@@ -1,5 +1,6 @@
 // 和 mixer 服务之间：类型（和 server/ 对应）、取数据、发请求。
 import type { Tail } from "./tail";
+import type { Account } from "./usage";
 
 export type Project = { id: string; path: string | null; sessions: number; mtime: string };
 export type SessionMeta = {
@@ -7,6 +8,8 @@ export type SessionMeta = {
 	/** Codex 的会话（现在只能看）；没有就是 Claude Code 的 */
 	agent?: "codex"; title: string | null; first: string | null; last: string | null; fresh: string | null; prompts: number; size: number; mtime: string;
 	active: boolean; root: string | null; born: number; parent: string | null; unread: "done" | "error" | null;
+	/** Claude Code 什么时候会删掉它（最后修改 + cleanupPeriodDays）；Codex 的是 null */
+	expires: string | null;
 };
 export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] };
 /** 工作区里的一个文件夹（侧栏的一组）：放进来的会话；顺序是人拖的 */
@@ -28,7 +31,13 @@ export type Node =
  * version：下次带着它来拉（?since=），只给之后新建、改过的节点（delta）
  */
 export type Session = { meta: SessionMeta; nodes: Node[]; windows: Record<string, number>; model: string | null; version: string; delta: boolean };
-export type Agent = { id: string; info: { agentType?: string; description?: string }; nodes: Node[] };
+/** 子代理的对话；version / delta 和 Session 一样（开着看它跑的时候带 ?since= 拉增量） */
+export type Agent = { id: string; info: { agentType?: string; description?: string }; nodes: Node[]; version: string; delta: boolean };
+/**
+ * 会话开过的一个子代理（/agents 列表、agent 事件）：toolUseId 是开它的那个 Agent 工具调用；
+ * latest：它现在在做什么（最后一个工具调用，或者最后一段回复的第一行），10 分钟没动的是 null；mtime：最后写的时间（毫秒）
+ */
+export type Sub = { agentId: string; toolUseId: string | null; agentType: string | null; description: string | null; latest: string | null; mtime: number };
 export type RepoFile = { kind: "text"; size: number; text: string } | { kind: "image" | "binary" | "large"; size: number };
 export type Change = { code: string; path: string; add?: number; del?: number };
 export type Commit = { hash: string; subject: string; when: string; author: string; local: boolean };
@@ -42,12 +51,9 @@ export type Run = {
 export type Dirs = { path: string; home: string; parent: string | null; git: boolean; entries: { name: string; path: string; git: boolean; project: boolean }[] };
 /** 会话在跑时发的「接着说」：排着，这次跑完一起发 */
 export type Queued = { id: string; project: string; session: string; prompt: string; images: number; permission: string; model: string | null; at: string };
-/** 订阅用量：两个窗口用了多少（0–1）、什么时候重置（秒）；at 是 mixer 最近一次记下的时间 */
-type LimitWindow = { utilization: number; resetsAt: number };
-export type Limits = { five_hour: LimitWindow | null; seven_day: LimitWindow | null; at: string };
 export type Approval = { id: string; run: string; tool: string; input: Record<string, unknown>; at: string };
-/** SSE 连上时先来的（server/sse.ts）：这时的全部状态。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
-export type Hello = { runs: Run[]; approvals: Approval[]; queue: Queued[]; limits: Limits | null; workspace: Group[] | null; tails: Record<string, Tail> };
+/** SSE 连上时先来的（server/sse.ts）：这时的全部状态（用量是各个账号的，lib/usage.ts）。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
+export type Hello = { runs: Run[]; approvals: Approval[]; queue: Queued[]; usage: Account[]; workspace: Group[] | null; tails: Record<string, Tail> };
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {
 	const r = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

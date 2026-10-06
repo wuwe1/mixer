@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import type { Spawn } from "@/lib/agents";
 import { api, enc, type Node, type ToolNode } from "@/lib/api";
 import { clock, took } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -190,7 +191,8 @@ const resultImages = (t: ToolNode, project: string, session: string, agent?: str
  */
 export const stable = (n: Node) => ("key" in n && n.key) || n.uuid;
 
-type StepsProps = { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void; now?: Now | null };
+/** spawns：组里有 Agent 调用时才给（别的组不跟着子代理的事件重画），开出来的子代理怎么样了（lib/agents.ts） */
+type StepsProps = { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void; now?: Now | null; spawns?: Map<string, Spawn> };
 /** nodes 每次都是重新拼的数组：按里面的节点比；别的按引用比 */
 const sameSteps = (a: StepsProps, b: StepsProps) => {
 	const { nodes: an, ...ar } = a;
@@ -199,7 +201,7 @@ const sameSteps = (a: StepsProps, b: StepsProps) => {
 	const rb = br as Record<string, unknown>;
 	return an.length === bn.length && an.every((n, i) => n === bn[i]) && Object.keys({ ...ra, ...rb }).every((k) => ra[k] === rb[k]);
 };
-export const Steps = memo(function Steps({ nodes, project, session, agent, onAgent, onFile, onFork, now }: StepsProps) {
+export const Steps = memo(function Steps({ nodes, project, session, agent, onAgent, onFile, onFork, now, spawns }: StepsProps) {
 	const tools = nodes.filter((n): n is ToolNode => n.k === "tool");
 	const errors = tools.filter((t) => t.result?.error).length;
 	const names = [...new Set(tools.map((t) => toolName(t.name)))];
@@ -209,6 +211,10 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 	const running = now && !thinking ? now : null;
 	const lastTool = tools[tools.length - 1];
 	const shown = running?.node ?? (lastTool?.result ? lastTool : null);
+	// 还在跑的子代理：收着的时候每个都露出来（最多 3 个），各带一行它在做什么；露出来的最后一步要是其中之一，就不再另画
+	const subs = spawns ? tools.filter((t) => spawns.get(t.id)?.running) : [];
+	const shownSub = shown?.k === "tool" && subs.includes(shown);
+	const shownAgent = shown?.k === "tool" && spawns ? (shown.agent ?? spawns.get(shown.id)?.agentId ?? null) : null;
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<div className="flex items-center gap-1">
@@ -241,21 +247,24 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 			</CollapsibleTrigger>
 			{onFork && <Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />}
 			</div>
+			{spawns && subs.slice(0, 3).map((t) => <SpawnRow key={t.id} t={t} s={spawns.get(t.id) as Spawn} onAgent={onAgent} />)}
+			{subs.length > 3 && <div className="py-1 pl-5.5 text-xs text-muted-foreground group-data-[state=open]/stepbox:hidden">还有 {subs.length - 3} 个</div>}
 			{/* 收着的时候最后一步也露出来：在跑是蓝点带耗时，跑完了留着，成功绿点、失败红点 */}
-			{shown && (
-				<div className="flex items-center gap-2 py-1 pl-5.5 text-md group-data-[state=open]/stepbox:hidden">
+			{shown && !shownSub && (
+				// 跑完的子代理也留着这一行，点了看它的对话
+				<button type="button" disabled={!shownAgent || !onAgent} onClick={() => shownAgent && onAgent?.(shownAgent)} className="flex w-full min-w-0 items-center gap-2 py-1 pl-5.5 text-left text-md group-data-[state=open]/stepbox:hidden" title={shownAgent ? "看子代理的对话" : undefined}>
 					<StatusIcon s={running ? "running" : shown.k === "tool" && shown.result?.error ? "failed" : "ok"} className="size-3.5" />
 					<span className="shrink-0 font-medium">{shown.k === "tool" ? toolName(shown.name) : "思考"}</span>
 					{shown.k === "tool" ? <span className="truncate font-mono text-xs text-muted-foreground">{shown.summary}</span> : <span className="truncate text-muted-foreground">{latest(shown)}</span>}
 					{running && <Elapsed since={running.since} className="ml-auto shrink-0 text-2xs text-muted-foreground" />}
-				</div>
+				</button>
 			)}
 			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}
 			{imgs.length > 0 && <Images srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
-						<ToolCall key={stable(n)} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} since={now?.node === n ? now.since : undefined} />
+						<ToolCall key={stable(n)} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} since={now?.node === n ? now.since : undefined} spawn={spawns?.get(n.id)} />
 					) : n.k === "thinking" ? (
 						<Thought key={stable(n)} n={n} project={project} session={session} agent={agent} live={now?.node === n} bare={!tools.length} />
 					) : null,
@@ -264,6 +273,22 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 		</Collapsible>
 	);
 }, sameSteps);
+
+/** 收着的组里一个还在跑的子代理：开它的那个调用（ping 点、耗时），下面一行它在做什么。点了看它的对话 */
+function SpawnRow({ t, s, onAgent }: { t: ToolNode; s: Spawn; onAgent?: (id: string) => void }) {
+	const id = s.agentId;
+	return (
+		<button type="button" disabled={!id || !onAgent} onClick={() => id && onAgent?.(id)} className="flex w-full min-w-0 flex-col py-1 pl-5.5 text-left group-data-[state=open]/stepbox:hidden" title="看子代理的对话">
+			<span className="flex min-w-0 items-center gap-2 text-md">
+				<StatusIcon s="running" className="size-3.5" />
+				<span className="shrink-0 font-medium">{toolName(t.name)}</span>
+				<span className="truncate font-mono text-xs text-muted-foreground">{t.summary}</span>
+				<Elapsed since={s.since} className="ml-auto shrink-0 pl-2 text-2xs text-muted-foreground" />
+			</span>
+			{s.latest && <span className="block truncate pl-5.5 text-xs text-muted-foreground">{s.latest}</span>}
+		</button>
+	);
+}
 
 /** 思考写到哪了：最后一句（摘要是一段一段来的）。只用在正在写的上（流里的，是全文） */
 const latest = (n: Node) => (n.k === "thinking" ? (n.text.trim().split("\n").filter((l) => l.trim()).pop() ?? "") : "");
@@ -317,8 +342,13 @@ export const edited = (t: ToolNode) => (EDITS.has(t.name) ? filePath(t) : null);
 /** 点开时拿的：完整参数、结果（长的先给前 4000 字，cut 时可以再要完整的） */
 type Detail = { input: string; result: string | null; cut: boolean };
 
-/** since：这一步正在执行（还没结果），从什么时候开始的。节点里的参数、结果只是预览，点开时拿完整的 */
-function ToolCall({ t, project, session, agent, onAgent, onFile, since }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; since?: number }) {
+/**
+ * since：这一步正在执行（还没结果），从什么时候开始的。节点里的参数、结果只是预览，点开时拿完整的。
+ * spawn：Agent 调用开出来的子代理；还在跑就带 ping 点、耗时，下面一行它在做什么，点了看它的对话
+ */
+function ToolCall({ t, project, session, agent, onAgent, onFile, since: at, spawn }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; since?: number; spawn?: Spawn }) {
+	const since = at ?? (spawn?.running ? spawn.since : undefined);
+	const sub = t.agent ?? spawn?.agentId ?? null;
 	const I = toolIcon(t.name);
 	const file = onFile ? filePath(t) : null;
 	const [full, setFull] = useState<string | null>(null);
@@ -353,13 +383,18 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since }: { t: T
 						{EDITS.has(t.name) ? <FileDiff className="size-3.5" /> : <FileText className="size-3.5" />}
 					</Button>
 				)}
-				{t.agent && onAgent && (
-					<Button variant="outline" size="xs" className="shrink-0" onClick={() => onAgent(t.agent as string)}>
+				{sub && onAgent && (
+					<Button variant="outline" size="xs" className="shrink-0" onClick={() => onAgent(sub)}>
 						<Bot className="size-3" />
 						子代理对话
 					</Button>
 				)}
 			</div>
+			{spawn?.running && spawn.latest && (
+				<button type="button" disabled={!sub || !onAgent} onClick={() => sub && onAgent?.(sub)} className="block w-full truncate pb-1 pl-5.5 text-left text-xs text-muted-foreground enabled:hover:text-foreground" title="看子代理的对话">
+					{spawn.latest}
+				</button>
+			)}
 			{imgs.length > 0 && <Images srcs={imgs} className="mb-2 pl-5.5" />}
 			<CollapsibleContent className="mb-2 flex flex-col gap-2 pl-5">
 				<pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-2xs leading-relaxed whitespace-pre-wrap break-all">{detail?.input ?? t.input}</pre>

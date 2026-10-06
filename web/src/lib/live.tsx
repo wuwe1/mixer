@@ -3,25 +3,27 @@
 // 都从 SSE 连上时的 hello 来（第一次、每次重连），之后按推来的事件改；只有工作区有时还要整个拉一次。
 import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type Approval, type Group, type Hello, type Limits, type Queued, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type Group, type Hello, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
+import type { Account } from "./usage";
 
 export type Status = "waiting" | "running" | "done" | "error" | "terminal" | null;
 
-/** 工作区的改动：放进来（不给 session 就只放文件夹）、移出去（不给 session 就是整个文件夹）、文件夹的新顺序 */
-export type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
+/** 工作区的改动：放进来（不给 session 就只放文件夹；sessions 是撤销移出文件夹时一起放回去的）、移出去（不给 session 就是整个文件夹）、文件夹的新顺序 */
+export type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string; sessions?: string[] } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
 
 type Live = {
 	workspace: Group[] | null;
 	/** 这个会话在不在工作区里 */
 	inWorkspace: (session: string) => boolean;
-	/** 改工作区：先改本地（拖完马上就是新顺序），再告诉服务端；失败了重新拉 */
+	/** 改工作区：先改本地（拖完马上就是新顺序），再告诉服务端；失败了重新拉。移出去的给一个「撤销」 */
 	change: (op: WorkspaceOp) => Promise<void>;
 	runs: Run[];
 	approvals: Approval[];
 	queue: Queued[];
-	limits: Limits | null;
+	/** 用量：各个账号（Claude、Codex）的窗口用了多少 */
+	usage: Account[];
 	/** 会话现在怎样 */
 	status: (s: Pick<SessionMeta, "id" | "active" | "unread">) => Status;
 	/** 这次运行的会话 id 一出来就打开它（新会话、分叉） */
@@ -46,7 +48,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	const [runs, setRuns] = useState<Run[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
-	const [limits, setLimits] = useState<Limits | null>(null);
+	const [usage, setUsage] = useState<Account[]>([]);
 	const following = useRef(new Set<string>());
 	const [putWorkspace, putRuns, putApprovals, putQueue] = useMemo(() => [keep(setWorkspace), keep(setRuns), keep(setApprovals), keep(setQueue)] as const, []);
 
@@ -107,7 +109,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		putRuns(h.runs);
 		putApprovals(h.approvals);
 		putQueue(h.queue);
-		setLimits(h.limits);
+		setUsage(h.usage ?? []);
 		setPulled((n) => n + 1);
 	}, [putWorkspace, putRuns, putApprovals, putQueue]));
 	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
@@ -134,7 +136,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		navigator.vibrate?.(80);
 	}, []));
 	useEvent("queue", putQueue);
-	useEvent("limits", setLimits);
+	useEvent("usage", setUsage);
 	useEvent("queue-error", useCallback((e: { error: string }) => toast.error(`排队消息发送失败：${e.error}`.slice(0, 300)), []));
 	useEvent("approval-done", useCallback((d: { id: string }) => setApprovals((l) => l.filter((a) => a.id !== d.id)), []));
 
@@ -155,15 +157,26 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		const change = async (op: WorkspaceOp) => {
 			if (op.op === "order") setWorkspace((w) => w && op.order.flatMap((id) => w.filter((g) => g.id === id)));
 			if (op.op === "remove") setWorkspace((w) => w && (op.session ? w.map((g) => (g.id === op.project ? { ...g, sessions: g.sessions.filter((s) => s.id !== op.session) } : g)) : w.filter((g) => g.id !== op.project)));
+			// 移出之前的样子：撤销时放回去。整个文件夹的连同里面的会话一起放回、回到原来的位置（放进来的文件夹在最上面，再排一次）
+			const g = op.op === "remove" ? workspace?.find((x) => x.id === op.project) : undefined;
+			const order = (workspace ?? []).map((x) => x.id);
 			try {
 				await api("/api/workspace", op);
 			} catch (e) {
 				toast.error(e instanceof Error ? e.message : String(e));
 				pullWorkspace();
+				return;
 			}
+			if (!g || op.op !== "remove") return;
+			const undo = async () => {
+				if (op.session) return change({ op: "add", project: g.id, path: g.path, session: op.session });
+				await change({ op: "add", project: g.id, path: g.path, sessions: g.sessions.map((s) => s.id) });
+				await change({ op: "order", order });
+			};
+			toast("已移出工作区", { action: { label: "撤销", onClick: () => void undo() } });
 		};
-		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, limits, status, follow };
-	}, [workspace, runs, approvals, queue, limits, pullWorkspace]);
+		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, usage, status, follow };
+	}, [workspace, runs, approvals, queue, usage, pullWorkspace]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
