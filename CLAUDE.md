@@ -47,8 +47,8 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 | 位置 | 做什么 |
 |---|---|
-| `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>`。读过的会话按最近使用留在内存，总量超 200MB（按文件大小算）丢最久没用的 |
-| `server/codex.ts` | 读 Codex 的会话（`~/.codex/sessions/年/月/日/rollout-*.jsonl`），拼成和 Claude 一样的节点和会话信息；`sessions.ts` 按会话 id 分派过来、列表里合进去。文件变了整个重读，按 uuid 和上一份比出增量（和 Claude 一样的「epoch:rev」：没变的留原来的 rev；上一份的节点没了就换 epoch） |
+| `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>`；思考也只给前 120 字（`cut`），展开时拿 `/thinking/<uuid>`。读过的会话按最近使用留在内存，总量超 200MB（按文件大小算）丢最久没用的 |
+| `server/codex.ts` | 读 Codex 的会话（`~/.codex/sessions/年/月/日/rollout-*.jsonl`），拼成和 Claude 一样的节点和会话信息；`sessions.ts` 按会话 id 分派过来、列表里合进去。文件变了整个重读，按 uuid 和上一份比出增量（和 Claude 一样的「epoch:rev」：没变的留原来的 rev；上一份的节点没了就换 epoch）。推理摘要同样只给开头，全文走 `/thinking/<uuid>` |
 | `server/codex-run.ts` | 在 mixer 里跑 Codex：一个常驻的 `codex app-server`，item 通知翻成和 Claude 一样的 stream_event（tail.ts 原样用），确认请求转成 mixer 的确认。`runs.ts` 按会话是谁的分派过来，排队、停止、结束两边一套 |
 | `server/jsonl.ts` | 按 `\n` 一行一行读（两边共用） |
 | `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库。git 状态是异步的：同一个仓库同时来的共用一次，缓存 1.5 秒 |
@@ -61,17 +61,18 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/runs.ts` | 起 `claude -p` 跑一次（新会话 / 续接 / 分叉 / 从中间分叉），管确认请求 |
 | `server/skills.ts` | 输入框里能选的 skill：名字按 init 事件记下的，加上扫 skill 文件夹补的新建的，描述从 `SKILL.md` 读 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
-| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号），重新打包后再发一次；每 25 秒一个 `ping`。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
+| `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号，重新打包后再发一次），再发 `hello`（`sse.ts`）；每 25 秒一个 `ping`。`keepAliveTimeout` 120 秒：cloudflared 会把空闲连接留约 90 秒，Node 默认的 5 秒会偶发 502。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
+| `server/sse.ts` | SSE 的连接们。连上先发 `hello`（运行、确认请求、排队、用量、工作区、在跑的那几次正在写的那几段），和之后的事件在同一条流里、先后不会乱；算 hello 期间的事件攒着接在后面。页面拿它整个换掉，不再另外拉 |
 | `web/` | Vite + React + Tailwind v4 + shadcn（radix-nova），组件在 `web/src/components/ui` |
 | `side.tsx` / `browse.tsx` | 侧栏（工作区，文件夹用 dnd-kit 拖）/ 浏览会话的对话框 |
 | `web/src/components/lazy.tsx` | 首屏用不着的按需加载：浏览会话、新会话、skill 选择第一次打开才拿，项目页、文件、改动面板加载时是 Spinner |
 | `composer.tsx` / `fork-dialog.tsx` | 输入框和底下那排选项 / 从这里分叉、编辑并分叉的对话框 |
-| `web/src/components/login.tsx` | `Gate`：先问 `/api/auth/status`，没认出来就是登录页（配对码建 passkey / passkey 登录）；接口回 401 时也换成它 |
-| `web/src/lib/live.tsx` | 全页面共用的工作区、运行、确认请求，和会话状态的算法。`session` 通知带的那一行攒 1.5 秒就地换掉（parent 留原来的）；运行结束、看过了、放进来移出去这些才整个重拉工作区 |
-| `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端每次运行攒一份（`/api/runs/:id/tail` 是快照），网页先拿快照、再按序号接推送（`run-event` 带 `seq`），接不上就重新拿 |
+| `web/src/components/login.tsx` | `Gate`：上次认出来了的设备先画应用、同时问 `/api/auth/status`，没认出来再换成登录页（配对码建 passkey / passkey 登录）；第一次打开的先问。接口回 401 时也换成它 |
+| `web/src/lib/live.tsx` | 全页面共用的工作区、运行、确认请求，和会话状态的算法。`session` 通知带的那一行攒 1.5 秒就地换掉（parent 留原来的）；运行结束、看过了、放进来移出去这些才整个重拉工作区。第一次和重连全靠 `hello`（用量也在这里）：hello 来了，攒着的侧栏行作废，hello 之前发出的工作区请求回来就丢掉 |
+| `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端把 `stream_event` 缩成短事件（`project`：`["m",消息id]` / `["b",第几段,种类,…]` / `["d",第几段,字]`；签名、stop、`message_delta`、空增量不推），同一段连着的增量攒 60ms 合成一个（`coalesce`），再攒一份、编序号（只数推出去的）。Codex 的流也走这一套。快照在 `hello` 里带着，新开始的运行、接不上的才拿 `/api/runs/:id/tail`（先把攒着的推出去），再按序号接推送（`run-event` 带 `seq`） |
 | `web/src/lib/thread.ts` | 会话记录 → 对话的纯函数：节点树、走成一条路、工具调用收成一组、分叉点、正在写的段变成节点 |
-| `useStream`（`lib/use-stream.ts`） | 还没写进会话记录的那几段变成和记录里一样的节点接在对话末尾；记录里有了同一段（「消息 id : 第几段」）就换成记录里的。运行结束后留着最后几段，直到记录里都有了（最多 10 秒），不闪 |
-| `web/src/lib/events.ts` | 整页一条 SSE。断了退避重连（1–30 秒），回到前台、`pageshow`、`online` 都重连，60 秒什么都没收到（包括 `ping`）也重连。`build` 和本页入口脚本不同：在前台弹「有新版本」，在后台就等回到前台时直接刷新 |
+| `useStream`（`lib/use-stream.ts`） | 还没写进会话记录的那几段变成和记录里一样的节点接在对话末尾（正在写的思考是全文；写进记录后换成开头，展开时再拿全文，拿到之前留着流里的全文不缩回去）；记录里有了同一段（「消息 id : 第几段」）就换成记录里的。运行结束后留着最后几段，直到记录里都有了（最多 10 秒），不闪 |
+| `web/src/lib/events.ts` | 整页一条 SSE。断了退避重连（1–30 秒），回到前台、`pageshow`、`online` 都重连，60 秒什么都没收到（包括 `ping`）也重连。连上先收 `hello`。`build` 和本页入口脚本不同：在前台弹「有新版本」，在后台就等回到前台时直接刷新 |
 | `web/src/lib/highlight-worker.ts` | 代码高亮在 Worker 里：`shiki/core` + JS 正则引擎（没有 wasm），语言按需加载 |
 | `web/src/lib/route.ts` | 地址就是状态（`/p/<项目>/s/<会话>?panel=…`）。记下最后的地址，主屏幕 App 冷启动时跳回去（iOS 记的是添加时那页，不一定认 manifest 的 `start_url`）；manifest 用 `crossorigin="use-credentials"` 拿，不然被 Access 转去登录页 |
 | `SessionView`（`session.tsx`） | 会话在内存里留最近 12 个，切回来先画上次的、带 version 拉增量；失效靠服务端的「epoch:rev」（同一个 epoch 里节点只增不删，测试钉着）。离开时记下最上面那条和偏移，回来用 `Reveal` 的 `offset` 放回去 |

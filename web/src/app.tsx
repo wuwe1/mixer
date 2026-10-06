@@ -1,6 +1,6 @@
 // 外框：左边侧栏（项目 → 会话，带状态）；右边是当前的页面：会话、项目页（开新会话、看文件和改动），或者什么都没选。
 // 开 agent 只有两种办法：选一个文件夹开新会话（侧栏的新会话、项目页的输入框），或者从一个会话分叉。
-import { ChevronRight, FolderTree, GitCompareArrows, GitFork, ListTree, MessageSquare, Pin, PinOff, SquarePen } from "lucide-react";
+import { ChevronRight, GitFork, MessageSquare, Pin, PinOff, SquarePen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -13,9 +13,8 @@ import { NewSession, ProjectHome } from "@/components/lazy";
 import { PANELS, panelOf, SessionView } from "@/components/session";
 import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
 import { useLive } from "@/lib/live";
-import { go, openSession, type Panel, type Route, useRoute, useWide } from "@/lib/route";
+import { go, openSession, type Route, useRoute, useWide } from "@/lib/route";
 
-const PANEL_ICON: Record<Panel, typeof ListTree> = { outline: ListTree, files: FolderTree, changes: GitCompareArrows };
 
 export function App() {
 	const r = useRoute();
@@ -71,8 +70,7 @@ export function App() {
 					)}
 					{r.session && (
 						<ToggleGroup type="single" size="sm" value={panelOf(r, wide) ?? ""} onValueChange={(v) => go({ panel: (v || "none") as Route["panel"] })}>
-							{PANELS.map(({ v, label }) => {
-								const I = PANEL_ICON[v];
+							{PANELS.map(({ v, label, icon: I }) => {
 								return (
 									<Tooltip key={v}>
 										<TooltipTrigger asChild>

@@ -134,3 +134,27 @@ test("增量（epoch:rev）：接着写只给新的、改过的节点；文件�
 	assert.equal(c.delta, false);
 	assert.notEqual(c.version.split(":")[0], b.version.split(":")[0]);
 });
+
+test("推理摘要只给开头（cut），全文点开再拿", async () => {
+	const ID = "66666666-6666-4666-8666-666666666666";
+	const rel = `2026/01/01/rollout-2026-01-01T00-00-00-${ID}.jsonl`;
+	const long = `先看看${"再想想".repeat(200)}`;
+	const recs = [
+		{ timestamp: "t", type: "session_meta", payload: { id: ID, cwd: "/tmp/think" } },
+		{ timestamp: "t", type: "event_msg", payload: { type: "item_completed", item: { type: "UserMessage", id: "u-1", content: [{ type: "text", text: "想一下" }] } } },
+		{ timestamp: "t", type: "event_msg", payload: { type: "item_completed", item: { type: "Reasoning", id: "rs_long", summary_text: [long] } } },
+	];
+	writeFileSync(join(tmp, ".codex", "sessions", rel), `${recs.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	const i = codex.fromPath(rel);
+	assert.ok(i);
+	const th = (await codex.session(i)).nodes.find((n) => n.uuid === "rs_long");
+	assert.ok(th?.k === "thinking");
+	assert.equal(th.cut, true);
+	assert.equal(th.key, "rs_long:0");
+	assert.ok(long.startsWith(th.text) && th.text.length < long.length);
+	assert.equal(await codex.thought(i, "rs_long"), long);
+	// 短的不截
+	const { nodes } = await open(NEW);
+	const short = nodes.find((n) => n.uuid === "rs_1");
+	assert.ok(short?.k === "thinking" && !short.cut && short.text === "先看看");
+});

@@ -42,7 +42,8 @@ type Key = { key?: string };
 export type Node =
 	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number; queued?: boolean }
 	| ({ k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx } & Key)
-	| ({ k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx } & Key)
+	/** 思考也收在组里、点开才看：text 只是开头，cut 时完整的点开再拿（thought） */
+	| ({ k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; cut: boolean; ctx?: Ctx } & Key)
 	| {
 			k: "tool";
 			ctx?: Ctx;
@@ -105,6 +106,7 @@ const cut = (s: string, n = CUT) => (s.length > n ? { text: s.slice(0, n), cut: 
 const PATHS = new Set(["file_path", "notebook_path", "path"]);
 const brief = (input: unknown) => cut(JSON.stringify(input, (k, v) => (typeof v === "string" && !PATHS.has(k) && v.length > 80 ? `${v.slice(0, 80)}…` : v), 2), 400).text;
 const BRIEF_RESULT = 120;
+const BRIEF_THOUGHT = 120;
 
 /** 项目目录名 → 真实路径：从会话记录的 cwd 里取（目录名是把路径里的符号换成 - 的，反推不唯一）。路径不会变，找到了就一直用 */
 const paths = new Map<string, string>();
@@ -311,6 +313,8 @@ type Parsed = Cursor & {
 	results: Map<string, string>;
 	/** 工具调用的完整参数（排好版的 JSON），按工具调用的 id */
 	inputs: Map<string, string>;
+	/** 截短了的思考的全文，按节点的 uuid */
+	thoughts: Map<string, string>;
 	/** 每条记录的 parentUuid：找最近的显示祖先用。原记录不留，带图片的 base64 太占内存 */
 	parents: Map<string, string | null>;
 	/** <command-name> 那几条 user 记录的文字：下一条是 skill 正文时要用 */
@@ -355,7 +359,7 @@ async function read(file: string): Promise<Parsed> {
 	const s: Parsed =
 		todo === "more" && hit
 			? hit
-			: { ino: st.ino, size: 0, mtime: 0, offset: 0, epoch: randomUUID().slice(0, 8), rev: 0, revs: new Map(), nodes: [], images: new Map(), results: new Map(), inputs: new Map(), parents: new Map(), commands: new Map(), shown: new Set(), tools: new Map(), blockNo: new Map(), compact: null, waiting: new Map() };
+			: { ino: st.ino, size: 0, mtime: 0, offset: 0, epoch: randomUUID().slice(0, 8), rev: 0, revs: new Map(), nodes: [], images: new Map(), results: new Map(), inputs: new Map(), thoughts: new Map(), parents: new Map(), commands: new Map(), shown: new Set(), tools: new Map(), blockNo: new Map(), compact: null, waiting: new Map() };
 	cache.set(file, s);
 	const touch = (n: Node) => s.revs.set(n.uuid, ++s.rev);
 	// parent：沿 parentUuid 往上找最近的显示节点；半路断在还没读到的记录上就先等着
@@ -435,8 +439,11 @@ async function read(file: string): Promise<Parsed> {
 			// 一条 assistant 记录一个内容块
 			const b = c[0];
 			if (b?.type === "text" && b.text?.trim()) n = { k: "assistant", ...base(d), text: b.text };
-			else if (b?.type === "thinking" && b.thinking?.trim()) n = { k: "thinking", ...base(d), text: b.thinking };
-			else if (b?.type === "tool_use") {
+			else if (b?.type === "thinking" && b.thinking?.trim()) {
+				const t = cut(b.thinking, BRIEF_THOUGHT);
+				if (t.cut) s.thoughts.set(d.uuid, b.thinking);
+				n = { k: "thinking", ...base(d), ...t };
+			} else if (b?.type === "tool_use") {
 				s.inputs.set(b.id, JSON.stringify(b.input ?? {}, null, 2));
 				const tool: Tool = {
 					k: "tool",
@@ -548,6 +555,14 @@ export async function fullResult(project: string, id: string, toolUseId: string,
 	if (cx) return codex.fullResult(cx, toolUseId);
 	const { results } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
 	return results.get(toolUseId) ?? null;
+}
+
+/** 点开一段思考：全文（节点里只有开头） */
+export async function thought(project: string, id: string, uuid: string, agentId?: string) {
+	const cx = codex.find(id);
+	if (cx) return codex.thought(cx, uuid);
+	const { thoughts } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
+	return thoughts.get(uuid) ?? null;
 }
 
 /** 人发的图片（按消息的 uuid）或工具结果里的图片（按工具调用的 id） */

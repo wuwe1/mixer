@@ -1,4 +1,6 @@
 // 和 mixer 服务之间：类型（和 server/ 对应）、取数据、发请求。
+import type { Tail } from "./tail";
+
 export type Project = { id: string; path: string | null; sessions: number; mtime: string };
 export type SessionMeta = {
 	id: string;
@@ -17,7 +19,8 @@ export type ToolNode = Base & { k: "tool"; id: string; name: string; summary: st
 export type Node =
 	| (Base & { k: "user"; text: string; images: number; queued?: boolean })
 	| (Base & { k: "assistant"; text: string; ctx?: Ctx; key?: string })
-	| (Base & { k: "thinking"; text: string; ctx?: Ctx; key?: string })
+	/** 记录里的思考只给开头（cut 时全文点开再拿 /thinking/<uuid>）；正在写的（流里的）是全文 */
+	| (Base & { k: "thinking"; text: string; cut?: boolean; ctx?: Ctx; key?: string })
 	| ToolNode
 	| (Base & { k: "event"; kind: "summary" | "compact" | "info" | "task" | "agent"; text: string; detail?: string; status?: string; agent?: string });
 /**
@@ -43,6 +46,8 @@ export type Queued = { id: string; project: string; session: string; prompt: str
 type LimitWindow = { utilization: number; resetsAt: number };
 export type Limits = { five_hour: LimitWindow | null; seven_day: LimitWindow | null; at: string };
 export type Approval = { id: string; run: string; tool: string; input: Record<string, unknown>; at: string };
+/** SSE 连上时先来的（server/sse.ts）：这时的全部状态。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
+export type Hello = { runs: Run[]; approvals: Approval[]; queue: Queued[]; limits: Limits | null; workspace: Group[] | null; tails: Record<string, Tail> };
 
 export async function api<T>(path: string, body?: unknown): Promise<T> {
 	const r = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

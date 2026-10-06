@@ -1,12 +1,13 @@
 // 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏从右边滑出来）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
 // 打开着的会话跑完了，就算看过了。
-import { ArrowDown, X } from "lucide-react";
+import { ArrowDown, ChevronLeft, FolderTree, GitCompareArrows, ListTree, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, enc, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
@@ -20,10 +21,10 @@ import { Changes, Files } from "./lazy";
 import { edited } from "./message";
 import { Boundary } from "./placeholder";
 
-export const PANELS: { v: Panel; label: string }[] = [
-	{ v: "outline", label: "目录" },
-	{ v: "files", label: "文件" },
-	{ v: "changes", label: "改动" },
+export const PANELS: { v: Panel; label: string; icon: typeof ListTree }[] = [
+	{ v: "outline", label: "目录", icon: ListTree },
+	{ v: "files", label: "文件", icon: FolderTree },
+	{ v: "changes", label: "改动", icon: GitCompareArrows },
 ];
 
 /** 现在开着哪个面板：地址里没写时，宽屏开目录、窄屏不开 */
@@ -310,11 +311,28 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				</aside>
 			)}
 			{!wide && (
+				// 手机上面板是整屏的一页：左上角回到对话，旁边直接切目录 / 文件 / 改动；上下让开刘海和 Home 条
 				<Sheet open={!!panel} onOpenChange={(o) => !o && go({ panel: "none" })}>
-					<SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-lg" onOpenAutoFocus={(e) => e.preventDefault()}>
-						<SheetHeader className="border-b">
-							<SheetTitle>{title}</SheetTitle>
+					<SheetContent
+						side="right"
+						showCloseButton={false}
+						className="gap-0 p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] data-[side=right]:w-full data-[side=right]:border-l-0 data-[side=right]:sm:max-w-none"
+						onOpenAutoFocus={(e) => e.preventDefault()}
+					>
+						<SheetHeader className="flex-row items-center gap-1 border-b p-1.5 pr-2">
+							<Button variant="ghost" size="icon" onClick={() => go({ panel: "none" })} aria-label="回到对话">
+								<ChevronLeft className="size-4" />
+							</Button>
+							<SheetTitle className="sr-only">{title}</SheetTitle>
 							<SheetDescription className="sr-only">这个会话的{title}</SheetDescription>
+							<ToggleGroup type="single" size="sm" value={panel ?? ""} onValueChange={(v) => v && go({ panel: v as Panel })} className="ml-auto">
+								{PANELS.map(({ v, label, icon: I }) => (
+									<ToggleGroupItem key={v} value={v} className="gap-1.5 px-3 aria-checked:bg-muted">
+										<I className="size-3.5" />
+										{label}
+									</ToggleGroupItem>
+								))}
+							</ToggleGroup>
 						</SheetHeader>
 						{body}
 					</SheetContent>

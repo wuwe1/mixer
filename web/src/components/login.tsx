@@ -13,14 +13,24 @@ import { api } from "@/lib/api";
 /** via：认出来是谁（null 是没认出来）；passkey：这个地址能不能用 passkey 登录 */
 type Auth = { via: string | null; passkey: boolean; passkeys: number };
 
-/** 认出来了才画里面；接口说没登录（mixer:login）就再问一次 */
+/** 这台设备上次认出来了：先照常画，不等问完（冷启动少等一个来回）；问出来没登录再换成登录页 */
+const IN = "mixer.in";
+const was = () => { try { return !!localStorage.getItem(IN); } catch { return false; } };
+const remember = (yes: boolean) => { try { if (yes) localStorage.setItem(IN, "1"); else localStorage.removeItem(IN); } catch {} };
+
+/** 认出来了才画里面（上次认出来了的先画着）；接口说没登录（mixer:login）就再问一次 */
 export function Gate({ children }: { children: ReactNode }) {
-	const [auth, setAuth] = useState<Auth | null>(null);
+	const [auth, setAuth] = useState<Auth | null>(() => (was() ? { via: "earlier", passkey: false, passkeys: 0 } : null));
 	const check = useCallback(() => {
 		fetch("/api/auth/status").then(
-			// 问不到（服务还是旧版本、断网）：照旧进去，接口自己会报错
-			async (r) => setAuth(r.ok ? ((await r.json()) as Auth) : { via: "unknown", passkey: false, passkeys: 0 }),
-			() => setAuth({ via: "unknown", passkey: false, passkeys: 0 }),
+			async (r) => {
+				// 问不到（服务还是旧版本）：照旧进去，接口自己会报错
+				const a: Auth = r.ok ? await r.json() : { via: "unknown", passkey: false, passkeys: 0 };
+				if (r.ok) remember(!!a.via);
+				setAuth(a);
+			},
+			// 断网：照旧进去（先画着的不动）
+			() => setAuth((a) => a ?? { via: "unknown", passkey: false, passkeys: 0 }),
 		);
 	}, []);
 	useEffect(() => {

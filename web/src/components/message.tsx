@@ -2,7 +2,7 @@
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
 // 每条消息、每组工具调用后面常驻几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。图片点了在当前页面放大。
 import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, ListChecks, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -257,7 +257,7 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 					n.k === "tool" ? (
 						<ToolCall key={stable(n)} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} since={now?.node === n ? now.since : undefined} />
 					) : n.k === "thinking" ? (
-						<Thought key={stable(n)} text={n.text} live={now?.node === n} bare={!tools.length} />
+						<Thought key={stable(n)} n={n} project={project} session={session} agent={agent} live={now?.node === n} bare={!tools.length} />
 					) : null,
 				)}
 			</CollapsibleContent>
@@ -265,14 +265,35 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 	);
 }, sameSteps);
 
-/** 思考写到哪了：最后一句（摘要是一段一段来的） */
+/** 思考写到哪了：最后一句（摘要是一段一段来的）。只用在正在写的上（流里的，是全文） */
 const latest = (n: Node) => (n.k === "thinking" ? (n.text.trim().split("\n").filter((l) => l.trim()).pop() ?? "") : "");
+
+/** 拿过的思考全文：「会话/uuid」→ 全文。记录只往后加，拿过的不会变 */
+const thoughts = new Map<string, string>();
 
 /**
  * 组里的一段思考：点开了就是要看，全文直接显示（收着时标题上已经滚着最新一句）。
+ * 记录里的只有开头（cut）：组展开时才挂上，这时再拿全文，拿到之前先显示开头。
+ * 正在写的那段写进记录后换成了开头：流里看到的全文先留着，不缩回去。
  * 只有思考的一组，标题就是「思考」、ping 点也在标题上：这里只放文字
  */
-function Thought({ text, live, bare }: { text: string; live: boolean; bare: boolean }) {
+function Thought({ n, project, session, agent, live, bare }: { n: Extract<Node, { k: "thinking" }>; project: string; session: string; agent?: string; live: boolean; bare: boolean }) {
+	const at = `${session}/${n.uuid}`;
+	const [full, setFull] = useState(() => thoughts.get(at) ?? null);
+	const seen = useRef(n.text);
+	if (!n.cut) seen.current = n.text;
+	useEffect(() => {
+		if (!n.cut) return;
+		const hit = thoughts.get(at);
+		if (hit !== undefined) return void setFull(hit);
+		let gone = false;
+		api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/thinking/${n.uuid}${agent ? `?agent=${agent}` : ""}`).then((r) => {
+			thoughts.set(at, r.text);
+			if (!gone) setFull(r.text);
+		}, () => {});
+		return () => { gone = true; };
+	}, [n.cut, n.uuid, at, project, session, agent]);
+	const text = n.cut ? (full ?? seen.current) : n.text;
 	const body = <span className="min-w-0 whitespace-pre-wrap break-words">{text.trim() || "思考"}</span>;
 	if (bare) return <div className="py-1 text-md leading-relaxed text-muted-foreground">{body}</div>;
 	return (

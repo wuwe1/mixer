@@ -5,7 +5,7 @@ import { closestCenter, DndContext, type DragEndEvent, type Modifier, PointerSen
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -15,8 +15,8 @@ import {
 	SidebarMenuButton, SidebarMenuItem, SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, useSidebar,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, type Group, type Limits, type SessionMeta } from "@/lib/api";
-import { useEvent, useOnline } from "@/lib/events";
+import type { Group, SessionMeta } from "@/lib/api";
+import { useOnline } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
 import { go, openSession, type Route } from "@/lib/route";
 import { clock, since } from "@/lib/time";
@@ -294,19 +294,9 @@ function useSwipe() {
 	}, [isMobile, openMobile, setOpenMobile]);
 }
 
-/** 订阅用量（mixer 里的运行带回来的）：全都更新了才准，所以旧了写明多久前 */
-function useLimits() {
-	const [l, setL] = useState<Limits | null>(null);
-	const load = useCallback(() => { api<Limits | null>("/api/limits").then(setL, () => {}); }, []);
-	useEffect(load, [load]);
-	useEvent("reconnect", load);
-	useEvent("limits", setL);
-	return l;
-}
-
-/** 侧栏最底下：本周用量、什么时候重置，顺带 5 小时窗口 */
+/** 侧栏最底下：本周用量、什么时候重置，顺带 5 小时窗口。用量是 mixer 里的运行带回来的（live.tsx）：全都更新了才准，所以旧了写明多久前 */
 function Usage() {
-	const l = useLimits();
+	const l = useLive().limits;
 	const week = l?.seven_day;
 	if (!l || !week) return null;
 	const now = Date.now();

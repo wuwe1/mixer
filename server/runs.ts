@@ -14,7 +14,7 @@ import * as codex from "./codex.ts";
 import * as codexRun from "./codex-run.ts";
 import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
-import { counts, emptyTail, step, type Tail } from "../web/src/lib/tail.ts";
+import { coalesce, emptyTail, project, step, type Tail } from "../web/src/lib/tail.ts";
 
 export type RunStatus = "running" | "done" | "error" | "stopped";
 export type Run = {
@@ -51,8 +51,9 @@ type Approval = { id: string; run: string; tool: string; input: unknown; at: str
 /**
  * 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照）。
  * stopping：点了停止、进程还没退：状态还是 running（这时发的话照样排队，进程真退了才算结束、才发出去）
+ * out：推给网页的短事件先过这里（同一段连着来的增量攒着合成一个）
  */
-type Live = Run & { child?: ChildProcess; halt?: () => void; tail: Tail; stopping?: boolean };
+type Live = Run & { child?: ChildProcess; halt?: () => void; tail: Tail; stopping?: boolean; out: ReturnType<typeof coalesce> };
 const runs = new Map<string, Live>();
 const approvals = new Map<string, Approval>();
 const queue: Queued[] = [];
@@ -64,7 +65,7 @@ let emit: Emit = () => {};
 export const onEvent = (f: Emit) => { emit = f; };
 
 const view = (r: Live) => {
-	const { child: _c, halt: _h, tail: _t, ...rest } = r;
+	const { child: _c, halt: _h, tail: _t, out: _o, ...rest } = r;
 	return rest;
 };
 export const list = () => [...runs.values()].map(view).sort((a, b) => b.started.localeCompare(a.started));
@@ -77,8 +78,13 @@ export const get = (id: string) => {
 setInterval(() => {
 	for (const [id, r] of runs) if (r.ended && Date.now() - Date.parse(r.ended) > 3600_000) runs.delete(id);
 }, 600_000).unref();
-/** 正在写的那几段的快照；seq 之后的事件网页从推送里接 */
-export const tail = (id: string) => runs.get(id)?.tail ?? null;
+/** 正在写的那几段的快照；seq 之后的事件网页从推送里接。攒着的增量先推出去，快照里才有 */
+export const tail = (id: string) => {
+	const r = runs.get(id);
+	if (!r) return null;
+	r.out.flush();
+	return r.tail;
+};
 
 export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; agent?: string | null }) {
 	const images = o.images ?? [];
@@ -192,7 +198,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 
 /** 一次运行的样子（两种 agent 一样） */
 function fresh(id: string, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }, agent: Run["agent"], model: string | null, resume: string | null): Live {
-	return {
+	const run: Live = {
 		id,
 		project: o.project,
 		cwd: o.cwd,
@@ -210,7 +216,12 @@ function fresh(id: string, o: { project: string; cwd: string; session: string | 
 		error: null,
 		events: 0,
 		tail: emptyTail(),
+		out: coalesce((e) => {
+			run.tail = step(run.tail, e, Date.now());
+			emit("run-event", { id, seq: run.tail.seq, event: e });
+		}, HOLD),
 	};
+	return run;
 }
 
 /** 会话 id 知道了（续接的一开始就知道；新会话、分叉的这时才有）：马上告诉网页，不然它对不上这次运行，会把正在写的会话当成终端里开着 */
@@ -224,18 +235,23 @@ function known(run: Live, session: string) {
 	if (state.addToWorkspace(run.project, run.cwd, session)) emit("workspace", null);
 }
 
-/** 一个输出事件：流事件攒进「正在写的那几段」，带上序号推给网页，网页按序号接在快照后面，接不上就重新拿快照 */
+/** 增量最多攒这么久再推：一个字一个事件的话，包在外面的比字本身还长 */
+const HOLD = 60;
+
+/**
+ * 一个输出事件：缩成短事件（用不着的扔掉），同一段连着的增量攒一下（HOLD），再攒进「正在写的那几段」、带上序号推给网页，
+ * 网页按序号接在快照后面，接不上就重新拿快照。序号只数推出去的，是连着的
+ */
 function push(run: Live, ev: Record<string, unknown>) {
 	run.events++;
-	if (counts(ev)) {
-		run.tail = step(run.tail, ev, Date.now());
-		emit("run-event", { id: run.id, seq: run.tail.seq, event: ev });
-	}
+	const e = project(ev);
+	if (e) run.out.add(e);
 }
 
 /** 运行结束（跑完、出错、被停）：记下来、作废它的确认请求、接着发排队的。点过停止的一律算停止 */
 function finish(run: Live, status: "done" | "error" | "stopped", error: string | null) {
 	if (run.ended) return;
+	run.out.flush();
 	run.status = run.stopping ? "stopped" : status;
 	delete run.stopping;
 	if (run.status === "error") run.error = error || "出错了";
@@ -351,3 +367,10 @@ export function answer(id: string, allow: boolean, message?: string) {
 export const idle = () => ![...runs.values()].some((r) => r.status === "running") && !queue.length && !approvals.size;
 
 export const pending = () => [...approvals.values()].map(({ resolve: _r, ...a }) => a);
+/** 页面连上时的 hello（sse.ts）里这边的：运行、确认请求、排队，在跑的那几次正在写的那几段（攒着的增量先推出去） */
+export const snapshot = () => ({
+	runs: list(),
+	approvals: pending(),
+	queue: queued(),
+	tails: Object.fromEntries([...runs.values()].flatMap((r) => (r.status === "running" ? [[r.id, tail(r.id)]] : []))),
+});

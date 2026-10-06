@@ -1,6 +1,6 @@
 // sessions.ts：Claude Code 的会话记录拼成显示节点，CLAUDE.md「会话记录的坑」里的每一条
 import assert from "node:assert/strict";
-import { appendFileSync, copyFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,7 +9,7 @@ import { test } from "node:test";
 const tmp = mkdtempSync(join(tmpdir(), "mixer-sessions-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");
-const { parse } = await import("../server/sessions.ts");
+const { parse, thought } = await import("../server/sessions.ts");
 
 const FIXTURE = join(import.meta.dirname, "fixtures", "claude.jsonl");
 const { nodes } = await parse(FIXTURE);
@@ -149,4 +149,27 @@ test("网页缓存靠的：同一个 epoch 里节点只增不删；文件变短�
 	const c = await parse(file);
 	assert.notEqual(c.epoch, epoch);
 	assert.deepEqual(c.nodes.map((n) => n.uuid), ["f1"]);
+});
+
+test("思考只给开头（cut），全文点开再拿", async () => {
+	const dir = join(tmp, ".claude", "projects", "-tmp-think");
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, "think.jsonl");
+	const line = (r: object) => `${JSON.stringify(r)}\n`;
+	const long = `想${"很久".repeat(400)}`;
+	writeFileSync(file, line({ type: "user", uuid: "t1", parentUuid: null, timestamp: "t", message: { role: "user", content: "问" } }));
+	appendFileSync(file, line({ type: "assistant", uuid: "t2", parentUuid: "t1", timestamp: "t", message: { id: "m", content: [{ type: "thinking", thinking: long }] } }));
+	appendFileSync(file, line({ type: "assistant", uuid: "t3", parentUuid: "t2", timestamp: "t", message: { id: "m", content: [{ type: "thinking", thinking: "短的" }] } }));
+	const { nodes } = await parse(file);
+	const [a, b] = nodes.filter((n) => n.k === "thinking");
+	assert.ok(a?.k === "thinking" && b?.k === "thinking");
+	assert.equal(a.cut, true);
+	assert.ok(a.text.length < long.length && long.startsWith(a.text));
+	// key 照旧：正在写的那段写进记录后还能对上
+	assert.equal(a.key, "m:0");
+	assert.equal(await thought("-tmp-think", "think", "t2"), long);
+	assert.equal(b.cut, false);
+	assert.equal(b.text, "短的");
+	// 没截短的不另存：网页不会来要
+	assert.equal(await thought("-tmp-think", "think", "t3"), null);
 });

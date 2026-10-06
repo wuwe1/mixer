@@ -23,7 +23,8 @@ const projectId = (path: string) => path.replace(/[^a-zA-Z0-9]/g, "-");
 type Ctx = { used: number; model: string };
 type Node =
 	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number }
-	| { k: "assistant" | "thinking"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx; key?: string }
+	| { k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx; key?: string }
+	| { k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; cut: boolean; ctx?: Ctx; key?: string }
 	| { k: "tool"; uuid: string; parent: string | null; ts: string; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: null; agent: null; ctx?: Ctx; key?: string }
 	| { k: "event"; uuid: string; parent: string | null; ts: string; kind: "compact" | "info"; text: string; detail?: string };
 
@@ -135,6 +136,7 @@ function title(id: string) {
 const CUT = 4000;
 const cut = (s: string, n = CUT) => (s.length > n ? { text: s.slice(0, n), cut: true } : { text: s, cut: false });
 const BRIEF_RESULT = 120;
+const BRIEF_THOUGHT = 120;
 
 type Raw = Record<string, any>; // biome-ignore lint: 记录是 Codex 的内部格式
 /** 工具的输出：字符串，或者 [{type: input_text, text} | {type: input_image}]，老版本是 {content, success} */
@@ -180,6 +182,8 @@ type Parsed = {
 	nodes: Node[];
 	inputs: Map<string, string>;
 	results: Map<string, string>;
+	/** 截短了的推理摘要的全文，按节点的 uuid */
+	thoughts: Map<string, string>;
 	images: Map<string, { media: string; data: string }[]>;
 	/** 节点在第几轮（分叉要按轮：thread/fork 的 lastTurnId） */
 	turns: Map<string, string>;
@@ -257,7 +261,7 @@ async function parse(file: string): Promise<Parsed> {
 	const meta = (recs[0]?.type === "session_meta" ? recs[0].payload : {}) as Raw;
 	const short = String(meta.id ?? "").slice(-8);
 	const modern = recs.some((r) => r.type === "event_msg" && r.payload?.type === "item_completed");
-	const p: Parsed = { size: st.size, mtime: st.mtimeMs, epoch: "", rev: 0, revs: new Map(), nodes: [], inputs: new Map(), results: new Map(), images: new Map(), turns: new Map(), ords: new Map(), windows: {}, meta: { first: null, last: null, fresh: null, prompts: 0, parent: null } };
+	const p: Parsed = { size: st.size, mtime: st.mtimeMs, epoch: "", rev: 0, revs: new Map(), nodes: [], inputs: new Map(), results: new Map(), thoughts: new Map(), images: new Map(), turns: new Map(), ords: new Map(), windows: {}, meta: { first: null, last: null, fresh: null, prompts: 0, parent: null } };
 
 	// 分叉：先接上原会话分叉点之前的
 	const from = typeof meta.forked_from_id === "string" ? byId.get(meta.forked_from_id) : undefined;
@@ -266,7 +270,7 @@ async function parse(file: string): Promise<Parsed> {
 	if (from && base) {
 		const upto = typeof meta.forked_from_ordinal_exclusive === "number" ? meta.forked_from_ordinal_exclusive : Number.POSITIVE_INFINITY;
 		p.nodes = base.nodes.filter((n) => (base.ords.get(n.uuid) ?? 0) < upto);
-		for (const k of ["inputs", "results", "images", "turns", "ords"] as const) (p[k] as Map<string, unknown>) = new Map(base[k] as Map<string, unknown>);
+		for (const k of ["inputs", "results", "thoughts", "images", "turns", "ords"] as const) (p[k] as Map<string, unknown>) = new Map(base[k] as Map<string, unknown>);
 		Object.assign(p.windows, base.windows);
 		const users = p.nodes.filter((n) => n.k === "user") as Extract<Node, { k: "user" }>[];
 		p.meta = { ...p.meta, first: users[0]?.text.slice(0, 200) ?? null, last: users.at(-1)?.text.slice(0, 200) ?? null, prompts: users.length, parent: from.id };
@@ -299,6 +303,12 @@ async function parse(file: string): Promise<Parsed> {
 		const t = add({ k: "tool", uuid, ts, id, name, summary, input: cut(pretty(input), 400).text, result: null, resultUuid: null, agent: null, ...(key ? { key } : {}) }) as Extract<Node, { k: "tool" }>;
 		tools.set(id, t);
 		return t;
+	};
+	/** 推理摘要：节点里只放开头，全文点开再拿 */
+	const think = (uuid: string, ts: string, text: string, key?: string) => {
+		const c = cut(text, BRIEF_THOUGHT);
+		if (c.cut) p.thoughts.set(uuid, text);
+		add({ k: "thinking", uuid, ts, ...c, ...(key ? { key } : {}) });
 	};
 	const done = (t: Extract<Node, { k: "tool" }>, text: string, error: boolean) => {
 		p.results.set(t.id, text);
@@ -340,7 +350,7 @@ async function parse(file: string): Promise<Parsed> {
 					if (text.trim()) add({ k: "assistant", uuid: id, ts, text, key });
 				} else if (it.type === "Reasoning") {
 					const text = [...(it.summary_text ?? it.summary ?? [])].map(String).filter(Boolean).join("\n\n");
-					if (text.trim()) add({ k: "thinking", uuid: id, ts, text, key });
+					if (text.trim()) think(id, ts, text, key);
 				} else {
 					const t = toolOf(it);
 					if (!t) continue;
@@ -357,7 +367,7 @@ async function parse(file: string): Promise<Parsed> {
 				if (text.trim()) add({ k: "assistant", uuid, ts, text });
 			} else if (d.type === "reasoning") {
 				const text = (d.summary ?? []).map((s: Raw) => s?.text ?? "").filter(Boolean).join("\n\n");
-				if (text.trim()) add({ k: "thinking", uuid, ts, text });
+				if (text.trim()) think(uuid, ts, text);
 			} else if (d.type === "function_call" || d.type === "custom_tool_call" || d.type === "local_shell_call" || d.type === "web_search_call") {
 				const id = String(d.call_id ?? d.id ?? uuid);
 				const name = d.type === "web_search_call" ? "web_search" : d.type === "local_shell_call" ? "shell" : String(d.name ?? "tool");
@@ -450,6 +460,7 @@ export async function toolDetail(i: Info, id: string) {
 	return { input: cut(input, 20_000).text, result: res?.text ?? null, cut: res?.cut ?? false };
 }
 export const fullResult = async (i: Info, id: string) => (await parse(i.file)).results.get(id) ?? null;
+export const thought = async (i: Info, uuid: string) => (await parse(i.file)).thoughts.get(uuid) ?? null;
 export const image = async (i: Info, uuid: string, n: number) => (await parse(i.file)).images.get(uuid)?.[n] ?? null;
 /** 这个节点在第几轮（从它分叉：thread/fork 的 lastTurnId） */
 export const turnOf = async (i: Info, uuid: string) => (await parse(i.file)).turns.get(uuid) ?? null;

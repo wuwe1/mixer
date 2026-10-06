@@ -1,8 +1,9 @@
-// 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话。
+// 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话，订阅用量。
 // 会话的「状态」由这三样合起来算：等你确认 > 在跑 > 跑完了没看 / 出错了 > 终端里开着。
+// 都从 SSE 连上时的 hello 来（第一次、每次重连），之后按推来的事件改；只有工作区有时还要整个拉一次。
 import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, type Approval, type Group, type Queued, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type Group, type Hello, type Limits, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
 
@@ -20,11 +21,11 @@ type Live = {
 	runs: Run[];
 	approvals: Approval[];
 	queue: Queued[];
+	limits: Limits | null;
 	/** 会话现在怎样 */
 	status: (s: Pick<SessionMeta, "id" | "active" | "unread">) => Status;
 	/** 这次运行的会话 id 一出来就打开它（新会话、分叉） */
 	follow: (run: Run) => void;
-	reload: () => void;
 };
 
 const Ctx = createContext<Live | null>(null);
@@ -45,27 +46,26 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	const [runs, setRuns] = useState<Run[]>([]);
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
+	const [limits, setLimits] = useState<Limits | null>(null);
 	const following = useRef(new Set<string>());
 	const [putWorkspace, putRuns, putApprovals, putQueue] = useMemo(() => [keep(setWorkspace), keep(setRuns), keep(setApprovals), keep(setQueue)] as const, []);
 
 	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次。pulled：拉过几次（拉回来没变也算，下面「终端中打开」到点了要接着看）
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [pulled, setPulled] = useState(0);
+	// 整个拉工作区：hello 之前发出去的，回来时可能比 hello 里的旧，不要了。gen：来过几次 hello
+	const gen = useRef(0);
+	const pullWorkspace = useCallback(() => {
+		const g = gen.current;
+		api<Group[]>("/api/workspace").then((w) => { if (g === gen.current) { putWorkspace(w); setPulled((n) => n + 1); } }, () => {});
+	}, [putWorkspace]);
 	const loadWorkspace = useCallback(() => {
 		if (timer.current) return;
 		timer.current = setTimeout(() => {
 			timer.current = null;
-			api<Group[]>("/api/workspace").then((w) => { putWorkspace(w); setPulled((n) => n + 1); }, () => {});
+			pullWorkspace();
 		}, 1500);
-	}, [putWorkspace]);
-	const loadAll = useCallback(() => {
-		api<Group[]>("/api/workspace").then(putWorkspace, () => setWorkspace((w) => w ?? []));
-		api<Run[]>("/api/runs").then(putRuns, () => {});
-		api<Approval[]>("/api/approvals").then(putApprovals, () => {});
-		api<Queued[]>("/api/queue").then(putQueue, () => {});
-	}, [putWorkspace, putRuns, putApprovals, putQueue]);
-	useEffect(loadAll, [loadAll]);
-	useEvent("reconnect", loadAll);
+	}, [pullWorkspace]);
 	// 工作区里的会话文件变了：通知里带着侧栏那一行，就地换掉，不再整个重拉。跑的时候 0.5 秒一次，攒着 1.5 秒换一回（整页跟着重画）。
 	// parent 留原来的（服务端不算）；不在本地工作区里的不管（刚放进来的有 workspace 事件整个拉）
 	const rows = useRef(new Map<string, SessionMeta>());
@@ -96,6 +96,20 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			setPulled((n) => n + 1);
 		}, 1500);
 	}, []));
+	// 连上了（第一次、重连）：整个换成 hello 里的。断线前攒着还没换的侧栏行作废，不然过一会儿旧的盖掉 hello 里的
+	useEvent("hello", useCallback((h: Hello) => {
+		gen.current++;
+		if (flush.current) clearTimeout(flush.current);
+		flush.current = null;
+		rows.current = new Map();
+		if (h.workspace) putWorkspace(h.workspace);
+		else setWorkspace((w) => w ?? []);
+		putRuns(h.runs);
+		putApprovals(h.approvals);
+		putQueue(h.queue);
+		setLimits(h.limits);
+		setPulled((n) => n + 1);
+	}, [putWorkspace, putRuns, putApprovals, putQueue]));
 	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
 	useEffect(() => {
 		const left = (workspace ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());
@@ -104,7 +118,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		return () => clearTimeout(t);
 	}, [workspace, pulled, loadWorkspace]);
 	useEvent("state", loadWorkspace);
-	useEvent("workspace", useCallback(() => { api<Group[]>("/api/workspace").then(putWorkspace, () => {}); }, [putWorkspace]));
+	useEvent("workspace", pullWorkspace);
 
 	useEvent("run", useCallback((r: Run) => {
 		setRuns((rs) => [r, ...rs.filter((x) => x.id !== r.id)].sort((a, b) => b.started.localeCompare(a.started)));
@@ -120,6 +134,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		navigator.vibrate?.(80);
 	}, []));
 	useEvent("queue", putQueue);
+	useEvent("limits", setLimits);
 	useEvent("queue-error", useCallback((e: { error: string }) => toast.error(`排队消息发送失败：${e.error}`.slice(0, 300)), []));
 	useEvent("approval-done", useCallback((d: { id: string }) => setApprovals((l) => l.filter((a) => a.id !== d.id)), []));
 
@@ -144,11 +159,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 				await api("/api/workspace", op);
 			} catch (e) {
 				toast.error(e instanceof Error ? e.message : String(e));
-				loadAll();
+				pullWorkspace();
 			}
 		};
-		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, status, follow, reload: loadAll };
-	}, [workspace, runs, approvals, queue, loadAll]);
+		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, approvals, queue, limits, status, follow };
+	}, [workspace, runs, approvals, queue, limits, pullWorkspace]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

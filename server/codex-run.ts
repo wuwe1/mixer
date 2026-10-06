@@ -140,7 +140,7 @@ function errorText(e: Raw | null | undefined): string {
 }
 
 export type Hooks = {
-	/** 一个 stream_event（tail.ts 认的格式） */
+	/** 一个 stream_event：和 Claude 的走同一条路（tail.ts 的 project 缩成短事件、增量攒着合并） */
 	event: (ev: Raw) => void;
 	/** 会话（线程）id 知道了 */
 	session: (id: string) => void;

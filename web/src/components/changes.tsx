@@ -85,8 +85,8 @@ function FileRow({ code, path, add, del, open, onToggle, indent, children }: { c
 
 const Note = ({ children }: { children: ReactNode }) => <p className="px-3 py-2 text-xs text-muted-foreground">{children}</p>;
 
-/** 未提交的一个文件：展开时取它的 diff；状态刷新了（v 变了）再取一次，取到之前先显示旧的 */
-function WorkFile({ project, c, v, open, onToggle }: { project: string; c: Change; v: number; open: boolean; onToggle: () => void }) {
+/** 未提交的一个文件：展开时取它的 diff；状态里它这一条变了（状态、加减行数）再取一次，取到之前先显示旧的 */
+function WorkFile({ project, c, open, onToggle }: { project: string; c: Change; open: boolean; onToggle: () => void }) {
 	const [d, setD] = useState<FileDiff | string | null>(null);
 	useEffect(() => {
 		if (!open) return;
@@ -96,7 +96,7 @@ function WorkFile({ project, c, v, open, onToggle }: { project: string; c: Chang
 			(e: Error) => live && setD(e.message),
 		);
 		return () => { live = false; };
-	}, [open, project, c.path, v]);
+	}, [open, project, c.path, c.code, c.add, c.del]);
 	return (
 		<FileRow code={c.code} path={c.path} add={c.add} del={c.del} open={open} onToggle={onToggle}>
 			{d === null ? <Skeleton className="m-3 h-16" /> : typeof d === "string" ? <Note>{d}</Note> : <Hunks file={d} />}
@@ -155,8 +155,6 @@ const total = (cs: Change[]) => <Stat add={cs.reduce((n, c) => n + (c.add ?? 0),
 
 export function Changes({ project, touched }: { project: string; touched?: string[] }) {
 	const [s, setS] = useState<Status | null>(null);
-	// 每取一次状态 +1，展开着的文件跟着重取 diff
-	const [v, setV] = useState(0);
 	// 展开着的：节「§…」、未提交的文件「w:路径」、提交「c:哈希」、提交里的文件「c:哈希:路径」。第一次取到状态时定默认
 	const [opened, setOpened] = useState<Set<string> | null>(null);
 	const touchedRef = useRef(touched);
@@ -164,8 +162,8 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 	const load = useCallback(() => {
 		api<Status>(`/api/repo/${enc(project)}/status`).then(
 			(x) => {
-				setS(x);
-				setV((n) => n + 1);
+				// 跑的时候会话一变就来取（一秒最多两次），多半没变：没变就留着原来的，什么都不重画、不重取
+				setS((o) => (o && JSON.stringify(o) === JSON.stringify(x) ? o : x));
 				setOpened((o) => o ?? initial(x, touchedRef.current));
 			},
 			() => setS({ git: false }),
@@ -193,7 +191,7 @@ export function Changes({ project, touched }: { project: string; touched?: strin
 		if (allOpen) return new Set([...(o ?? [])].filter((k) => k.startsWith("§")));
 		return new Set([...(o ?? []), "§mine", "§other", ...work]);
 	});
-	const files = (cs: Change[]) => cs.map((c) => <WorkFile key={c.path} project={project} c={c} v={v} open={isOpen(`w:${c.path}`)} onToggle={() => toggle(`w:${c.path}`)} />);
+	const files = (cs: Change[]) => cs.map((c) => <WorkFile key={c.path} project={project} c={c} open={isOpen(`w:${c.path}`)} onToggle={() => toggle(`w:${c.path}`)} />);
 	const commits = (cs: Commit[]) => cs.map((c) => <CommitRow key={c.hash} project={project} c={c} open={isOpen(`c:${c.hash}`)} onToggle={() => toggle(`c:${c.hash}`)} isOpen={isOpen} toggle={toggle} />);
 
 	return (

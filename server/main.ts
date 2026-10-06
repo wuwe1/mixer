@@ -17,7 +17,8 @@ import * as dirs from "./dirs.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, toolDetail, tree } from "./sessions.ts";
+import * as sse from "./sse.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, thought, toolDetail, tree } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as tunnel from "./tunnel.ts";
 import * as workspace from "./workspace.ts";
@@ -148,10 +149,8 @@ const pack = (f: string) => {
 	return p;
 };
 
-// SSE。连上先发 build（页面的版本），之后每 25 秒一个 ping：页面靠它知道连接还活着（手机睡醒、切网络后连接常常已经断了却没报错）
-const clients = new Set<ServerResponse>();
-const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-const emit = (type: string, data: unknown) => { const m = sse(type, data); for (const c of clients) c.write(m); };
+// SSE（sse.ts）。连上先发 build（页面的版本）、再发 hello（全部状态），之后每 25 秒一个 ping：页面靠它知道连接还活着（手机睡醒、切网络后连接常常已经断了却没报错）
+const { emit } = sse;
 runs.onEvent(emit);
 setInterval(() => emit("ping", {}), 25_000).unref();
 
@@ -204,6 +203,10 @@ const GET: [RegExp, Handler][] = [
 	}],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/result\/([\w-]+)$/, async (_q, res, m, url) => {
 		const t = await fullResult(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
+		return t === null ? json(res, 404, { error: "没有" }) : json(res, 200, { text: t });
+	}],
+	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/thinking\/([\w-]+)$/, async (_q, res, m, url) => {
+		const t = await thought(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
 		return t === null ? json(res, 404, { error: "没有" }) : json(res, 200, { text: t });
 	}],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/image\/([\w-]+)\/(\d+)$/, async (_q, res, m, url) => {
@@ -370,11 +373,11 @@ const server = createServer(async (req, res) => {
 		} else if (path.startsWith("/api/") && !(await access.who(req))) return json(res, 401, { error: "要先登录", login: true });
 		if (path === "/api/events") {
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-			res.write(version ? sse("build", { version }) : ": hi\n\n");
-			clients.add(res);
-			res.on("close", () => clients.delete(res));
-			res.on("error", () => clients.delete(res));
-			return;
+			res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
+			res.on("close", () => sse.leave(res));
+			res.on("error", () => sse.leave(res));
+			// 工作区先算（要读会话），运行这些在它之后同步拿，是发出去那一刻的
+			return void sse.join(res, async () => ({ workspace: await workspace.view().catch(() => null), ...runs.snapshot(), limits: state.limits() })).catch((e) => console.error(e));
 		}
 		const table = req.method === "POST" ? POST : req.method === "GET" ? GET : [];
 		if (req.method === "POST" && (!req.headers["content-type"]?.startsWith("application/json") || !ours(req))) return json(res, 403, { error: "只收自己页面的 JSON" });
@@ -406,6 +409,10 @@ const server = createServer(async (req, res) => {
 		json(res, status, { error: e instanceof Error ? e.message : String(e) });
 	}
 });
+// 隧道（cloudflared）把空闲的连接留着再用，留得比 Node 默认的 5 秒久：这边先关了，正好用上的那个请求就 502。
+// 比它留得久（120 秒）；headersTimeout 要比这个长。都只管收请求，挂着的回应（SSE、等人点的确认请求）不受影响
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 125_000;
 // 端口被占了之类：起不来就退出（launchd 隔一会儿再拉），不要挂着一个不听端口的进程
 server.on("error", (e) => {
 	say(`起不来：${e.message}`);

@@ -1,14 +1,15 @@
 // 服务推来的事件（SSE）：运行的输出、运行状态、确认请求、排队、会话文件有变化。整个页面共用一条连接。
 // 连接要自己看着：EventSource 遇到不是 200 的回应（服务自动重启时隧道回 502）就彻底关了、不再重连；
 // 手机上切到后台再回来，连接常常已经断了却没报错。所以：关了就退避着重连；回到前台、页面从缓存里恢复、网络回来了都重连；
-// 服务每 25 秒发一个 ping，页面在前台时 60 秒什么都没收到也重连。连上了一律当成重连，各处整个重新拉一遍（reconnect）。
+// 服务每 25 秒发一个 ping，页面在前台时 60 秒什么都没收到也重连。连上了一律当成重连（reconnect，看着的会话拉增量）。
+// 服务每次连上先推 hello：这时的运行、确认请求、排队、用量、工作区、正在写的那几段，各处拿它整个换掉（不另外拉：拉回来的可能比推来的旧）。
 // 服务每次连上、每次重新打包后推 build（页面的版本）：和这个页面不一样就提示刷新，在后台的回到前台时直接刷新。
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 type Handler = (data: any) => void; // biome-ignore lint: 各种事件的数据不一样
 const handlers = new Map<string, Set<Handler>>();
-const TYPES = ["run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state", "limits", "workspace"];
+const TYPES = ["hello", "run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state", "limits", "workspace"];
 let es: EventSource | null = null;
 let up = true;
 const upListeners = new Set<(u: boolean) => void>();
