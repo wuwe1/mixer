@@ -2,7 +2,7 @@
 // 不上状态色（CLAUDE.md「设计」）：强调靠字重、黑白对比和图标。
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { Check, Info, Lightbulb, TriangleAlert, X } from "lucide-react";
+import { Check, Info, Lightbulb, Minus, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Spec } from "@/lib/visual";
 import { cn } from "@/lib/utils";
@@ -136,34 +136,59 @@ export function LayersView({ spec }: { spec: Spec<"Layers"> }) {
 	);
 }
 
+/**
+ * 方案对比：每个方案一张卡片。上面是编号（A、B、C 的小方块）、名字和一句说明，中间好处、代价各一段（✓ 是黑的，− 是灰的），
+ * 「适合」放在最底下的一条灰底里（并排时几张卡片的底边对齐，一眼横着比）。推荐的那张描黑边、编号反白、右上角写「推荐」。
+ * 手机上一列竖着叠，宽了两列、三列并排
+ */
 export function CompareView({ spec }: { spec: Spec<"Compare"> }) {
 	return (
 		<div className={cn("grid grid-cols-1 gap-3", spec.items.length === 2 ? "sm:grid-cols-2" : spec.items.length >= 3 && "sm:grid-cols-2 lg:grid-cols-3")}>
 			{spec.items.map((c, i) => (
-				<Frame key={i} title={c.title}>
-					<div className="flex flex-col gap-2 text-md">
-						{c.text && <div className="text-muted-foreground">{c.text}</div>}
-						<Points sign="+" list={c.pros} label="好处" />
-						<Points sign="−" list={c.cons} label="代价" />
-						{c.when && <div className="border-t pt-2 text-xs"><span className="text-muted-foreground">什么时候选：</span>{c.when}</div>}
-					</div>
-				</Frame>
+				<figure key={i} className={cn("flex min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground", c.pick && "border-foreground")}>
+					<figcaption className="px-4 py-3">
+						<div className="flex items-center gap-2.5">
+							<span className={cn("flex size-5 shrink-0 items-center justify-center rounded-md border font-mono text-2xs font-medium", c.pick ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>
+								{String.fromCharCode(65 + (i % 26))}
+							</span>
+							<span className="min-w-0 flex-1 text-sm font-semibold tracking-tight">{c.title}</span>
+							{c.pick && <span className="shrink-0 text-2xs font-medium">推荐</span>}
+						</div>
+						{c.text && <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{c.text}</p>}
+					</figcaption>
+					{(!!c.pros?.length || !!c.cons?.length) && (
+						<div className="flex flex-1 flex-col gap-3 border-t px-4 py-3 text-md">
+							<Points icon={Check} list={c.pros} label="好处" />
+							<Points icon={Minus} list={c.cons} label="代价" dim />
+						</div>
+					)}
+					{c.when && (
+						<div className="mt-auto border-t bg-muted/50 px-4 py-2.5 text-xs">
+							<span className="mr-1.5 text-muted-foreground">适合</span>
+							{c.when}
+						</div>
+					)}
+				</figure>
 			))}
 		</div>
 	);
 }
 
-function Points({ sign, list, label }: { sign: string; list?: string[]; label: string }) {
+/** 一段好处或代价：小标题，下面一条一条；dim 的图标是灰的（代价不是坏事，只是不那么突出） */
+function Points({ icon: I, list, label, dim }: { icon: typeof Check; list?: string[]; label: string; dim?: boolean }) {
 	if (!list?.length) return null;
 	return (
-		<ul aria-label={label} className="flex flex-col gap-0.5">
-			{list.map((p, i) => (
-				<li key={i} className="flex gap-2">
-					<span className="w-3 shrink-0 font-mono text-muted-foreground">{sign}</span>
-					<span>{p}</span>
-				</li>
-			))}
-		</ul>
+		<section>
+			<div className="mb-1 text-2xs font-medium text-muted-foreground">{label}</div>
+			<ul aria-label={label} className="flex flex-col gap-1">
+				{list.map((p, i) => (
+					<li key={i} className="flex gap-2">
+						<I className={cn("mt-0.5 size-3.5 shrink-0", dim ? "text-muted-foreground" : "text-foreground")} strokeWidth={2.5} />
+						<span className="min-w-0">{p}</span>
+					</li>
+				))}
+			</ul>
+		</section>
 	);
 }
 

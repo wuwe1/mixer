@@ -48,3 +48,14 @@ test("说明里有每一种组件，例子本身能过校验", () => {
 	assert.equal(done, true);
 	assert.deepEqual(check(value), []);
 });
+
+test("删掉的 ArrayViz：以前的回复照样画，换成 Stepper，每帧一个排成一行的 Graph", () => {
+	const c = checkNode({ type: "ArrayViz", frames: [{ cells: [1, 3, 5], pointers: { lo: 0, hi: 2 }, note: "开始" }, { pointers: { mid: 1 }, highlight: [1], dim: [0] }] });
+	assert.equal(c.ok, true);
+	if (!c.ok || c.spec.type !== "Stepper") return assert.fail("要换成 Stepper");
+	const [a, b] = c.spec.frames.map((f) => f.children[0] as { nodes: { label: string; note?: string; emphasis?: boolean; dim?: boolean }[] });
+	assert.deepEqual(a.nodes.map((n) => [n.label, n.note]), [["1", "lo"], ["3", undefined], ["5", "hi"]]);
+	assert.equal(c.spec.frames[0].children.length, 2);
+	assert.deepEqual(b.nodes.map((n) => [n.label, n.note, !!n.emphasis, !!n.dim]), [["1", undefined, false, true], ["3", "mid", true, false], ["5", undefined, false, false]]);
+	assert.deepEqual(check(c.spec), []);
+});

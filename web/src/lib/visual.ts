@@ -29,14 +29,24 @@ const DEFS = {
 				id: text,
 				label: text,
 				note: z.string().optional().describe("节点里第二行小字"),
-				shape: z.enum(["box", "round", "diamond"]).optional().describe("box 默认 / round 起止、状态 / diamond 判断"),
+				shape: z.enum(["box", "round", "diamond", "note"]).optional().describe("box 默认 / round 起止、状态 / diamond 判断 / note 旁注、提醒（便签）"),
+				kind: z.string().optional().describe("属于哪个 kinds 的 id：按类型上色"),
+				alt: z.boolean().optional().describe("同一类的另一种状态（例 等待中 vs 运行中）：画浅一档、带斜线"),
+				stack: z.boolean().optional().describe("叠成几层：有很多个一样的（例 × N 层）"),
+				dim: z.boolean().optional().describe("淡掉：已经排除、不用再看的"),
 				emphasis: z.boolean().optional().describe("要读者盯住的那一两个"),
 				group: z.string().optional().describe("属于哪个 groups 的 id"),
 			})),
-			edges: z.array(z.object({ from: text, to: text, label: z.string().optional(), dashed: z.boolean().optional().describe("可选、异步、间接") })).default([]),
-			groups: z.array(z.object({ id: text, label: text })).optional().describe("把节点框成一组（例 一个进程、一台机器）"),
+			edges: z.array(z.object({ from: text, to: text, label: z.string().optional(), dashed: z.boolean().optional().describe("虚线：和实线是两种关系（例 实线调用、虚线对应）") })).default([]),
+			groups: z.array(z.object({
+				id: text,
+				label: text,
+				parent: z.string().optional().describe("套在哪个组里面"),
+				dashed: z.boolean().optional().describe("虚线框：逻辑上的一组（一组配置、一类数据）；不写是实线框：真实存在的东西（进程、服务、机器）"),
+			})).optional().describe("框：表示包含，能一层套一层"),
+			kinds: z.array(z.object({ id: text, label: text })).optional().describe("节点的类型（最多 5 类）：同一类同一个颜色，图下自动出图例"),
 		},
-		use: "节点和箭头：流程、依赖、架构、数据流、状态机、因果。只给关系，位置自动排",
+		use: "节点和箭头：流程、依赖、架构、数据流、状态机、因果。只给关系，位置自动排。没有箭头、也没有 groups 时按 nodes 的顺序排成等宽的一行（TB 是一列）：数组、栈、队列",
 	},
 	Tree: { shape: { root: z.unknown().describe("{ label, note?, children?: 同样的节点[] }") }, use: "层级：分类、组成、目录、语法树" },
 	Sequence: {
@@ -49,7 +59,7 @@ const DEFS = {
 	Timeline: { shape: { items: z.array(z.object({ when: text, title: text, text: z.string().optional() })) }, use: "按时间排的事件：历史、版本、生命周期" },
 	Steps: { shape: { items: z.array(z.object({ title: text, text: z.string().optional().describe("Markdown") })) }, use: "按顺序做的几步、一个推导的几步" },
 	Layers: { shape: { layers: z.array(z.object({ label: text, note: z.string().optional(), items: z.array(text).optional() })).describe("从上到下") }, use: "分层结构：协议栈、系统架构、抽象层次" },
-	Compare: { shape: { items: z.array(z.object({ title: text, text: z.string().optional(), pros: z.array(text).optional(), cons: z.array(text).optional(), when: z.string().optional().describe("什么时候选它") })) }, use: "几个方案的取舍（逐项对比数字用 Table）" },
+	Compare: { shape: { items: z.array(z.object({ title: text, text: z.string().optional(), pros: z.array(text).optional(), cons: z.array(text).optional(), when: z.string().optional().describe("什么时候选它"), pick: z.boolean().optional().describe("推荐它（最多一个）") })) }, use: "几个方案的取舍（逐项对比数字用 Table）" },
 	// 数据
 	Chart: {
 		shape: {
@@ -60,19 +70,6 @@ const DEFS = {
 			series: z.array(z.object({ name: text, points: z.array(z.tuple([z.union([z.number(), z.string()]), z.number()])).describe("[x, y]；bar 的 x 是类别名") })).describe("最多 8 组；scatter 最多 3 组"),
 		},
 		use: "数据：趋势（line）、比大小（bar）、关系（scatter）。只有一个轴，不画双轴",
-	},
-	// 过程
-	ArrayViz: {
-		shape: {
-			frames: z.array(z.object({
-				cells: z.array(z.union([z.string(), z.number(), z.null()])).optional().describe("这一帧的格子；不写就沿用上一帧"),
-				pointers: z.record(z.string(), z.number().int()).optional().describe("指针名 → 下标（例 { lo: 0, hi: 7 }）"),
-				highlight: z.array(z.number().int()).optional().describe("要盯住的格子"),
-				dim: z.array(z.number().int()).optional().describe("已经排除的格子"),
-				note: z.string().optional().describe("这一步发生了什么"),
-			})),
-		},
-		use: "数组、栈、队列上的算法一步一步走（二分、双指针、排序、滑动窗口）。每一帧写清状态，网页负责播放",
 	},
 	Quiz: { shape: { question: text, options: z.array(text), answer: z.number().int().describe("对的那个选项的下标，从 0 起"), explain: z.string().optional().describe("选完后显示：为什么") }, use: "讲完了出一道题，让读者检验自己懂没懂" },
 } satisfies Record<string, { shape: z.ZodRawShape; use: string }>;
@@ -92,6 +89,7 @@ const ZH = { error: z.locales.zhCN().localeError };
 export type Checked = { ok: true; spec: Spec } | { ok: false; kind: string | null; issues: string[] };
 export function checkNode(v: unknown): Checked {
 	if (!v || typeof v !== "object" || Array.isArray(v)) return { ok: false, kind: null, issues: ["要的是一个对象 { type, … }"] };
+	v = legacy(v as Raw);
 	const t = (v as { type?: unknown }).type;
 	if (typeof t !== "string" || !(t in SCHEMAS)) {
 		const near = typeof t === "string" ? nearest(t) : null;
@@ -102,6 +100,29 @@ export function checkNode(v: unknown): Checked {
 	if (r.success && (!tree || tree.success)) return { ok: true, spec: r.data as Spec };
 	const issues = r.success ? (tree?.error?.issues ?? []).map((i) => ({ ...i, path: ["root", ...i.path] })) : r.error.issues;
 	return { ok: false, kind: t, issues: issues.map((i) => `${i.path.join(".") || "(整个)"}: ${i.message}`) };
+}
+
+type Raw = Record<string, any>; // biome-ignore lint: 还没校验的 JSON
+
+/**
+ * 删掉的组件：以前的回复里还有，换成现在的写法照样画（不写进给 Claude 的说明）。
+ * ArrayViz → Stepper，每帧一个没有箭头的 Graph（格子排成一行，指针写在 note 里）加这一步的说明
+ */
+function legacy(v: Raw): unknown {
+	if (v.type !== "ArrayViz" || !Array.isArray(v.frames)) return v;
+	let cells: unknown[] = [];
+	return {
+		type: "Stepper",
+		frames: v.frames.map((f: Raw) => {
+			if (Array.isArray(f?.cells)) cells = f.cells;
+			const at = new Map<number, string[]>();
+			for (const [name, i] of Object.entries(f?.pointers ?? {})) at.set(Number(i), [...(at.get(Number(i)) ?? []), name]);
+			const hi = new Set(f?.highlight ?? []);
+			const dim = new Set(f?.dim ?? []);
+			const nodes = cells.map((c, i) => ({ id: String(i), label: c == null ? "" : String(c), note: at.get(i)?.join(" "), emphasis: hi.has(i) || undefined, dim: dim.has(i) || undefined }));
+			return { children: [{ type: "Graph", nodes }, ...(typeof f?.note === "string" ? [{ type: "Text", text: f.note }] : [])] };
+		}),
+	};
 }
 
 /** 整个代码块里有问题的地方，带路径（测试、以后给 Claude 自查用） */
@@ -256,7 +277,13 @@ export function prompt(): string {
 怎么写：
 - 只写语义（有哪些东西、谁连谁、每一步是什么）。位置、颜色、大小由网页定，不要想坐标，也没有颜色字段
 - 一个图讲一件事，节点十几个以内；太多就拆成几个，或者用 Tabs、Stepper
-- 过程用 Stepper 或 ArrayViz：把每一步的状态写出来，网页负责播放，不要写代码去算
+- 过程用 Stepper：每一帧写清那一步的状态，网页负责播放，不要写代码去算。数组、栈、队列上的算法（二分、双指针、排序、滑动窗口）：每帧一个没有箭头的 Graph（格子按顺序排成一行），emphasis 盯住、dim 已排除、指针写在格子的 note 里（例 "mid"），下面一个 Text 说这一步干了什么
+- 画 Graph 照这个顺序想（先内容、后关系，每种关系一种画法，全图一致）：
+  1. 先把要讲的东西全列成节点（一般 6–12 个），默认都是 box；形状有意思才换（round 起止、diamond 判断、note 旁注）
+  2. 包含用 groups，能一层套一层（parent）：实线框是真实存在的（进程、服务、机器），虚线框（dashed）是逻辑上的一组（一组配置、一类数据）
+  3. 关联用箭头，要紧的写 label；一张图里实线、虚线各只有一种意思（例 实线 = 调用 / 数据流，虚线 = 对应 / 映射），在文字里点一句
+  4. 东西分得出 3 类以上就用 kinds 按类型上色（最多 5 类），同一类永远同一个颜色；同一类的另一种状态用 alt。颜色只表示类型，不表示好坏
+  5. emphasis 只给一两个要盯住的；很多个一样的（× N 层）用 stack，别真画 N 个
 - 文字字段里能写 Markdown 的会标出来；Markdown 里不认 $…$，公式用 Math 单独一行（或者写成 log₂n 这样的普通字）
 - 组件之外的东西（自由画的 SVG、HTML、脚本）画不了；画不出来的就用文字或普通代码块说
 - 用户在终端里看时代码块原样显示，所以 JSON 要缩进整齐、好读

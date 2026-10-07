@@ -5,7 +5,6 @@ import { createContext, type ReactNode, useContext, useMemo, useState, Component
 import { Skeleton } from "@/components/ui/skeleton";
 import { checkNode, type Kind, parse, type Spec } from "@/lib/visual";
 import { ChartView } from "./chart";
-import { ArrayView } from "./array";
 import { CalloutView, CodeView, CompareView, LayersView, MathView, QuizView, StatView, StepsView, TableView, TextView, TimelineView } from "./content";
 import { GraphView, SequenceView, TreeView } from "./graph";
 import { CardView, GridView, StepperView, TabsView } from "./layout";
@@ -18,7 +17,7 @@ const VIEWS: { [K in Kind]: (p: { spec: Spec<K> }) => ReactNode } = {
 	Grid: GridView, Card: CardView, Tabs: TabsView, Stepper: StepperView,
 	Text: TextView, Callout: CalloutView, Math: MathView, Code: CodeView, Table: TableView, Stat: StatView,
 	Graph: GraphView, Tree: TreeView, Sequence: SequenceView, Timeline: TimelineView, Steps: StepsView, Layers: LayersView, Compare: CompareView,
-	Chart: ChartView, ArrayViz: ArrayView, Quiz: QuizView,
+	Chart: ChartView, Quiz: QuizView,
 };
 
 export function Visual({ source }: { source: string }) {

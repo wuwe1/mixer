@@ -36,7 +36,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - **状态标记**：`StatusIcon`（`side.tsx`）是唯一的画法，侧栏、项目汇总、顶栏都用它。实心点 = 要你注意，带扩散的蓝点 = 运行中，带扩散的蓝色空心圈 = 后台任务在跑（Claude 闲着），灰色空心圈 = 终端中打开（90 秒内有不是 mixer 的写入）；工具组收着时露出的最后一步，跑完了是绿点（成功）/ 红点（失败）
 - **颜色**：`waiting` 琥珀 = 要你确认（待确认的点、确认卡片）；`unread` 蓝 = 在跑（带扩散）/ 跑完没看过；`success` 绿 = 一步工具调用成功了；`destructive` 红 = 出错；`muted-foreground` 灰 = 中性。只有这五种意思，别的地方不上色（比如「后台任务 · 完成」是灰的）
 - **改动色**：`added` / `removed` / `modified` / `renamed`，只用在文件改动和 diff 上（git 工具的习惯配色）
-- **系列色**：`--series-1…8`，只用在图解的图表里，表示「这是哪一组数据」，按顺序用、不循环（dataviz 参考调色板，深浅色各一套）。图解别的地方不上色，强调靠字重和黑白对比
+- **系列色**：`--series-1…8`，只用在图解里表示「这是哪一类」：图表里是哪一组数据，Graph 里是节点的类型（`kinds`，浅底色加同色边框，同一类的另一种状态 `alt` 更浅带斜线，图下出图例）。按顺序用、不循环（dataviz 参考调色板，深浅色各一套）。图解别的地方不上色，强调靠字重和黑白对比
 - **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）、`text-lg` 18px（标题：侧栏的 mixer、项目页的项目名）；代码块、diff 的行高用 `leading-code`。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
 - **图标按钮**：Button 的 `size="icon-xs"`（24px，消息后面）/ `"icon-sm"`（28px，面板里）/ `"icon"`（32px，顶栏、发送），不在 className 里另写 `size-*`；小文字按钮用 `size="xs"`（自带 `text-2xs`）/ `"sm"`（自带 `text-xs`），className 里不再写字号、高度
 - **加载中**：一律 `Spinner`（和状态标记同样的点带扩散，颜色跟文字）；Claude 运行中用 `StatusIcon` 的 `running`（蓝）。不用转圈；**展开收起**：一律左边一个 `›`，展开时转 90°；**空状态**：一律 `Placeholder`（`Empty`）；渲染出错是 `Boundary`（`placeholder.tsx`），显示「出错了」和「刷新」

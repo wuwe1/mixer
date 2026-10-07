@@ -1,8 +1,11 @@
 // 图：节点和箭头（Graph，dagre 自动排）、树（换成从上到下的 Graph）、时序图（Sequence，自己排：一列一个参与者、一行一条消息）。
-// Claude 只给关系，不给坐标；字宽用 canvas 量，节点按字的大小定。颜色只用 token：线、框是 border / muted-foreground，要盯住的用 foreground 加粗。
+// Claude 只给关系，不给坐标；字宽用 canvas 量，节点按字的大小定。线、框是 border / muted-foreground，要盯住的用 foreground 加粗；
+// Graph 的 kinds（节点的类型）按顺序用系列色（--series-1…）：浅底色加同色边框，同一类的另一种状态（alt）更浅、带斜线，图下出图例。
+// 组是框：实线框（浅底）是真实存在的东西，虚线框是逻辑上的一组，能一层套一层
 import { Graph as Dagre, layout } from "@dagrejs/dagre";
 import { useId, useMemo } from "react";
 import type { Spec, TreeItem } from "@/lib/visual";
+import { cn } from "@/lib/utils";
 import { useDone } from "./index";
 
 const LABEL = 13;
@@ -55,28 +58,45 @@ export function GraphView({ spec }: { spec: Spec<"Graph"> }) {
 	return <Drawing g={g} />;
 }
 
-type Placed = Spec<"Graph">["nodes"][number] & { x: number; y: number; w: number; h: number };
+type Placed = Spec<"Graph">["nodes"][number] & { x: number; y: number; w: number; h: number; tone?: number };
 /** 排好的图：Graph（dagre）、Tree（自己排）都出这个，同一个画法 */
 type Laid = {
 	w: number;
 	h: number;
 	nodes: Placed[];
-	groups: { id: string; label: string; x: number; y: number; w: number; h: number }[];
+	groups: { id: string; label: string; x: number; y: number; w: number; h: number; dashed?: boolean }[];
+	/** 图例：用到了的类型，tone 是第几个系列色（从 1 起） */
+	legend: { label: string; tone: number }[];
 	edges: { points: { x: number; y: number }[]; label?: string; lw: number; at: { x: number; y: number } | null; dashed?: boolean }[];
 	missing: string[];
 };
 
+/** 第几个系列色的浅底（alt 更浅）、边框 */
+const tint = (tone: number, alt?: boolean) => `color-mix(in oklab, var(--series-${tone}) ${alt ? 10 : 22}%, var(--card))`;
+const line = (tone: number) => `var(--series-${tone})`;
+
 function Drawing({ g }: { g: Laid }) {
 	const done = useDone();
 	const id = useSvgId();
+	const tones = [...new Set(g.nodes.filter((n) => n.alt && n.tone).map((n) => n.tone as number))];
 	return (
 		<figure className="min-w-0 rounded-lg border bg-card p-3">
 			<Canvas w={g.w} h={g.h}>
-				<defs><Arrow id={id} /></defs>
+				<defs>
+					<Arrow id={id} />
+					{/* alt 的斜线：每个用到的系列色一种 */}
+					{tones.map((t) => (
+						<pattern key={t} id={`${id}-h${t}`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+							<rect width="6" height="6" style={{ fill: tint(t, true) }} />
+							<line x1="0" y1="0" x2="0" y2="6" strokeWidth="1.5" style={{ stroke: line(t) }} strokeOpacity={0.35} />
+						</pattern>
+					))}
+				</defs>
 				{g.groups.map((c) => (
 					<g key={c.id}>
-						<rect x={c.x} y={c.y} width={c.w} height={c.h} rx={8} className="fill-muted/40 stroke-border" strokeDasharray="4 3" />
-						<text x={c.x + 8} y={c.y + 14} fontSize={NOTE} className="fill-muted-foreground">{c.label}</text>
+						<rect x={c.x} y={c.y} width={c.w} height={c.h} rx={8} className={c.dashed ? "fill-none stroke-muted-foreground" : "fill-muted/40 stroke-border"} strokeDasharray={c.dashed ? "5 4" : undefined} />
+						{/* 描一圈底色：穿过标题的线不把字划花 */}
+						<text x={c.x + 8} y={c.y + 14} fontSize={NOTE} fontWeight={c.dashed ? 400 : 500} className="fill-muted-foreground stroke-card" strokeWidth={3} paintOrder="stroke">{c.label}</text>
 					</g>
 				))}
 				{g.edges.map((e, i) => (
@@ -90,34 +110,56 @@ function Drawing({ g }: { g: Laid }) {
 						)}
 					</g>
 				))}
-				{g.nodes.map((n) => <Box key={n.id} n={n} />)}
+				{g.nodes.map((n) => <Box key={n.id} n={n} hatch={n.alt && n.tone ? `url(#${id}-h${n.tone})` : undefined} />)}
 			</Canvas>
+			{!!g.legend.length && (
+				<figcaption className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1 text-2xs text-muted-foreground">
+					{g.legend.map((k) => (
+						<span key={k.tone} className="flex items-center gap-1.5">
+							<span className="size-2.5 rounded-sm border" style={{ background: tint(k.tone), borderColor: line(k.tone) }} />
+							{k.label}
+						</span>
+					))}
+				</figcaption>
+			)}
 			{done && !!g.missing.length && <figcaption className="mt-2 text-2xs text-muted-foreground">没画的箭头：{g.missing.join("；")}</figcaption>}
 		</figure>
 	);
 }
 
-/** 节点按字的大小定宽高 */
-function sizeOf(n: { label: string; note?: string; emphasis?: boolean; shape?: string }) {
+/** 叠成几层时后面露出来的那两层各错开多少 */
+const STACK = 4;
+
+/** 节点按字的大小定宽高（叠层的要多留出后面两层的位置） */
+function sizeOf(n: { label: string; note?: string; emphasis?: boolean; shape?: string; stack?: boolean }) {
 	const tw = Math.max(measure(n.label, LABEL, n.emphasis ? 600 : 500), n.note ? measure(n.note, NOTE) : 0);
 	const [w, h] = [Math.max(tw + 24, 56), n.note ? 46 : 32];
-	return n.shape === "diamond" ? { w: w * 1.5, h: h * 1.5 } : { w, h };
+	if (n.shape === "diamond") return { w: w * 1.5, h: h * 1.5 };
+	return n.stack ? { w: w + STACK * 2, h: h + STACK * 2 } : { w, h };
 }
 
-function Box({ n }: { n: Placed }) {
-	const cls = n.emphasis ? "fill-card stroke-foreground" : "fill-card stroke-border";
-	const sw = n.emphasis ? 1.5 : 1;
+/** 一个节点：有类型的上系列色（alt 用斜线），便签是没边框的灰底，叠层的在右下方露出两层 */
+function Box({ n, hatch }: { n: Placed; hatch?: string }) {
+	const note = n.shape === "note";
+	const style = n.tone ? { fill: hatch ?? tint(n.tone, n.alt), stroke: n.emphasis ? undefined : line(n.tone) } : undefined;
+	const cls = cn(note ? "fill-muted stroke-none" : "fill-card stroke-border", n.emphasis && "stroke-foreground");
+	const sw = n.emphasis ? 1.75 : 1;
+	const off = n.stack && n.shape !== "diamond" ? STACK * 2 : 0;
+	const [w, h] = [n.w - off, n.h - off];
 	const [l, t] = [n.x - n.w / 2, n.y - n.h / 2];
-	const ly = n.note ? n.y - 2 : n.y + 4.5;
+	const [cx, cy] = [l + w / 2, t + h / 2];
+	const ly = n.note ? cy - 2 : cy + 4.5;
+	const rx = n.shape === "round" ? h / 2 : note ? 2 : 6;
 	return (
-		<g>
+		<g opacity={n.dim ? 0.35 : undefined}>
+			{[2, 1].map((k) => off > 0 && <rect key={k} x={l + STACK * k} y={t + STACK * k} width={w} height={h} rx={rx} className={cls} style={style} strokeWidth={1} />)}
 			{n.shape === "diamond" ? (
-				<polygon points={`${n.x},${t} ${l + n.w},${n.y} ${n.x},${t + n.h} ${l},${n.y}`} className={cls} strokeWidth={sw} />
+				<polygon points={`${n.x},${t} ${l + n.w},${n.y} ${n.x},${t + n.h} ${l},${n.y}`} className={cls} style={style} strokeWidth={sw} />
 			) : (
-				<rect x={l} y={t} width={n.w} height={n.h} rx={n.shape === "round" ? n.h / 2 : 6} className={cls} strokeWidth={sw} />
+				<rect x={l} y={t} width={w} height={h} rx={rx} className={cls} style={style} strokeWidth={sw} />
 			)}
-			<text x={n.x} y={ly} fontSize={LABEL} fontWeight={n.emphasis ? 600 : 500} textAnchor="middle" className="fill-foreground">{n.label}</text>
-			{n.note && <text x={n.x} y={ly + 15} fontSize={NOTE} textAnchor="middle" className="fill-muted-foreground">{n.note}</text>}
+			<text x={cx} y={ly} fontSize={note ? NOTE + 1 : LABEL} fontWeight={n.emphasis ? 600 : note ? 400 : 500} textAnchor="middle" className="fill-foreground">{n.label}</text>
+			{n.note && <text x={cx} y={ly + 15} fontSize={NOTE} textAnchor="middle" className="fill-muted-foreground">{n.note}</text>}
 		</g>
 	);
 }
@@ -128,7 +170,8 @@ function place(spec: Spec<"Graph">): Laid {
 	const lr = spec.direction !== "TB";
 	g.setGraph({ rankdir: lr ? "LR" : "TB", nodesep: 24, ranksep: lr ? 56 : 44, edgesep: 12, marginx: 8, marginy: 8 });
 	g.setDefaultEdgeLabel(() => ({}));
-	const groups = new Map((spec.groups ?? []).map((c) => [c.id, c.label]));
+	const groups = new Map((spec.groups ?? []).map((c) => [c.id, c]));
+	const kinds = new Map((spec.kinds ?? []).slice(0, 8).map((k, i) => [k.id, { label: k.label, tone: i + 1 }]));
 	const nodes = new Map<string, Spec<"Graph">["nodes"][number]>();
 	for (const n of spec.nodes) {
 		if (nodes.has(n.id)) continue;
@@ -137,7 +180,17 @@ function place(spec: Spec<"Graph">): Laid {
 		g.setNode(n.id, { width: w, height: h });
 	}
 	for (const [cid] of groups) g.setNode(`group:${cid}`, { paddingTop: 20 });
+	// 组套组：parent 指向别的组（不能是自己、不能绕成圈）
+	const depth = (cid: string, seen = new Set<string>()): number => {
+		const p = groups.get(cid)?.parent;
+		if (!p || !groups.has(p) || seen.has(p) || p === cid) return 0;
+		seen.add(cid);
+		return 1 + depth(p, seen);
+	};
+	for (const [cid, c] of groups) if (c.parent && groups.has(c.parent) && c.parent !== cid && !ancestors(groups, c.parent).has(cid)) g.setParent(`group:${cid}`, `group:${c.parent}`);
 	for (const n of nodes.values()) if (n.group && groups.has(n.group)) g.setParent(n.id, `group:${n.group}`);
+	// 没有箭头、没有组：按 nodes 的顺序排成等宽的一行（TB 是一列），数组、栈、队列。交给 dagre 的话会叠成一列、顺序也不保
+	if (!spec.edges.length && !groups.size) return row([...nodes.values()], lr, kinds);
 	const missing: string[] = [];
 	spec.edges.forEach((e, i) => {
 		const lost = [e.from, e.to].filter((x) => !nodes.has(x));
@@ -149,13 +202,16 @@ function place(spec: Spec<"Graph">): Laid {
 	const info = g.graph();
 	const placed = [...nodes.values()].map((n): Placed => {
 		const p = g.node(n.id);
-		return { ...n, x: p.x, y: p.y, w: p.width, h: p.height };
+		return { ...n, x: p.x, y: p.y, w: p.width, h: p.height, tone: n.kind ? kinds.get(n.kind)?.tone : undefined };
 	});
-	const boxes = [...groups].map(([cid, label]) => {
+	// 外层的先画，里层的盖在上面
+	const boxes = [...groups].sort(([a], [b]) => depth(a) - depth(b)).map(([cid, c]) => {
 		const p = g.node(`group:${cid}`);
 		// 空的组 dagre 不给位置
-		return p && Number.isFinite(p.x) ? { id: cid, label, x: p.x - p.width / 2, y: p.y - p.height / 2 - 12, w: p.width, h: p.height + 12 } : null;
+		return p && Number.isFinite(p.x) ? { id: cid, label: c.label, dashed: c.dashed, x: p.x - p.width / 2, y: p.y - p.height / 2 - 12, w: p.width, h: p.height + 12 } : null;
 	}).filter((c) => c !== null);
+	const used = new Set(placed.map((n) => n.tone));
+	const legend = [...kinds.values()].filter((k) => used.has(k.tone));
 	const edges = g.edges().map((ref) => {
 		const e = g.edge(ref) as { points: { x: number; y: number }[]; x?: number; y?: number; label?: string };
 		const src = spec.edges[Number(ref.name)];
@@ -170,8 +226,26 @@ function place(spec: Spec<"Graph">): Laid {
 		nodes: placed.map(shift),
 		groups: boxes.map(shift),
 		edges: edges.map((e) => ({ ...e, points: e.points.map(shift), at: e.at && shift(e.at) })),
+		legend,
 		missing,
 	};
+}
+
+/** 排成一行（或一列）：一样宽、一样高，间距 8 */
+function row(list: Spec<"Graph">["nodes"], lr: boolean, kinds: Map<string, { label: string; tone: number }>): Laid {
+	const sizes = list.map(sizeOf);
+	const [W, H, gap, m] = [Math.max(...sizes.map((s) => s.w)), Math.max(...sizes.map((s) => s.h)), 8, 8];
+	const nodes = list.map((n, i): Placed => ({ ...n, w: W, h: H, x: m + W / 2 + (lr ? i * (W + gap) : 0), y: m + H / 2 + (lr ? 0 : i * (H + gap)), tone: n.kind ? kinds.get(n.kind)?.tone : undefined }));
+	const used = new Set(nodes.map((n) => n.tone));
+	const span = (size: number) => m * 2 + list.length * size + (list.length - 1) * gap;
+	return { w: lr ? span(W) : m * 2 + W, h: lr ? m * 2 + H : span(H), nodes, groups: [], edges: [], legend: [...kinds.values()].filter((k) => used.has(k.tone)), missing: [] };
+}
+
+/** 一个组往外的所有组（防止 parent 绕成圈） */
+function ancestors(groups: Map<string, { parent?: string }>, cid: string) {
+	const out = new Set<string>();
+	for (let p = groups.get(cid)?.parent; p && groups.has(p) && !out.has(p); p = groups.get(p)?.parent) out.add(p);
+	return out;
 }
 
 /** 树自己排，不交给 dagre：dagre 为了少交叉会调换兄弟的先后，而树的子节点有顺序（1 + 2×3 的左右不能换） */
@@ -215,7 +289,7 @@ function tidy(root: TreeItem): Laid {
 		return me;
 	};
 	put(root, 8, 0, "0");
-	return { w: Math.ceil((sized.get(root)?.span ?? 0) + 16), h: Math.ceil(Math.max(...nodes.map((n) => n.y + n.h / 2)) + 8), nodes, groups: [], edges, missing: [] };
+	return { w: Math.ceil((sized.get(root)?.span ?? 0) + 16), h: Math.ceil(Math.max(...nodes.map((n) => n.y + n.h / 2)) + 8), nodes, groups: [], edges, legend: [], missing: [] };
 }
 
 /** 时序图：参与者一列一个，消息按先后一行一条；自己发给自己的画成一个回环 */

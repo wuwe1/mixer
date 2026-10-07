@@ -1,4 +1,4 @@
-// 排版：并排、卡片、切换、逐帧翻（Stepper，和 ArrayViz 共用播放条）。
+// 排版：并排、卡片、切换、逐帧翻（Stepper）。
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
