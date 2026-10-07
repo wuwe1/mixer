@@ -7,6 +7,7 @@ import { Gate } from "./components/login";
 import { Boundary } from "./components/placeholder";
 import { LiveProvider } from "./lib/live";
 import { guardEdges } from "./lib/drawer";
+import { startPush } from "./lib/push";
 import "./index.css";
 
 // 跟系统的深浅色
@@ -17,6 +18,9 @@ theme();
 
 // 主屏幕 app 里从屏幕边上滑不退回上一页
 guardEdges();
+
+// 推送通知：注册 Service Worker，给过权限的确认订阅还在
+startPush();
 
 // 按需加载的那几块拿不到：多半是重新打包过了，旧的文件已经没了。刷新换成新版本；
 // 10 秒内刚这样刷过就不再刷（断网时不会一直刷），错误照常抛给 Boundary

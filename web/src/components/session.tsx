@@ -13,6 +13,7 @@ import { ApiError, api, enc, temporary, type Node, type Session, type SessionMet
 import * as drawer from "@/lib/drawer";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
+import { clearNotices } from "@/lib/push";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
 import { keysOf, tree, walk } from "@/lib/thread";
 import { useIncremental } from "@/lib/use-incremental";
@@ -218,9 +219,13 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const spawned = useSpawns(w ? w.path : null, subs, busy, jobs);
 	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
-	// 开着的会话跑完了（页面在前台）：算看过了
+	// 开着的会话跑完了（页面在前台）：算看过了；它的通知也收掉
 	useEffect(() => {
-		const mark = () => { if ((st === "done" || st === "error") && document.visibilityState === "visible") api("/api/seen", { project, session }).catch(() => {}); };
+		const mark = () => {
+			if (document.visibilityState !== "visible") return;
+			clearNotices(session);
+			if (st === "done" || st === "error") api("/api/seen", { project, session }).catch(() => {});
+		};
 		mark();
 		document.addEventListener("visibilitychange", mark);
 		return () => document.removeEventListener("visibilitychange", mark);

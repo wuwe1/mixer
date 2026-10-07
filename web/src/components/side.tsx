@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, enc, type Group, type SessionMeta } from "@shared/api";
+import { api, enc, type Group, type SessionMeta, sessionTitle } from "@shared/api";
 import { useOnline } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
 import { openProject, openSession, type Route } from "@/lib/route";
@@ -73,8 +73,7 @@ export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 export const statusLabel = (s: Status) => (s ? STATUS_LABEL[s] : null);
 
 export const projectName = (p: { path: string | null; id: string }) => p.path?.split("/").pop() || p.id;
-/** 人起的名字（/rename、/branch）最优先；分叉出来的会话：标题用分叉后问的第一句（ai-title 和前面的记录都是原会话的） */
-export const sessionTitle = (s: SessionMeta) => (s.custom ? s.title : s.parent ? s.fresh || s.last || s.title : s.title || s.first) || s.id.slice(0, 8);
+export { sessionTitle };
 
 const OPEN_KEY = "mixer.open";
 function useOpenState() {

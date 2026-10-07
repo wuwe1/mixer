@@ -1,6 +1,6 @@
 // 确认请求：Claude 要执行命令、改文件时问你。当前会话的请求出现在对话里（前面就是 Claude 的思路）；别的会话的浮在右下角，带「查看」。
 import { Check, ChevronRight, ShieldQuestion, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -78,7 +78,6 @@ export function ApprovalCard({ a, elsewhere, className }: { a: Approval; elsewhe
 /** 别的会话的确认请求：浮在右下角；新来的发一条系统通知 */
 export function FloatingApprovals({ current }: { current: string | null }) {
 	const { approvals, workspace } = useLive();
-	const notified = useRef(new Set<string>());
 	// 和侧栏一样的标题，前面带上文件夹名
 	const title = (sid: string) => {
 		for (const p of workspace ?? []) {
@@ -88,13 +87,6 @@ export function FloatingApprovals({ current }: { current: string | null }) {
 		return sid.slice(0, 8);
 	};
 	const list = approvals.filter((a) => a.session !== current);
-	useEffect(() => {
-		for (const a of list) {
-			if (notified.current.has(a.id)) continue;
-			notified.current.add(a.id);
-			if ("Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") new Notification("Claude 请求确认", { body: `${a.tool}：${what(a)}` });
-		}
-	}, [list]);
 	if (list.length === 0) return null;
 	return (
 		<div className="fixed inset-x-3 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 sm:inset-x-auto sm:right-4 sm:w-104">

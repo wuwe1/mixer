@@ -10,7 +10,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api, type Node, type Queued, type Run } from "@shared/api";
-import { askNotify, useLive } from "@/lib/live";
+import { useLive } from "@/lib/live";
+import { askPush } from "@/lib/push";
 import { lastCtx, modelFor } from "@/lib/model";
 import { useDraft, useOutbox } from "@/lib/outbox";
 import type { User } from "@/lib/thread";
@@ -22,7 +23,8 @@ import { type Choice, ModelSelect, PermissionSelect } from "./model-menu";
 
 /** 发起一次运行（继续、分叉、新会话）；在跑的会话继续就排队。分叉、新会话建好了自动打开 */
 export async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
-	askNotify();
+	// 第一次发送时要通知权限（要在点按里同步调）
+	askPush();
 	const r = await api<Run | { queued: Queued }>("/api/runs", body);
 	if ("queued" in r) return r;
 	if (body.mode !== "resume") {

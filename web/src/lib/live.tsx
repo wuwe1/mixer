@@ -190,7 +190,3 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 /** 新会话、分叉一开始就出错了：会话记录都没写出来（服务端给的 version 是 null） */
 const failed = (r: Run) => r.status === "error" && r.version === null;
 
-/** 第一次发东西时请求通知权限：别的会话要你确认、跑完了，就算页面在后台也能知道 */
-export function askNotify() {
-	if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
-}

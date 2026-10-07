@@ -25,6 +25,8 @@ export type SessionMeta = {
 	/** Claude Code 什么时候会删掉它（最后修改 + cleanupPeriodDays） */
 	expires: string | null;
 };
+/** 会话的标题：人起的名字（/rename、/branch）最优先；分叉出来的会话用分叉后问的第一句（ai-title 和前面的记录都是原会话的）。侧栏、通知共用 */
+export const sessionTitle = (s: SessionMeta) => (s.custom ? s.title : s.parent ? s.fresh || s.last || s.title : s.title || s.first) || s.id.slice(0, 8);
 export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] };
 /** 工作区里的一个文件夹（侧栏的一组）：放进来的会话；顺序是人拖的 */
 export type Group = { id: string; path: string | null; sessions: SessionMeta[] };
@@ -108,9 +110,12 @@ export type Hello = { runs: Run[]; hosts: Host[]; approvals: Approval[]; queue: 
  * 接口出错。status 0 是根本没连上（断网、mixer 在重启：浏览器只给一句英文，Safari 是「Load failed」）；
  * temporary：等一下再试多半就好，没连上，或者隧道说后面没回应（502 / 503 / 504，回的是 cloudflared 的网页，不是 JSON）
  */
+// 不用参数属性（readonly status 写在构造函数里）：服务端直接跑 .ts（只去掉类型）不认它，sessionTitle 也要在服务端用
 export class ApiError extends Error {
-	constructor(message: string, readonly status: number) {
+	readonly status: number;
+	constructor(message: string, status: number) {
 		super(message);
+		this.status = status;
 	}
 	get temporary() {
 		return this.status === 0 || (this.status >= 502 && this.status <= 504);

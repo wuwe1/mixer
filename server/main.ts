@@ -15,6 +15,7 @@ import * as dirs from "./dirs.ts";
 import { say } from "./log.ts";
 import * as models from "./models.ts";
 import * as repo from "./repo.ts";
+import * as push from "./push.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
 import * as sse from "./sse.ts";
@@ -180,7 +181,11 @@ const pack = (f: string) => {
 
 // SSE（sse.ts）。连上先发 build（页面的版本）、再发 hello（全部状态），之后每 25 秒一个 ping：页面靠它知道连接还活着（手机睡醒、切网络后连接常常已经断了却没报错）
 const { emit } = sse;
-runs.onEvent(emit);
+// 推给页面的同时看要不要推通知（push.ts：来了确认请求、跑完了、出错了）
+runs.onEvent((type, data) => {
+	emit(type, data);
+	void push.watch(type, data);
+});
 setInterval(() => emit("ping", {}), 25_000).unref();
 
 /** 同一个 key 0.5 秒最多跑一次：第一次来时排上，0.5 秒后跑，这期间再来的不管。是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去 */
@@ -378,6 +383,21 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	["POST", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, "user", async (_q, res, m) => {
 		await trash.remove(m[1], m[2]);
 		emit("workspace", null);
+		json(res, 200, { ok: true });
+	}],
+	// 推送通知（push.ts）：公钥、存订阅、删订阅；页面在前台时报一声（有页面看着就不推）
+	["GET", /^\/api\/push\/key$/, "user", (_q, res) => json(res, 200, { key: push.key() })],
+	["POST", /^\/api\/push\/subscribe$/, "user", async (req, res) => {
+		push.subscribe((await body(req)).subscription, typeof req.headers.origin === "string" ? req.headers.origin : null);
+		json(res, 200, { ok: true });
+	}],
+	["POST", /^\/api\/push\/unsubscribe$/, "user", async (req, res) => {
+		push.unsubscribe(String((await body(req)).endpoint ?? ""));
+		json(res, 200, { ok: true });
+	}],
+	["POST", /^\/api\/presence$/, "user", async (req, res) => {
+		const b = await body(req);
+		push.presence(String(b.id ?? "").slice(0, 64), b.here === true);
 		json(res, 200, { ok: true });
 	}],
 	["POST", /^\/api\/seen$/, "user", async (req, res) => {

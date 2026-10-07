@@ -22,7 +22,7 @@ import { locate, version } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as terminals from "./terminals.ts";
 import * as usage from "./usage.ts";
-import type { Approval, Host, Run, Task } from "../shared/api.ts";
+import type { Approval, Host, Run } from "../shared/api.ts";
 import { coalesce, emptyTail, project, step, type Tail } from "../shared/tail.ts";
 import { prompt as visual } from "../shared/visual.ts";
 

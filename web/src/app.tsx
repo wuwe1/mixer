@@ -11,13 +11,17 @@ import { Placeholder } from "@/components/placeholder";
 import { lastPanel, openPanel, panelOf, SessionView } from "@/components/session";
 import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
 import { useLive } from "@/lib/live";
+import { useBadge, usePresence } from "@/lib/push";
 import { go, openProject, openSession, useRoute, useWide } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 
 export function App() {
 	const r = useRoute();
-	const { workspace, status, inWorkspace, change } = useLive();
+	const { workspace, status, inWorkspace, change, approvals } = useLive();
+	// 在前台时告诉服务端「看着呢」（这时不推通知）；主屏幕图标的角标：待确认 + 工作区里跑完没看的
+	usePresence();
+	useBadge(approvals.length + (workspace ?? []).reduce((n, g) => n + g.sessions.filter((s) => s.unread).length, 0));
 	const wide = useWide();
 	const [newOpen, setNewOpen] = useState(false);
 	const p = workspace?.find((x) => x.id === r.project);

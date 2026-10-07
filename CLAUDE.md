@@ -26,6 +26,7 @@
 - **表格**：放得下就是普通的表；手机上放不下时，长句子的表一行一张卡片（列名写在每格上面），数字多、列多的横着滚（第一列钉住）；右上角「按表格看 / 按卡片看」换着看
 - **图解**：Claude 讲概念、流程、算法、取舍、数据时，会在回复里放图：流程图、时序图、树、图表、逐帧演示（上一步 / 下一步 / 播放）、对比、小测验等。指着图表看数值，「看数据」换成表格。只有在 mixer 里跑的会话里 Claude 才知道能画（终端里开的会话不知道）；写坏的那一块显示「画不出来」和哪里不对，别的照画
 - **确认**：Claude 动手前请求确认，子代理来问时卡片上写是哪个子代理。当前会话的出现在对话里；别的会话的浮在右下角
+- **通知**：第一次发送时问要不要通知，同意了之后，有确认要你点、跑完了、出错了（点了停止的不算），锁着屏、app 在后台也会推一条，点开就是那个会话；同一个会话的新通知盖掉旧的，打开那个会话就收掉。有页面在前台看着（有焦点）时不推。主屏幕图标上的数是待确认 + 跑完没看的。iPhone 上要先「添加到主屏幕」，从主屏幕打开才有通知
 - **用词**：你的「消息」、Claude 的「回复」、「继续」、「分叉」、「编辑并分叉」、「排队」、「运行中」；权限是「自动 / 每次询问 / 计划模式」。界面上的字照这套来
 
 ## 设计
@@ -67,6 +68,8 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/log.ts` | `say`：带时间的日志，服务端各处共用。端口是 `access.ts` 的 `PORT` |
 | `server/state.ts` | `data/state.json`（不进 git）：每个会话在 mixer 里最后跑完的时间、人最后看它的时间 →「跑完了没看」；工作区（文件夹的顺序、放进来的会话）；每个账号最后的用量；mixer 开的分叉从哪来（`forks`） |
 | `server/usage.ts` | 用量：每个账号一样的样子（`shared/usage.ts` 的 `Account`：`quota` 是窗口，`spend` 是花的钱、`budget` 还没地方设），`hello` 里带整张表，变了推 `usage`。Claude 的来自 `models.ts` 每 10 分钟那次探测里的 `get_usage`（`rate_limits.five_hour/seven_day`，utilization 0–100、`resets_at` 是 ISO 时间，命令行标着 Experimental；旧版、没登录、出错不吵）和运行时的 `rate_limit_event`（0–1、秒），只要 5 小时、本周两个窗口；pi 的是 `~/.pi/agent/sessions/<目录>/*.jsonl` 里每条回复（`message` 的 role assistant）的 `provider` 和 `usage.cost.total`（美元），按 provider、本地日期（回复自己的 `message.timestamp`，毫秒）按天记在内存，算出今天、本月，本月花了钱的一个 provider 一个账号 `pi:<provider>`；每个文件记读到第几个字节、只读新写的（半行等写完，变短、换了 ino 从头读，没了不算），起来 5 秒后、之后每分钟扫一遍（换天换月也靠它），数变了才推，不进 `state.json`。压缩、分支小结的花费没有 provider，不算。`shared/usage.ts` 挑最紧的窗口（过了重置时间的不算，`spend` 不参与）给侧栏、输入框，`money` 写钱（`$0.42`，不到一分「<$0.01」） |
+| `server/push.ts` | 推送通知（Web Push）。VAPID 密钥第一次要时生成，和订阅一起存在 `data/push.json`（不进 git，0600）；订阅的 subject 用页面的 https 地址（本机的写 mailto）。`main.ts` 把 runs.ts 推给页面的事件也交给 `watch`：`approval` 推「待确认」，`run` 结束推「跑完了」（正文是最后一条回复的第一行）/「出错了」（`stopped` 不推，同一次运行只推一次）。tag 是 `s:<会话>`，带角标数（待确认 + 工作区里跑完没看的）。有页面看着（`/api/presence`：在前台、有焦点时每 30 秒报一次，45 秒没报不算）就不推：iOS 要求每条推送都弹出来，所以在服务端拦。推送服务回 404、410 删掉那个订阅 |
+| `web/public/sw.js` / `lib/push.ts` | Service Worker 只管推送：弹通知、设角标，点了切到开着的页面让它打开那个会话（`postMessage`），没有就开新窗口；不拦网络请求。页面起来时注册它，给过权限的确认订阅还在（服务端换了公钥就重订）；第一次发送时在点按里同步要权限（`askPush`）；`usePresence` 报「看着呢」，`useBadge` 设角标，看着一个会话时 `clearNotices` 收掉它的通知 |
 | `server/workspace.ts` | `/api/workspace`：工作区的文件夹带上放进来的会话（`add` 可带 `sessions`：撤销移出文件夹时一起放回）。一开始是空的。`/api/tree`（扫所有会话）只有「浏览会话」用 |
 | `server/trash.ts` | 删会话（`POST /api/sessions/:项目/:会话/delete`）：jsonl 和 `<会话>/` 用 rename 挪进 `~/.Trash/mixer 删除的会话 <标题前 20 字> (<id 前 8 位>)`，写 `原来的位置.txt`。标题先读好，查完到挪走之间不再 await。`runs.busy()`（运行中、从它分叉中、排队、待确认）和 `terminals.held`（当场查，在 mixer 外面开着）回 409。删完 `state.forget`（移出工作区、忘掉跑完 / 看过 / 模型）、丢 `sessions.ts` 的缓存，推 `workspace` |
 | `server/runs.ts` | 起 `claude -p`（新会话 / 续接 / 分叉 / 从中间分叉），一个会话一个进程（`Proc`），一轮是一次运行（`Run`）；管确认请求（走 stdio 的 `can_use_tool`）、后台任务（`stopTask`、`taskOutput`），开着的进程推 `host`、在 hello 的 `hosts` 里 |
