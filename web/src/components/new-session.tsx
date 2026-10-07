@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, type Dirs, type Project, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
 import type { Agent } from "@/lib/model";
-import { AgentModelSelect, PermissionSelect } from "./composer";
+import { AgentModelSelect, type Choice, PermissionSelect } from "./composer";
 
 /** 上次开新会话用的 agent（这台设备上） */
 const AGENT_KEY = "mixer.agent";
@@ -124,21 +124,23 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; lead?: string; onStarted?: () => void }) {
 	const { follow } = useLive();
 	const [agent, setAgent] = useState<Agent>(lastAgent);
-	const pick = (a: Agent, m: string) => {
-		setAgent(a);
-		setModel(m);
-		try { localStorage.setItem(AGENT_KEY, a); } catch {}
+	const pick = (c: Choice) => {
+		setAgent(c.agent);
+		setModel(c.model);
+		setEffort(c.effort);
+		try { localStorage.setItem(AGENT_KEY, c.agent); } catch {}
 	};
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState("");
+	const [effort, setEffort] = useState("");
 	const [busy, setBusy] = useState(false);
 	const send = async () => {
 		if (!text.trim() || busy) return;
 		setBusy(true);
 		try {
 			askNotify();
-			const r = await api<Run>("/api/runs", { mode: "new", ...target, agent, prompt: text, permission, model: model || null });
+			const r = await api<Run>("/api/runs", { mode: "new", ...target, agent, prompt: text, permission, model: model || null, effort: effort || null });
 			follow(r);
 			setText("");
 			toast.success("已开始，建好后自动打开");
@@ -161,7 +163,7 @@ export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd
 			/>
 			<div className="flex items-center gap-1.5">
 				<PermissionSelect value={permission} onChange={setPermission} />
-				<AgentModelSelect agent={agent} model={model} onChange={pick} />
+				<AgentModelSelect value={{ agent, model, effort }} onChange={pick} />
 				<Button size="icon" className="ml-auto rounded-lg" disabled={!text.trim() || busy} onClick={send} aria-label="开始">
 					{busy ? <Spinner /> : <Send className="size-4" />}
 				</Button>

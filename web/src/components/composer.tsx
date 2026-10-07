@@ -10,9 +10,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Node, type Run } from "@/lib/api";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { type Status, useLive } from "@/lib/live";
 import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf } from "@/lib/model";
 import { useDraft, useOutbox } from "@/lib/outbox";
+import { effortLabel, type ModelInfo } from "@/lib/model-info";
 import { forkPoint, type Walk } from "@/lib/thread";
 import { nearLimit } from "@/lib/usage";
 import { AttachStrip, encode, type Shot, toShots } from "./attach";
@@ -22,43 +24,29 @@ import { SkillPicker } from "./lazy";
 import { BackgroundTasks } from "./tasks";
 import { pct, resets } from "./usage";
 
-type Option = { v: string; icon: typeof Send; label: string; desc: string; disabled?: boolean; group?: string };
+type Option = { v: string; icon: typeof Send; label: string; desc: string };
 
-/** 输入框下面的小选项：平时只是个图标（不带箭头），点开才写每一项是什么意思；给了 text 就显示成文字（模型名）。选项带 group 的按组列，组名代替标题 */
-function OptionMenu({ title, options, value, onChange, text, onOpenChange }: { title: string; options: Option[]; value: string; onChange: (v: string) => void; text?: ReactNode; onOpenChange?: (open: boolean) => void }) {
+/** 输入框下面的小选项：平时只是个图标（不带箭头），点开才写每一项是什么意思 */
+function OptionMenu({ title, options, value, onChange }: { title: string; options: Option[]; value: string; onChange: (v: string) => void }) {
 	const cur = options.find((o) => o.v === value) ?? options[0];
 	return (
-		<DropdownMenu onOpenChange={onOpenChange}>
+		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				{text ? (
-					<Button variant="ghost" size="sm" className="px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
-						<span className="text-2xs">{text}</span>
-					</Button>
-				) : (
-					<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
-						<cur.icon className="size-4" />
-					</Button>
-				)}
+				<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+					<cur.icon className="size-4" />
+				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start" className="w-72">
-				{!options[0]?.group && <DropdownMenuLabel>{title}</DropdownMenuLabel>}
+				<DropdownMenuLabel>{title}</DropdownMenuLabel>
 				<DropdownMenuRadioGroup value={value} onValueChange={onChange}>
-					{options.map((o, i) => (
-						<Fragment key={o.v}>
-							{o.group && o.group !== options[i - 1]?.group && (
-								<>
-									{i > 0 && <DropdownMenuSeparator />}
-									<DropdownMenuLabel>{o.group}</DropdownMenuLabel>
-								</>
-							)}
-							<DropdownMenuRadioItem value={o.v} disabled={o.disabled} className="items-start gap-2.5 py-2">
-								<o.icon className="mt-0.5 size-4 text-muted-foreground" />
-								<span className="flex flex-col gap-0.5">
-									<span className="font-medium">{o.label}</span>
-									<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
-								</span>
-							</DropdownMenuRadioItem>
-						</Fragment>
+					{options.map((o) => (
+						<DropdownMenuRadioItem key={o.v} value={o.v} className="items-start gap-2.5 py-2">
+							<o.icon className="mt-0.5 size-4 text-muted-foreground" />
+							<span className="flex flex-col gap-0.5">
+								<span className="font-medium">{o.label}</span>
+								<span className="text-xs leading-snug text-muted-foreground">{o.desc}</span>
+							</span>
+						</DropdownMenuRadioItem>
 					))}
 				</DropdownMenuRadioGroup>
 			</DropdownMenuContent>
@@ -73,35 +61,119 @@ const PERMISSIONS: Option[] = [
 	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先出计划" },
 ];
 
-/** Codex 能用的模型：整个页面拿一次（codex app-server 的 model/list） */
-let codexModels: Promise<{ id: string; label: string; isDefault: boolean }[]> | null = null;
-function useCodexModels(on: boolean) {
-	const [list, setList] = useState<{ id: string; label: string; isDefault: boolean }[]>([]);
+/** 能选的模型：整个页面共用一份，菜单打开时超过 1 分钟就重新拿（Claude 出了新模型能马上看到）。拿不到时 Claude 用 MODELS 顶一下 */
+const lists: Partial<Record<Kind, { at: number; p: Promise<ModelInfo[]> }>> = {};
+const fallback = (agent: Kind): ModelInfo[] => [
+	{ id: "", label: "默认", resolved: null, efforts: [], defaultEffort: null, latest: false, isNew: false },
+	...(agent === "claude" ? MODELS.map((m) => ({ id: m.v as string, label: m.label, resolved: null, efforts: [], defaultEffort: null, latest: true, isNew: false })) : []),
+];
+function useModels(agent: Kind, on: boolean) {
+	const [got, setGot] = useState<{ agent: Kind; list: ModelInfo[] } | null>(null);
+	const [tick, setTick] = useState(0);
 	useEffect(() => {
 		if (!on) return;
-		codexModels ??= api<{ id: string; label: string; isDefault: boolean }[]>("/api/codex/models").catch(() => { codexModels = null; return []; });
-		codexModels.then(setList);
-	}, [on]);
-	return list;
+		let c = lists[agent];
+		if (!c || Date.now() - c.at > 60_000) {
+			const p = api<ModelInfo[]>(`/api/models/${agent}`).catch(() => { delete lists[agent]; return []; });
+			lists[agent] = c = { at: Date.now(), p };
+		}
+		let live = true;
+		c.p.then((list) => live && setGot({ agent, list }));
+		return () => { live = false; };
+	}, [agent, on, tick]);
+	const list = got?.agent === agent && got.list.length ? got.list : fallback(agent);
+	return [list, () => setTick((t) => t + 1)] as const;
 }
 
-/** 新会话用哪个 agent、哪个模型：两边的模型按 agent 分组列在一个菜单里，选了哪个模型就是哪个 agent。"" 是那个 agent 的默认；Codex 的模型第一次点开才拿 */
-export function AgentModelSelect({ agent, model, onChange }: { agent: Kind; model: string; onChange: (agent: Kind, model: string) => void }) {
-	const [opened, setOpened] = useState(false);
-	const codex = useCodexModels(agent === "codex" || opened);
-	const def = codex.find((m) => m.isDefault)?.id;
-	const options: Option[] = [
-		{ v: "claude:", group: "Claude Code", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
-		...MODELS.map((m) => ({ v: `claude:${m.v}`, group: "Claude Code", icon: Bot, label: m.label, desc: `最新的 ${m.label}` })),
-		{ v: "codex:", group: "Codex", icon: Code, label: "默认", desc: def ? `Codex 的默认（${def}）` : "Codex 的默认" },
-		...codex.map((m) => ({ v: `codex:${m.id}`, group: "Codex", icon: Code, label: m.label, desc: m.id })),
-	];
-	const text = `${agent === "codex" ? "Codex" : "Claude"} · ${!model ? "默认" : agent === "codex" ? model : pretty(model)}`;
+/** 选中的那个；没在列表里（比如上一条回复用的型号）就按默认的算思考强度 */
+const entry = (list: ModelInfo[], id: string) => list.find((m) => m.id === id) ?? list[0];
+
+/** 模型的名字：列表里有就用列表的（Opus 5.5），没有就从型号拼 */
+const nameOf = (list: ModelInfo[], id: string) => list.find((m) => m.id === id && m.id)?.label ?? pretty(id);
+
+export type Choice = { agent: Kind; model: string; effort: string };
+
+/**
+ * 模型和思考强度一个菜单：上面是默认和各系列最新的（别名，出了新版自动跟上），再是固定的版本（一行一个），最下面一排思考强度
+ * （只列选中的模型支持的；换了不支持的模型就回到默认）。sections 多于一个时按 agent 分组列（新会话：选了哪组的就是哪个 agent）。
+ * current：上一条回复实际用的型号
+ */
+function ModelMenu({ sections, value, onChange, current, text, onOpen }: { sections: { agent: Kind; title?: string; list: ModelInfo[] }[]; value: Choice; onChange: (v: Choice) => void; current?: string | null; text: ReactNode; onOpen: () => void }) {
+	const sel = sections.find((x) => x.agent === value.agent) ?? sections[0];
+	const efforts = entry(sel.list, value.model).efforts;
 	const pick = (v: string) => {
 		const i = v.indexOf(":");
-		onChange(v.slice(0, i) as Kind, v.slice(i + 1));
+		const agent = v.slice(0, i) as Kind;
+		const model = v.slice(i + 1);
+		const list = sections.find((x) => x.agent === agent)?.list ?? [];
+		const keep = agent === value.agent && entry(list, model).efforts.includes(value.effort);
+		onChange({ agent, model, effort: keep ? value.effort : "" });
 	};
-	return <OptionMenu title="模型" options={options} value={`${agent}:${model}`} onChange={pick} text={text} onOpenChange={(o) => o && setOpened(true)} />;
+	const desc = (agent: Kind, m: ModelInfo) => {
+		if (!m.id) return agent === "codex" ? (m.resolved ? `Codex 的默认（${m.resolved}）` : "Codex 的默认") : "用 Claude Code 的设置";
+		if (agent === "codex") return current === m.id ? "现在用的" : m.id;
+		if (current && current === m.resolved) return `现在用的是 ${pretty(current)}`;
+		return m.latest ? `最新的 ${m.label.split(" ")[0]}，出了新版自动换` : m.label;
+	};
+	const row = (agent: Kind, m: ModelInfo, two: boolean) => (
+		<DropdownMenuRadioItem key={m.id} value={`${agent}:${m.id}`} className={two ? "items-start gap-2.5 py-2" : "gap-2.5"}>
+			{agent === "codex" ? <Code className={`${two ? "mt-0.5 " : ""}size-4 text-muted-foreground`} /> : <Bot className={`${two ? "mt-0.5 " : ""}size-4 text-muted-foreground`} />}
+			<span className="flex flex-col gap-0.5">
+				<span className="flex items-center gap-1.5 font-medium">
+					{m.label}
+					{m.isNew && <Badge variant="secondary">新</Badge>}
+				</span>
+				{two && <span className="text-xs leading-snug text-muted-foreground">{desc(agent, m)}</span>}
+			</span>
+		</DropdownMenuRadioItem>
+	);
+	return (
+		<DropdownMenu onOpenChange={(o) => o && onOpen()}>
+			<DropdownMenuTrigger asChild>
+				<Button variant="ghost" size="sm" className="px-1.5 text-muted-foreground" aria-label="模型" title="模型、思考强度">
+					<span className="text-2xs">{text}</span>
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="start" className="max-h-(--radix-dropdown-menu-content-available-height) w-72 overflow-y-auto">
+				<DropdownMenuRadioGroup value={`${value.agent}:${value.model}`} onValueChange={pick}>
+					{sections.map(({ agent, title, list }, i) => {
+						// Claude 的固定版本一行一个，收在下面；Codex 的都是两行
+						const pinned = agent === "claude" ? list.filter((m) => m.id && !m.latest) : [];
+						return (
+							<Fragment key={agent}>
+								{i > 0 && <DropdownMenuSeparator />}
+								<DropdownMenuLabel>{title ?? "模型"}</DropdownMenuLabel>
+								{list.filter((m) => !pinned.includes(m)).map((m) => row(agent, m, true))}
+								{pinned.length > 0 && <DropdownMenuLabel className="text-2xs">固定版本</DropdownMenuLabel>}
+								{pinned.map((m) => row(agent, m, false))}
+							</Fragment>
+						);
+					})}
+				</DropdownMenuRadioGroup>
+				{efforts.length > 0 && (
+					<>
+						<DropdownMenuSeparator />
+						<DropdownMenuLabel>思考强度</DropdownMenuLabel>
+						<ToggleGroup type="single" size="sm" spacing={1} className="flex-wrap px-1.5 pb-1.5" value={value.effort || "default"} onValueChange={(e) => e && onChange({ ...value, effort: e === "default" ? "" : e })}>
+							<ToggleGroupItem value="default" title={sel.agent === "codex" ? "这个模型的默认" : "用 Claude Code 的设置"}>默认</ToggleGroupItem>
+							{efforts.map((e) => <ToggleGroupItem key={e} value={e}>{effortLabel(e)}</ToggleGroupItem>)}
+						</ToggleGroup>
+					</>
+				)}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
+/** 新会话用哪个 agent、哪个模型、多强的思考：两边的模型按 agent 分组列在一个菜单里，选了哪个模型就是哪个 agent。"" 是默认；列表第一次点开才拿 */
+export function AgentModelSelect({ value, onChange }: { value: Choice; onChange: (v: Choice) => void }) {
+	const [opened, setOpened] = useState(false);
+	const [claude, reClaude] = useModels("claude", value.agent === "claude" || opened);
+	const [codex, reCodex] = useModels("codex", value.agent === "codex" || opened);
+	const list = value.agent === "codex" ? codex : claude;
+	const text = `${value.agent === "codex" ? "Codex" : "Claude"} · ${value.model ? nameOf(list, value.model) : "默认"}${value.effort ? ` · ${effortLabel(value.effort)}` : ""}`;
+	const open = () => { setOpened(true); reClaude(); reCodex(); };
+	return <ModelMenu sections={[{ agent: "claude", title: "Claude Code", list: claude }, { agent: "codex", title: "Codex", list: codex }]} value={value} onChange={onChange} text={text} onOpen={open} />;
 }
 
 export function PermissionSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -109,31 +181,20 @@ export function PermissionSelect({ value, onChange }: { value: string; onChange:
 }
 
 /**
- * 下一条用的模型。value 是别名，"" 是 Claude Code 的默认；current 是上一条回复实际用的完整型号，同系列时显示它（Opus 5.5），
+ * 下一条用的模型和思考强度。model 是别名或固定的型号，"" 是默认；current 是上一条回复实际用的完整型号，同系列时显示它（Opus 5.5），
  * 手机上只显示系列名
  */
-export function ModelSelect({ value, onChange, current, agent = "claude" }: { value: string; onChange: (v: string) => void; current?: string | null; agent?: Kind }) {
-	const codex = useCodexModels(agent === "codex");
-	if (agent === "codex") {
-		const def = codex.find((m) => m.isDefault)?.id;
-		const opts: Option[] = [
-			{ v: "", icon: Bot, label: "默认", desc: def ? `Codex 的默认（${def}）` : "Codex 的默认" },
-			...codex.map((m) => ({ v: m.id, icon: Bot, label: m.label, desc: current === m.id ? "现在用的" : m.id })),
-		];
-		return <OptionMenu title="模型" options={opts} value={value} onChange={onChange} text={value || current || "默认"} />;
-	}
-	const options: Option[] = [
-		{ v: "", icon: Bot, label: "默认", desc: "用 Claude Code 的设置" },
-		...MODELS.map((m) => ({ v: m.v as string, icon: Bot, label: m.label, desc: current && family(current) === m.v ? `现在用的是 ${pretty(current)}` : `最新的 ${m.label}` })),
-	];
-	const full = current && (!value || family(current) === value) ? pretty(current) : value ? pretty(value) : "默认";
+export function ModelSelect({ model, effort, onChange, current, agent = "claude" }: { model: string; effort: string; onChange: (model: string, effort: string) => void; current?: string | null; agent?: Kind }) {
+	const [list, refresh] = useModels(agent, true);
+	const full = agent === "codex" ? model || current || "默认" : current && (!model || family(current) === model) ? pretty(current) : model ? nameOf(list, model) : "默认";
+	const e = effort ? ` · ${effortLabel(effort)}` : "";
 	const text = (
 		<>
-			<span className="md:hidden">{full.split(" ")[0]}</span>
-			<span className="hidden md:inline">{full}</span>
+			<span className="md:hidden">{agent === "codex" ? full : full.split(" ")[0]}{e}</span>
+			<span className="hidden md:inline">{full}{e}</span>
 		</>
 	);
-	return <OptionMenu title="模型" options={options} value={value} onChange={onChange} text={text} />;
+	return <ModelMenu sections={[{ agent, list }]} value={{ agent, model, effort }} onChange={(v) => onChange(v.model, v.effort)} current={current} text={text} onOpen={refresh} />;
 }
 
 /** 为什么只能分叉（输入框里写的那句）；能继续就是 null */
@@ -236,7 +297,7 @@ function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill?: () 
 const unsent = (t: string, sent: string) => (t === sent ? "" : t.startsWith(sent) ? t.slice(sent.length).replace(/^\s+/, "") : t);
 
 /** run：这个会话正在跑的那一次。只拿它不拿整个 stream：回复写着的时候每来一段字，输入框不跟着重画 */
-export const Composer = memo(function Composer({ project, session, w, status, windows, chosen, run, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; run: Run | null; agent?: Kind }) {
+export const Composer = memo(function Composer({ project, session, w, status, windows, chosen, chosenEffort, run, agent = "claude" }: { project: string; session: string; w: Walk; status: Status; windows: Record<string, number>; chosen: string | null; chosenEffort: string | null; run: Run | null; agent?: Kind }) {
 	const { follow, runs, queue } = useLive();
 	const [text, setText] = useDraft(session);
 	// 发出去的先记着，真写进会话记录才算数；没发出去的放回输入框
@@ -247,6 +308,7 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState(() => modelFor(agent, w.path, chosen) ?? "");
 	const [busy, setBusy] = useState(false);
+	const [effort, setEffort] = useState(chosenEffort ?? "");
 	const [skills, setSkills] = useState(false);
 	const [shots, setShots] = useState<Shot[]>([]);
 	const input = useRef<HTMLTextAreaElement>(null);
@@ -254,6 +316,7 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 	const fallback = modelFor(agent, w.path, chosen) ?? "";
 	useEffect(() => setModel(fallback), [session, fallback]);
 	const send = async () => {
+	useEffect(() => setEffort(chosenEffort ?? ""), [session, chosenEffort]);
 		if ((!text.trim() && !shots.length) || busy) return;
 		setBusy(true);
 		// 请求在路上时还能接着打字、加图：回来之后只拿掉发出去的
@@ -264,7 +327,7 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 			const at = w.atLatest ? null : forkPoint(w.path);
 			const images = await Promise.all(sentShots.map(encode));
 			const box = track(sent, mode);
-			box.sent(await start({ project, session, mode, at, prompt: sent, images, permission, model: model || null }, follow));
+			box.sent(await start({ project, session, mode, at, prompt: sent, images, permission, model: model || null, effort: effort || null }, follow));
 			setText((t) => unsent(t, sent));
 			for (const s of sentShots) URL.revokeObjectURL(s.url);
 			setShots((x) => x.filter((s) => !sentShots.includes(s)));
@@ -298,7 +361,7 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 				/>
 				<div className="flex items-center gap-1">
 					<PermissionSelect value={permission} onChange={setPermission} />
-					<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
+					<ModelSelect model={model} effort={effort} onChange={(m, e) => { setModel(m); setEffort(e); }} current={lastCtx(w.path)?.model} agent={agent} />
 					<AddMenu onAdd={(s) => setShots((x) => [...x, ...s])} onSkill={agent === "claude" ? () => setSkills(true) : undefined} />
 					<span className="ml-auto" />
 					{agent === "claude" && <BackgroundTasks session={session} />}

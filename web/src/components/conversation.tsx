@@ -116,7 +116,7 @@ function useIds(bs: Block[], run: Run | null, path: Node[]) {
 }
 
 /** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样）；spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts） */
-export function Conversation({ project, session, w, t, onFile, chosen, stream, status, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
+export function Conversation({ project, session, w, t, onFile, chosen, chosenEffort, stream, status, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
 	const { approvals, runs } = useLive();
 	/** 开着看的子代理 */
 	const [agent, setAgent] = useState<string | null>(null);
@@ -197,7 +197,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, stream, s
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
-			<ForkDialog project={project} session={session} w={w} chosen={chosen} target={fork} agent={kind} onClose={() => setFork(null)} />
+			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} target={fork} agent={kind} onClose={() => setFork(null)} />
 		</>
 	);
 }

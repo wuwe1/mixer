@@ -341,7 +341,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary key={session}>
-									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
+									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -357,7 +357,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} run={stream.run} agent={codex ? "codex" : "claude"} />}
+				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} agent={codex ? "codex" : "claude"} />}
 			</div>
 
 			{wide && panel && (

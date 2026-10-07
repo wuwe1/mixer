@@ -26,23 +26,27 @@ export async function start(body: Record<string, unknown>, follow: (r: Run) => v
 	return r;
 }
 
-export function ForkDialog({ project, session, w, chosen, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
+export function ForkDialog({ project, session, w, chosen, chosenEffort, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
 	const { follow } = useLive();
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState("");
 	useEffect(() => {
+	const [effort, setEffort] = useState("");
+	// 请求在路上：按钮禁用，网慢时点两下不会开出两个分叉
+	const [busy, setBusy] = useState(false);
 		if (!target) return;
 		setText(target.kind === "edit" ? target.n.text : "");
 		setModel(modelFor(agent, w.path, chosen) ?? "");
 	}, [target]);
+		setEffort(chosenEffort ?? "");
 	const send = async () => {
 		if (!target || !text.trim()) return;
 		try {
 			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
 			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
-			const m = model || null;
-			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, model: m } : { project, mode: "new", agent, prompt: text, permission, model: m }, follow);
+			const m = { model: model || null, effort: effort || null };
+			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, ...m } : { project, mode: "new", agent, prompt: text, permission, ...m }, follow);
 			onClose();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -65,7 +69,7 @@ export function ForkDialog({ project, session, w, chosen, target, agent, onClose
 				<DialogFooter className="items-center sm:justify-between">
 					<div className="flex items-center gap-1.5">
 						<PermissionSelect value={permission} onChange={setPermission} />
-						<ModelSelect value={model} onChange={setModel} current={lastCtx(w.path)?.model} agent={agent} />
+						<ModelSelect model={model} effort={effort} onChange={(m, e) => { setModel(m); setEffort(e); }} current={lastCtx(w.path)?.model} agent={agent} />
 					</div>
 					<div className="flex gap-2">
 						<Button variant="outline" onClick={onClose}>取消</Button>

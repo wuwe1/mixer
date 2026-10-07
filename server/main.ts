@@ -12,8 +12,8 @@ import { promisify } from "node:util";
 import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
 import * as codex from "./codex.ts";
-import * as codexRun from "./codex-run.ts";
 import * as dirs from "./dirs.ts";
+import * as models from "./models.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
@@ -219,8 +219,9 @@ const GET: [RegExp, Handler][] = [
 	[/^\/api\/projects$/, (_q, res) => json(res, 200, (projCache = { at: 0, list: [] }, projects()))],
 	[/^\/api\/tree$/, async (_q, res) => json(res, 200, await tree())],
 	[/^\/api\/workspace$/, async (_q, res) => json(res, 200, await workspace.view())],
-	// Codex 能用的模型（codex app-server 的 model/list）
-	[/^\/api\/codex\/models$/, async (_q, res) => json(res, 200, await codexRun.listModels())],
+	// 能选的模型：Claude 的问命令行、Codex 的问 app-server（models.ts），第一项是默认
+	[/^\/api\/models\/claude$/, async (_q, res) => json(res, 200, await models.claude())],
+	[/^\/api\/models\/codex$/, async (_q, res) => json(res, 200, await models.codex())],
 	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
 	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
 	// 会话开过的子代理：各自对应哪个 Agent 工具调用、现在在做什么
@@ -303,7 +304,7 @@ const POST: [RegExp, Handler][] = [
 		const b = JSON.parse(await body(req));
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
 		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
-		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, agent: typeof b.agent === "string" ? b.agent : null });
+		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, effort: typeof b.effort === "string" ? b.effort : null, agent: typeof b.agent === "string" ? b.agent : null });
 		json(res, 200, r);
 	}],
 	[/^\/api\/dirs$/, async (req, res) => {
@@ -466,3 +467,4 @@ server.listen(PORT, "127.0.0.1", () => {
 	// 先把所有会话扫一遍（第一次要读完所有记录，之后按修改时间缓存），侧栏第一次打开就快
 	tree().catch((e) => console.error(e));
 });
+	models.start();

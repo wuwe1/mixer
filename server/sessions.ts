@@ -12,7 +12,7 @@ import { basename, join } from "node:path";
 import * as codex from "./codex.ts";
 import { lines } from "./jsonl.ts";
 import { summarize } from "../web/src/lib/tail.ts";
-import { chosenModel, ourLastWrite, unread, windows } from "./state.ts";
+import { chosenEffort, chosenModel, ourLastWrite, unread, windows } from "./state.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
 
@@ -546,11 +546,11 @@ export const agentFile = (project: string, id: string, agent: string) => join(PR
  */
 export async function session(project: string, id: string, since?: string | null) {
 	const cx = codex.find(id);
-	if (cx) return codex.session(cx, since);
+	if (cx) return { ...(await codex.session(cx, since)), effort: chosenEffort(id) };
 	const file = sessionFile(project, id);
 	const [p, metas] = await Promise.all([parse(file), listSessions(project)]);
 	const meta = metas.find((m) => m.id === id) ?? (await scanMeta(file));
-	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id) };
+	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id), effort: chosenEffort(id) };
 }
 
 /** since 是「epoch:rev」：epoch 对得上就只给 rev 之后新建、改过的节点（delta），对不上给全部 */

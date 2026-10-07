@@ -123,13 +123,20 @@ function deny(m: Raw): unknown {
 	return { decision: "decline" };
 }
 
-/** 能用的模型（model/list，5 分钟一次）：给输入框选，没选时用 isDefault 那个 */
-let models: { at: number; list: { id: string; label: string; isDefault: boolean }[] } | null = null;
-export async function listModels() {
+/** 能用的模型（model/list，5 分钟一次）：给输入框选，没选时用 isDefault 那个。efforts：支持的思考强度 */
+type CodexModel = { id: string; label: string; isDefault: boolean; efforts: string[]; defaultEffort: string | null };
+let models: { at: number; list: CodexModel[] } | null = null;
+export async function listModels(): Promise<CodexModel[]> {
 	if (models && Date.now() - models.at < 300_000) return models.list;
 	const s = await connect();
 	const r = await s.call("model/list", {});
-	const list = ((r.data ?? []) as Raw[]).filter((x) => !x.hidden).map((x) => ({ id: String(x.id ?? x.model), label: String(x.displayName ?? x.id ?? x.model), isDefault: !!x.isDefault }));
+	const list = ((r.data ?? []) as Raw[]).filter((x) => !x.hidden).map((x) => ({
+		id: String(x.id ?? x.model),
+		label: String(x.displayName ?? x.id ?? x.model),
+		isDefault: !!x.isDefault,
+		efforts: ((x.supportedReasoningEfforts ?? []) as Raw[]).map((e) => String(e.reasoningEffort)),
+		defaultEffort: typeof x.defaultReasoningEffort === "string" ? x.defaultReasoningEffort : null,
+	}));
 	models = { at: Date.now(), list };
 	return list;
 }
@@ -161,9 +168,12 @@ export type Hooks = {
  * 跑一轮。返回「停」：turn/interrupt。
  * at：分叉时带到哪一轮为止（null 是整个会话）
  */
-export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; session: string | null; at: string | null; prompt: string; images: { media: string; data: string }[]; permission: string; model: string | null }, h: Hooks) {
+export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; session: string | null; at: string | null; prompt: string; images: { media: string; data: string }[]; permission: string; model: string | null; effort: string | null }, h: Hooks) {
 	const s = await connect();
-	const model = o.model || (await listModels()).find((m) => m.isDefault)?.id || null;
+	const list = await listModels();
+	const model = o.model || list.find((m) => m.isDefault)?.id || null;
+	// 思考强度：turn/start 给的一直管到之后的轮次，没选也要给这个模型的默认，免得留着上次选的
+	const effort = o.effort || list.find((m) => m.id === model)?.defaultEffort || null;
 	const pol = policy(o.permission);
 	const base = { model, cwd: o.cwd, approvalPolicy: pol.approvalPolicy, sandbox: pol.sandbox };
 	let tid: string;
@@ -240,7 +250,7 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 	];
 	try {
 		// turn/start 马上回（这一轮的进展全在通知里），带图片时请求大一点，给 SLOW
-		const r = await s.call("turn/start", { threadId: tid, input, model, approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" }, SLOW);
+		const r = await s.call("turn/start", { threadId: tid, input, model, ...(effort ? { effort } : {}), approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" }, SLOW);
 		turnId = String(r.turn?.id ?? "") || null;
 	} catch (e) {
 		threads.delete(tid);

@@ -22,7 +22,7 @@
 - **主屏幕**：添加到主屏幕后，打开时回到上次看的地方
 - **消息不丢**：输入框随打随存（这台设备上）；发出去的真写进会话记录才算数，没发出去的放回输入框
 - **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（只有百分比，多少 token 指着看）
-- **输入框底下**：权限、模型（选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、「+」里是图片（选图或粘贴，点缩略图画箭头、随手画线）和 skill（也可以打「/」，选了在开头插入「/名字 」）。只能分叉时发送按钮是分叉的图标
+- **输入框底下**：权限、模型和思考强度（一个菜单：默认、各系列最新的（出了新版自动换）、固定版本，最下面一排思考强度，只列这个模型支持的；列表是问本机的 claude / codex 的，Claude 出了新模型菜单里就有，7 天内标「新」。选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、「+」里是图片（选图或粘贴，点缩略图画箭头、随手画线）和 skill（也可以打「/」，选了在开头插入「/名字 」）。只能分叉时发送按钮是分叉的图标
 - **用量**：侧栏最底下一行是 Claude、Codex 所有窗口里用得最多的那个（「Codex · 5 小时 82% · 10/6 19:40 重置」）和一条灰色细条，点开「用量」看每个账号的每个窗口（电脑上是浮层，手机上从下面出来）；用 pi 花了钱的，每个 provider 一段「pi · deepseek」，今天、本月花了多少美元（按 pi 自己记的价，本月花得多的在前，不算进侧栏那一行）。Claude 的 mixer 里每次运行时更新，终端里用掉的要等下次 mixer 运行才算进来；Codex 的每 10 分钟读一次、跑完一轮也读；pi 的每分钟读一次。旧了写明多久前更新。正在看的会话那个 agent 有窗口用到 80% 以上，输入框里上下文旁边多一句「5 小时 82%」
 - **图解**：Claude 讲概念、流程、算法、取舍、数据时，会在回复里放图：流程图、时序图、树、图表、逐帧演示（上一步 / 下一步 / 播放）、对比、小测验等。指着图表看数值，「看数据」换成表格。只有在 mixer 里跑的会话里 Claude 才知道能画（终端里开的会话不知道）；写坏的那一块显示「画不出来」和哪里不对，别的照画
 - **确认**：Claude 动手前请求确认。当前会话的出现在对话里；别的会话的浮在右下角
@@ -70,6 +70,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/runs.ts` | 起 `claude -p`（新会话 / 续接 / 分叉 / 从中间分叉），一个会话一个进程（`Proc`），一轮是一次运行（`Run`）；管确认请求、后台任务（`stopTask`、`taskOutput`），开着的进程推 `host`、在 hello 的 `hosts` 里 |
 | `server/skills.ts` | 输入框里能选的 skill：名字按 init 事件记下的，加上扫 skill 文件夹补的新建的，描述从 `SKILL.md` 读 |
 | 图解（`web/src/lib/visual.ts`） | 回复里 ```ui 代码块的格式：每种组件的 zod 定义和「什么时候用」，`prompt()` 给 Claude 的说明（`runs.ts` 起进程时 `--append-system-prompt` 带上，从定义生成，约 2k token），`parse` 读 JSON（正在写的半截也读：没写完的字符串照已有的算、括号补上，`done` 说明写完没有），`checkNode` / `check` 逐个组件校验（中文的错误，带路径）。不碰 React，服务端也用；改它和改 `tail.ts` 一样算服务端的代码。加一种组件改两处：这里的 `DEFS`、`components/visual/index.tsx` 的 `VIEWS` |
+| `server/models.ts` | 能选的模型（`/api/models/claude`、`/api/models/codex`，一个样子：`web/src/lib/model-info.ts` 的 `ModelInfo`，第一项是默认）。Claude 的起一个 `claude -p --safe-mode`（不跑 hooks、不写会话）只发 `control_request` 的 `initialize`，回的 `models` 有默认、别名（最新的）、固定版本、`supportedEffortLevels`；存进 `state.json`，起来 5 秒后、每小时、运行的 init 里 `claude_code_version` 变了、网页要时超过 10 分钟就重读。Codex 的是 `model/list`（`supportedReasoningEfforts`、`defaultReasoningEffort`）。第一次见到的型号记时间（按 agent，头一回那批不算），7 天内 `isNew` |
 | `web/src/components/visual/` | 画图解：`markdown.tsx` 遇到 ```ui 交给它（`lazy.tsx` 的 `Visual`，第一次遇到才加载，带着 dagre、katex）。一个组件一个组件地画：没写完的是「正在画」，写完了还不对的是「画不出来」加原因和原文。`graph.tsx` 的 Graph 用 dagre 排；Tree 自己排（dagre 会调换兄弟的先后）；Sequence 自己排；字宽用 canvas 量。`chart.tsx` 按容器宽度画（手机上字不缩小），一个纵轴、悬停出数、能切成表格。`layout.tsx` 的 `usePlayer` / `Controls` 是 Stepper、ArrayViz 共用的播放条 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
 | `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。接口的 JSON 大于 8KB 就压（br 质量 5，不收 br 的 gzip），在线程池里压、不挡别的请求和推送。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号，重新打包后再发一次），再发 `hello`（`sse.ts`）；每 25 秒一个 `ping`。`keepAliveTimeout` 120 秒：cloudflared 会把空闲连接留约 90 秒，Node 默认的 5 秒会偶发 502。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
@@ -125,7 +126,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 - `codex app-server` 是 stdio 上一行一个 JSON-RPC（没有 `jsonrpc` 字段）：先 `initialize`，再发 `initialized` 通知。调用都有超时：控制类 30 秒，载入线程和 `turn/start` 120 秒；`initialize` 没成就杀掉进程，下次重起。协议的类型 `codex app-server generate-ts --out <目录>` 生成
 - 新会话 `thread/start`；续接 `thread/resume`（这个进程里没载入过的）再 `turn/start`；分叉 `thread/fork` 的 `lastTurnId`（带到这一轮为止，含）：节点按所在的轮换算（`codex.turnOf`）；停 `turn/interrupt`；`turn/completed` 的 `status`（completed / interrupted / failed）就是这次运行结束
-- 模型一定要给：`config.toml` 里写的可能是这个账号用不了的（`gpt-5.4` 报 400），不给就用 `model/list` 的 `isDefault`。**分叉不继承模型**，也要给。`thread/turns/list` 是新的在前
+- 模型一定要给：`config.toml` 里写的可能是这个账号用不了的（`gpt-5.4` 报 400），不给就用 `model/list` 的 `isDefault`。**分叉不继承模型**，也要给。思考强度是 `turn/start` 的 `effort`，管到之后的轮次：没选也给这个模型的 `defaultReasoningEffort`，免得留着上次的。`thread/turns/list` 是新的在前
 - 推理摘要要 `turn/start` 带 `summary: "detailed"`，不然只有加密内容
 - 权限：自动 = `on-request` + `workspace-write`（Codex 自己的 Auto：工作区里随便写，越界、要网络才问）；每次询问 = `untrusted`；计划模式 = `read-only`
 - 确认：`item/commandExecution/requestApproval` → 卡片上是 Bash + 命令 + Codex 说的理由，回 `accept` / `decline`；`item/fileChange/requestApproval` → Edit + 文件；`item/permissions/requestApproval` → 回要的权限或空的。Codex 提问（`item/tool/requestUserInput`）mixer 还答不了，回空
@@ -135,10 +136,10 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 ## 运行（`server/runs.ts`）
 
 - 只用本机的 `claude` 命令行，走用户自己的订阅。不用 Agent SDK：它要 API key，而且不允许拿 claude.ai 的登录给别人用
-- 参数：`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --thinking-display summarized --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> --append-system-prompt <图解的说明> [--model <别名>] [--resume <id> [--fork-session [--resume-session-at <uuid>]]]`，环境变量 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`。stdin 一行一条：`{"type":"user","message":{"role":"user","content":文字或[文字块, 图片块…]}}`，`/名字` 照样展开成 skill
+- 参数：`claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --thinking-display summarized --permission-mode <m> --permission-prompt-tool mcp__mixer__approve --mcp-config <临时文件> --append-system-prompt <图解的说明> [--model <别名>] [--effort <强度>] [--resume <id> [--fork-session [--resume-session-at <uuid>]]]`，环境变量 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`。stdin 一行一条：`{"type":"user","message":{"role":"user","content":文字或[文字块, 图片块…]}}`，`/名字` 照样展开成 skill
 - 进程跑完一轮不退（stdin 不关）：`claude -p` 一关 stdin 就退出，Claude 开的后台命令被它杀掉（输出里只剩 `[killed]`），通知也就没了。每一轮开始、结束有 `system` 的 `session_state_changed`（`running` / `idle`）；没写消息却来了 `running` 是后台任务的通知叫醒了 Claude（这一轮的 `result.origin.kind` 是 `task-notification`），另起一次运行，`prompt` 是空的。`idle` 时这一轮才结束（`result` 先到，记下是否出错）；结束后没有后台任务、没有排队的就关 stdin。停掉后台任务之后会补一个 `idle`：刚写进去、还没来过 `running` 的那一轮不能被它结束
 - 后台任务：`background_tasks_changed` 是整张表（`task_id`、`task_type`：`local_bash` / `local_agent` / …、`description`），`task_started` 带开它的 `tool_use_id`，那个工具结果里写着输出文件（「Output is being written to: ….output」）。停一个：`control_request` 的 `stop_task`（`task_id`），Claude 不会被叫醒
-- 进程开着、Claude 闲着时接着说：直接写进 stdin（不另起进程）；权限、模型和上一轮不同先发 `control_request` 的 `set_permission_mode`（`mode`）/ `set_model`（`model`，`default` 是默认）
+- 进程开着、Claude 闲着时接着说：直接写进 stdin（不另起进程）；权限、模型、思考强度和上一轮不同先发 `control_request` 的 `set_permission_mode`（`mode`）/ `set_model`（`model`，`default` 是默认）/ `apply_flag_settings`（`settings: {effortLevel}`，null 回到设置里的；帮助里没写，试过可用）。起进程时思考强度是 `--effort`
 - 确认请求：MCP 的 `MIXER_RUN` 是进程的 id，`ask` 归到它正在跑的那一轮
 - `--thinking-display summarized`（帮助里没写）：思考给摘要，流里有 `thinking_delta`、记录里也有文字。不加的话 `-p` 下思考大多是空的、只有签名，没东西可看
 - 用量：流里的 `rate_limit_event` 的 `rate_limit_info.unifiedWindows` 有 `five_hour`、`seven_day` 的 `utilization`（0–1）和 `resetsAt`（秒），交给 `usage.ts`（记进 `state.json`，推 `usage` 事件）

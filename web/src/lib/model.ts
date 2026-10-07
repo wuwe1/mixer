@@ -1,4 +1,5 @@
-// 模型：会话记录里是完整型号（claude-opus-5-5），选的时候用命令行的别名（opus），总是选最新的那一版。
+// 模型：会话记录里是完整型号（claude-opus-5-5），选的时候用命令行的别名（opus，总是最新的那一版）或固定的版本（claude-opus-4-8）。
+// 能选哪些问的是本机的命令行（server/models.ts），这里的 MODELS 只在还没拿到列表时顶一下
 import type { Node } from "./api";
 
 export const MODELS = [
@@ -10,10 +11,10 @@ export const MODELS = [
 
 /** claude-opus-5-5 → opus；认不出就是 null */
 export const family = (id: string) => /^claude-([a-z]+)-\d/.exec(id)?.[1] ?? null;
-/** claude-opus-5-5 → Opus 5.5；别名 opus → Opus */
+/** claude-opus-5-5 → Opus 5.5；claude-sonnet-5 → Sonnet 5；claude-haiku-4-5-20251001 → Haiku 4.5；别名 opus → Opus */
 export function pretty(id: string) {
-	const m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(id);
-	if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}`;
+	const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
+	if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
 	return MODELS.find((x) => x.v === id)?.label ?? id;
 }
 

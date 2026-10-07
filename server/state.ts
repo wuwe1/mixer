@@ -7,8 +7,8 @@ import { DATA } from "./access.ts";
 
 const FILE = join(DATA, "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; limits?: Record<string, unknown> | null; workspace: Workspace | null };
-let state: State = { finished: {}, seen: {}, windows: {}, models: {}, caps: {}, usage: {}, workspace: null };
+type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; limits?: Record<string, unknown> | null; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>> };
+let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {} };
 try { state = { ...state, ...JSON.parse(readFileSync(FILE, "utf8")) }; } catch {}
 
 function save() {
@@ -50,13 +50,35 @@ export function learnWindow(model: string, size: number) {
 }
 export const windows = () => state.windows;
 
-/** 在 mixer 里给会话选过的模型（别名）：之后续接都用它，直到再换 */
-export function chooseModel(session: string, model: string) {
-	if (state.models[session] === model) return;
-	state.models[session] = model;
+/** 在 mixer 里给会话选过的模型（别名）、思考强度：之后续接都用它，直到再换。选回默认（null）就忘掉 */
+export function chooseModel(session: string, model: string | null, effort: string | null) {
+	if ((state.models[session] ?? null) === model && (state.efforts[session] ?? null) === effort) return;
+	if (model) state.models[session] = model;
+	else delete state.models[session];
+	if (effort) state.efforts[session] = effort;
+	else delete state.efforts[session];
 	save();
 }
 export const chosenModel = (session: string) => state.models[session] ?? null;
+export const chosenEffort = (session: string) => state.efforts[session] ?? null;
+
+/** Claude 能选的模型（models.ts 问命令行的原样存着），重启后马上有；version 是读的时候命令行的版本 */
+type ClaudeModels = { at: string; version: string | null; models: unknown[] };
+export const claudeModels = () => state.claudeModels;
+export function setClaudeModels(c: ClaudeModels) {
+	state.claudeModels = c;
+	save();
+}
+/** 每个型号第一次见到的时间（按 agent 分开）：头一回读的那批记成很早以前，不算新 */
+export function sawModels(agent: string, ids: string[]) {
+	const seen = (state.modelsSeen[agent] ??= {});
+	const first = !Object.keys(seen).length;
+	const now = first ? new Date(0).toISOString() : new Date().toISOString();
+	let changed = false;
+	for (const id of ids) if (!seen[id]) { seen[id] = now; changed = true; }
+	if (changed) save();
+}
+export const modelsSeen = (agent: string) => state.modelsSeen[agent] ?? {};
 
 /** 每个项目能用的 skill 名字和装着的插件：每次运行开头的 init 事件里有，记下来给输入框的 skill 列表用 */
 type Caps = { skills: string[]; plugins: { name: string; path: string }[]; at: string };
@@ -125,6 +147,7 @@ export function forget(session: string) {
 	delete state.finished[session];
 	delete state.seen[session];
 	delete state.models[session];
+	delete state.efforts[session];
 	save();
 	return inside;
 }

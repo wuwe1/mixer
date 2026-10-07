@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as codex from "./codex.ts";
 import * as codexRun from "./codex-run.ts";
+import * as models from "./models.ts";
 import { sessionFile } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as usage from "./usage.ts";
@@ -37,6 +38,8 @@ export type Run = {
 	permission: string;
 	/** --model：别名（opus、sonnet…）或完整型号；null 是用 Claude Code 的默认 */
 	model: string | null;
+	/** 思考强度（low…max）；null 是用 Claude Code / Codex 的默认 */
+	effort: string | null;
 	status: RunStatus;
 	started: string;
 	ended: string | null;
@@ -54,7 +57,7 @@ export type Host = { id: string; project: string; session: string | null; turn: 
 export type Image = { media: string; data: string };
 
 /** 排着队的「接着说」 */
-export type Queued = { id: string; project: string; cwd: string; session: string; prompt: string; images: Image[]; permission: string; model: string | null; at: string };
+export type Queued = { id: string; project: string; cwd: string; session: string; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; at: string };
 
 type Approval = { id: string; run: string; tool: string; input: unknown; at: string; resolve: (d: { allow: boolean; message?: string }) => void };
 
@@ -71,7 +74,7 @@ const VISUAL = visual();
  * files：后台任务开它的工具调用 → 输出文件（工具结果里写的）；result：这一轮的 result 事件（idle 时才结束这一轮）；
  * begun：这一轮真开始了（来过 running）。停掉后台任务之后还会补一个 idle，刚写进去的这一轮还没开始，不能被它结束
  */
-type Proc = Host & { child: ChildProcessWithoutNullStreams; cwd: string; cfg: string; permission: string; model: string | null; files: Map<string, string>; result?: { error: boolean; message: string }; begun: boolean; gone?: boolean };
+type Proc = Host & { child: ChildProcessWithoutNullStreams; cwd: string; cfg: string; permission: string; model: string | null; effort: string | null; files: Map<string, string>; result?: { error: boolean; message: string }; begun: boolean; gone?: boolean };
 const hosts = new Map<string, Proc>();
 const approvals = new Map<string, Approval>();
 const queue: Queued[] = [];
@@ -108,7 +111,7 @@ export const tail = (id: string) => {
 	return r.tail;
 };
 
-export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; agent?: string | null }) {
+export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; effort?: string | null; agent?: string | null }) {
 	const images = o.images ?? [];
 	if (!o.prompt.trim() && !images.length) throw new Error("说点什么");
 	if (images.length > 10 || images.some((i) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(i.media) || typeof i.data !== "string")) throw new Error("图片不对：最多 10 张，png / jpeg / gif / webp");
@@ -116,6 +119,9 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (!["new", "resume", "fork"].includes(o.mode)) throw new Error("不认识的方式");
 	const model = o.model || null;
 	if (model && !/^[a-z][\w.[\]-]*$/i.test(model)) throw new Error("模型名不对");
+	const effort = o.effort || null;
+	if (effort && !/^[a-z]+$/.test(effort)) throw new Error("思考强度不对");
+	const p = { ...o, effort };
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
 	// 会话 id 要放进命令行参数：只认 UUID（Claude、Codex 都是），免得被当成别的参数
@@ -128,25 +134,25 @@ export async function start(o: { project: string; cwd: string; session: string |
 		// 最近的写入是 mixer 自己的运行（已经跑完）就放行；否则 90 秒内有写入，说明可能在终端里开着
 		const ours = [...runs.values()].filter((r) => r.session === resume);
 		if (ours.some((r) => r.status === "running")) {
-			const q: Queued = { id: randomUUID().slice(0, 8), project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, images, permission: o.permission, model, at: new Date().toISOString() };
+			const q: Queued = { id: randomUUID().slice(0, 8), project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, images, permission: o.permission, model, effort, at: new Date().toISOString() };
 			queue.push(q);
 			emit("queue", queued());
 			return { queued: queueView(q) };
 		}
 		// 进程还开着（Claude 闲着、在等后台任务）：直接写进去，接着跑一轮
 		const h = agent === "claude" ? hostOf(resume) : undefined;
-		if (h) return turn(h, o, images, model);
+		if (h) return turn(h, p, images, model);
 		const mtime = statSync(cx ? cx.file : sessionFile(o.project, resume)).mtimeMs;
 		if (!ours.length && Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
 			throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
 		}
 	}
-	if (agent === "codex") return startCodex(fresh(randomUUID().slice(0, 8), o, agent, model, resume), o, images, cx);
-	return turn(launch(o, model, resume), o, images, model);
+	if (agent === "codex") return startCodex(fresh(randomUUID().slice(0, 8), p, agent, model, resume), o, images, cx);
+	return turn(launch(p, model, resume), p, images, model);
 }
 
 /** 起一个 claude 进程：stdin 留着写每一轮的消息、control_request。输出一行一个 JSON，按进程处理，事件归到正在跑的那一轮 */
-function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: string | null; permission: string }, model: string | null, resume: string | null): Proc {
+function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: string | null; permission: string; effort: string | null }, model: string | null, resume: string | null): Proc {
 	const id = randomUUID().slice(0, 8);
 	const dir = join(tmpdir(), "mixer");
 	mkdirSync(dir, { recursive: true });
@@ -159,10 +165,11 @@ function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: strin
 	args.push("--append-system-prompt", VISUAL);
 	if (model) args.push("--model", model);
 	if (resume) args.push("--resume", resume);
+	if (o.effort) args.push("--effort", o.effort);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
 	// CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS：每一轮开始、结束有 session_state_changed（running / idle），通知叫醒的那一轮也有
 	const child = spawn("claude", args, { cwd: o.cwd, env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" }, stdio: ["pipe", "pipe", "pipe"] });
-	const h: Proc = { id, project: o.project, session: resume && o.mode === "resume" ? resume : null, turn: null, tasks: [], child, cwd: o.cwd, cfg, permission: o.permission, model, files: new Map(), begun: false };
+	const h: Proc = { id, project: o.project, session: resume && o.mode === "resume" ? resume : null, turn: null, tasks: [], child, cwd: o.cwd, cfg, permission: o.permission, model, effort: o.effort, files: new Map(), begun: false };
 	hosts.set(id, h);
 	// claude 一开始就退出了（参数不对、没登录）：stdin 写不进去是 EPIPE，结果看 close
 	child.stdin.on("error", () => {});
@@ -198,8 +205,8 @@ function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: strin
 const write = (h: Proc, msg: unknown) => { h.child.stdin.write(`${JSON.stringify(msg)}\n`); };
 const control = (h: Proc, request: Record<string, unknown>) => write(h, { type: "control_request", request_id: randomUUID(), request });
 
-/** 在这个进程里跑一轮：权限、模型和上一轮不一样先换掉，再写进这一轮的消息 */
-function turn(h: Proc, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }, images: Image[], model: string | null) {
+/** 在这个进程里跑一轮：权限、模型、思考强度和上一轮不一样先换掉，再写进这一轮的消息 */
+function turn(h: Proc, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string; effort: string | null }, images: Image[], model: string | null) {
 	const run = fresh(randomUUID().slice(0, 8), o, "claude", model, h.session);
 	run.host = h;
 	runs.set(run.id, run);
@@ -214,6 +221,11 @@ function turn(h: Proc, o: { project: string; cwd: string; session: string | null
 		h.model = model;
 	}
 	// 带图片：文字块 + 图片块；不带就是一段文字
+	// 思考强度没有 set_xxx：apply_flag_settings 的 effortLevel（null 是回到设置里的）。帮助里没写，试过可用
+	if (h.effort !== o.effort) {
+		control(h, { subtype: "apply_flag_settings", settings: { effortLevel: o.effort } });
+		h.effort = o.effort;
+	}
 	const content = images.length ? [...(o.prompt.trim() ? [{ type: "text", text: o.prompt }] : []), ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.media, data: i.data } }))] : o.prompt;
 	write(h, { type: "user", message: { role: "user", content } });
 	emit("run", view(run));
@@ -241,6 +253,7 @@ function line(h: Proc, raw: string) {
 		}
 		if (run) known(run, ev.session_id);
 		if (Array.isArray(ev.skills)) state.learnCaps(h.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
+		models.sawVersion(ev.claude_code_version);
 	}
 	if (ev.type === "system" && (ev.subtype === "background_tasks_changed" || ev.subtype === "task_started")) tasks(h, ev);
 	// 后台任务的输出文件在开它的那个工具调用的结果里
@@ -288,7 +301,7 @@ function tasks(h: Proc, ev: Record<string, unknown>) {
 /** 通知叫醒的一轮：没有人说的话，权限、模型接着用进程现在的 */
 function wake(h: Proc) {
 	if (!h.session) return;
-	const run = fresh(randomUUID().slice(0, 8), { project: h.project, cwd: h.cwd, session: h.session, mode: "resume", prompt: "", permission: h.permission }, "claude", h.model, h.session);
+	const run = fresh(randomUUID().slice(0, 8), { project: h.project, cwd: h.cwd, session: h.session, mode: "resume", prompt: "", permission: h.permission, effort: h.effort }, "claude", h.model, h.session);
 	run.host = h;
 	runs.set(run.id, run);
 	h.turn = run.id;
@@ -362,7 +375,7 @@ export function taskOutput(host: string, task: string) {
 }
 
 /** 一次运行的样子（两种 agent 一样） */
-function fresh(id: string, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string }, agent: Run["agent"], model: string | null, resume: string | null): Live {
+function fresh(id: string, o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; permission: string; effort: string | null }, agent: Run["agent"], model: string | null, resume: string | null): Live {
 	const run: Live = {
 		id,
 		project: o.project,
@@ -376,6 +389,7 @@ function fresh(id: string, o: { project: string; cwd: string; session: string | 
 		permission: o.permission,
 		model,
 		status: "running",
+		effort: o.effort,
 		started: new Date().toISOString(),
 		ended: null,
 		error: null,
@@ -395,7 +409,7 @@ function known(run: Live, session: string) {
 		run.session = session;
 		emit("run", view(run));
 	}
-	if (run.model) state.chooseModel(session, run.model);
+	state.chooseModel(session, run.model, run.effort);
 	// 在 mixer 里跑过的会话放进工作区（新会话、分叉的文件夹放到最上面）
 	if (state.addToWorkspace(run.project, run.cwd, session)) emit("workspace", null);
 }
@@ -436,7 +450,7 @@ function startCodex(run: Live, o: { mode: Run["mode"]; at?: string | null; promp
 		try {
 			const at = o.mode === "fork" && o.at && cx ? await codex.turnOf(cx, o.at) : null;
 			if (o.mode === "fork" && o.at && !at) throw new Error("找不到分叉点在哪一轮");
-			const h = await codexRun.launch({ cwd: o.cwd, mode: o.mode, session: o.session, at, prompt: o.prompt, images, permission: o.permission, model: run.model }, {
+			const h = await codexRun.launch({ cwd: o.cwd, mode: o.mode, session: o.session, at, prompt: o.prompt, images, permission: o.permission, model: run.model, effort: run.effort }, {
 				event: (ev) => push(run, ev),
 				session: (sid) => known(run, sid),
 				ask: (tool, input) => ask(run.id, tool, input),
@@ -473,7 +487,7 @@ function drain(session: string) {
 	for (const q of items) queue.splice(queue.indexOf(q), 1);
 	emit("queue", queued());
 	const last = items[items.length - 1];
-	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).filter((p) => p.trim()).join("\n\n"), images: items.flatMap((q) => q.images), permission: last.permission, model: last.model })
+	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).filter((p) => p.trim()).join("\n\n"), images: items.flatMap((q) => q.images), permission: last.permission, model: last.model, effort: last.effort })
 		.catch((e: Error) => emit("queue-error", { session, error: e.message }));
 }
 
