@@ -159,14 +159,15 @@ export const tail = (id: string) => {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * 发一条（新会话、续接、分叉）。uuid：网页给这条的（不给就现给一个），claude 的记录里那条就用它；merged：排队的几条合成的这一条带着哪几条（drain 用）
+ * 发一条（新会话、续接、分叉）。uuid：网页给这条的（不给就现给一个），claude 的记录里那条就用它；merged：排队的几条合成的这一条带着哪几条（drain 用）。
+ * from：drain 用，这一条是队列里的这几条合成的。查终端（await）的时候它们还留在队列里：close() 看得见、不关 stdin；查完才拿出来
  */
-export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; effort?: string | null; agent?: string | null; uuid?: string | null; merged?: string[] }) {
+export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; effort?: string | null; agent?: string | null; uuid?: string | null; merged?: string[]; from?: Queued[] }) {
 	const images = o.images ?? [];
 	const uuid = o.uuid || randomUUID();
 	// 要写进命令行的 stdin、记录里：只认 UUID。同一条发两遍（页面重试）不认
 	if (!UUID.test(uuid)) throw new Error("消息的 uuid 不对");
-	if ([...runs.values()].some((r) => r.merged.includes(uuid) || r.uuid === uuid) || queue.some((q) => q.uuid === uuid)) throw Object.assign(new Error("这条已经发过了"), { status: 409 });
+	if ([...runs.values()].some((r) => r.merged.includes(uuid) || r.uuid === uuid) || queue.some((q) => q.uuid === uuid && !o.from?.includes(q))) throw Object.assign(new Error("这条已经发过了"), { status: 409 });
 	if (!o.prompt.trim() && !images.length) throw new Error("说点什么");
 	if (images.length > 10 || images.some((i) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(i.media) || typeof i.data !== "string")) throw new Error("图片不对：最多 10 张，png / jpeg / gif / webp");
 	if (!["auto", "default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
@@ -189,6 +190,16 @@ export async function start(o: { project: string; cwd: string; session: string |
 		// 在 mixer 外面开着（当场查）就挡，不看 mixer 里有没有它的运行、进程：mixer 里跑完之后在终端里接着聊的、两边都开着的一样。
 		// 查完到起进程之间不能再 await：不然同时来的两条续接会都起一个进程
 		if (await terminals.held(resume)) throw Object.assign(new Error("这个会话在终端里开着：现在只能分叉"), { status: 409 });
+		if (o.from) {
+			// 等的时候取消了几条：按现在的队列重来；又开始跑了（这期间发的、叫醒的）：接着排，那一轮结束时再发
+			const still = { queued: queueView(o.from[o.from.length - 1]) };
+			if (o.from.some((q) => !queue.includes(q))) {
+				drain(resume);
+				return still;
+			}
+			if ([...runs.values()].some((r) => r.session === resume && r.status === "running")) return still;
+			for (const q of o.from) queue.splice(queue.indexOf(q), 1);
+		}
 		const ours = [...runs.values()].filter((r) => r.session === resume);
 		if (ours.some((r) => r.status === "running")) {
 			const q: Queued = { id: randomUUID().slice(0, 8), uuid, project: o.project, cwd: o.cwd, session: resume, prompt: o.prompt, images, permission: o.permission, model, effort, at: new Date().toISOString() };
@@ -658,11 +669,17 @@ export function unqueue(id: string) {
 function drain(session: string) {
 	const items = queue.filter((q) => q.session === session);
 	if (!items.length) return;
-	for (const q of items) queue.splice(queue.indexOf(q), 1);
 	const last = items[items.length - 1];
 	const one = items.length === 1;
-	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).filter((p) => p.trim()).join("\n\n"), images: items.flatMap((q) => q.images), permission: last.permission, model: last.model, effort: last.effort, uuid: one ? last.uuid : randomUUID(), merged: items.map((q) => q.uuid) })
-		.catch((e: Error) => emit("queue-error", { session, error: e.message }))
+	// 先留在队列里，start 查完终端才拿出来（from）：拿早了，这期间 idle 来了看队列是空的就关 stdin，又得另起一个 claude
+	start({ project: last.project, cwd: last.cwd, session, mode: "resume", prompt: items.map((q) => q.prompt).filter((p) => p.trim()).join("\n\n"), images: items.flatMap((q) => q.images), permission: last.permission, model: last.model, effort: last.effort, uuid: one ? last.uuid : randomUUID(), merged: items.map((q) => q.uuid), from: items })
+		.catch((e: Error) => {
+			// 没发出去：拿出队列（网页把它们放回输入框），进程没别的事了就关
+			for (const q of items) if (queue.includes(q)) queue.splice(queue.indexOf(q), 1);
+			emit("queue-error", { session, error: e.message });
+			const h = hostOf(session);
+			if (h) close(h);
+		})
 		.finally(() => emit("queue", queued()));
 }
 

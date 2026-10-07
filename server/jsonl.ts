@@ -23,18 +23,23 @@ export const BRIEF_RESULT = 120;
 export const BRIEF_THOUGHT = 120;
 
 /**
- * 读过的会话留在内存里，按最近用过的排（keep 一次挪到最后）；加起来超过 budget（按文件大小算）就丢掉最久没用的。正在用的那个不丢
+ * 读过的会话留在内存里，按最近用过的排（keep 一次挪到最后）；加起来超过 budget（按文件大小算）就丢掉最久没用的。
+ * 一分钟内用过的不丢，可以暂时超出：不然一个比 budget 还大的会话，旁边的子代理每读一次就把它挤掉，下次整份重读、换 epoch，一直这样
  */
-export function lru<T extends { size: number }>(budget: number) {
+export function lru<T extends { size: number }>(budget: number, hot = 60_000) {
 	const m = new Map<string, T>();
+	const used = new WeakMap<T, number>();
 	return Object.assign(m, {
 		keep(key: string, v: T) {
 			m.delete(key);
 			m.set(key, v);
+			const now = Date.now();
+			used.set(v, now);
 			let total = 0;
 			for (const x of m.values()) total += x.size;
+			// 按最久没用的往后：碰到一分钟内用过的，后面的都是
 			for (const [k, x] of m) {
-				if (total <= budget || k === key) break;
+				if (total <= budget || k === key || now - (used.get(x) ?? 0) < hot) break;
 				m.delete(k);
 				total -= x.size;
 			}

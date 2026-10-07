@@ -22,6 +22,8 @@ export async function remove(project: string, id: string) {
 	const at = sessions.locate(project, id);
 	if (!at) throw no(404, "没有这个会话");
 	const { file, cx } = at;
+	// 标题先读好：查完「在不在跑」到挪走之间不能再 await，不然这期间来的续接会起一个 claude，往挪走了的路径写出个新文件
+	const m = cx ? null : await sessions.row(project, id);
 	if (await terminals.held(id)) throw no(409, "这个会话在终端里开着：关掉再删");
 	// mixer 里的放在 await 之后看：查终端的时候可能刚开始跑
 	const why = runs.busy(id);
@@ -30,7 +32,6 @@ export async function remove(project: string, id: string) {
 		await archive(id);
 		codex.forget(id);
 	} else {
-		const m = await sessions.row(project, id);
 		toTrash(file, m?.title ?? m?.first ?? null);
 		sessions.forget(project, id);
 	}

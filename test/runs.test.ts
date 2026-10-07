@@ -37,7 +37,12 @@ const argv = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(tmp, "argv.jsonl"))}, JSON.stringify(argv) + "\\n");
 const arg = (k) => { const i = argv.indexOf(k); return i < 0 ? null : argv[i + 1]; };
 const sid = arg("--session-id") ?? arg("--resume");
-const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+// 同一拍写的几行攒成一次写出去：真的命令行 result、cancelled、idle 常常在同一块里到
+const pending = [];
+const out = (m) => {
+	if (!pending.length) setImmediate(() => process.stdout.write(pending.splice(0).join("")));
+	pending.push(JSON.stringify(m) + "\\n");
+};
 const dir = process.env.HOME + "/.claude/projects/-tmp-demo";
 mkdirSync(dir, { recursive: true });
 let prev = null;
@@ -226,9 +231,12 @@ test("停止：interrupt 之后是 cancelled，算停止；运行中发的排队
 	await until(() => text(slow.id) === "writing", "写了字");
 	const q = await runs.start({ project: "-tmp-demo", cwd: tmp, session: SID, mode: "resume", prompt: "later", permission: "auto" });
 	assert.ok("queued" in q);
+	const spawned = readFileSync(join(tmp, "argv.jsonl"), "utf8").trim().split("\n").length;
 	assert.equal(runs.stop(slow.id), true);
 	await until(() => ran(slow.id)?.status === "stopped", "停下来");
 	await until(() => runs.list().some((r) => r.prompt === "later" && r.status === "done"), "排队的发出去跑完");
+	// 停下来时 idle 跟着来：排着的还在队列里（查终端时也在），不关 stdin，接着写进原来的进程，不另起一个
+	assert.equal(readFileSync(join(tmp, "argv.jsonl"), "utf8").trim().split("\n").length, spawned, "没另起 claude");
 	assert.equal(runs.queued().length, 0);
 	// 没有后台任务：idle 之后关进程
 	await until(() => !runs.snapshot().hosts.length, "进程关掉");

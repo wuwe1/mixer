@@ -14,14 +14,19 @@ const color = (i: number) => `var(--series-${i + 1})`;
 
 /** 刻度：4–6 个整齐的数 */
 function ticks(lo: number, hi: number) {
-	if (lo === hi) [lo, hi] = [lo - 1, hi + 1];
+	// 一样大的撑开一点：按数的大小撑，1e17 减 1 还是它自己
+	if (!(hi > lo)) {
+		const d = Math.max(1, Math.abs(lo) / 10);
+		[lo, hi] = [lo - d, hi + d];
+	}
 	const raw = (hi - lo) / 4;
 	const mag = 10 ** Math.floor(Math.log10(raw));
 	const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? raw;
-	const out: number[] = [];
-	for (let v = Math.floor(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(Number(v.toPrecision(12)));
-	if (out[out.length - 1] < hi) out.push(Number((out[out.length - 1] + step).toPrecision(12)));
-	return out;
+	// 按个数算，不一路 += step：数很大、跨度很小时（纳秒时间戳）加上去还是原来的数，循环停不下来
+	const start = Math.floor(lo / step) * step;
+	const n = Math.min(20, Math.ceil((hi - start) / step - 1e-9));
+	const out = [...new Set(Array.from({ length: n + 1 }, (_, i) => Number((start + i * step).toPrecision(12))))];
+	return out.length > 1 ? out : [lo, hi];
 }
 const fmt = (v: number) => (Math.abs(v) >= 1e4 ? Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(v) : Number(v.toPrecision(6)).toLocaleString());
 

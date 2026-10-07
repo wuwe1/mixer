@@ -65,7 +65,7 @@ function PanelTabs({ panel, counts }: { panel: Panel; counts: Partial<Record<Pan
  * 贴底：停在底部附近时，新内容长出来就跟着滚到底；往上翻离开了就不跟，滚回底部又贴上。
  * 手指按着的时候不动它，免得和手抢。离开底部之后有了新内容，「↓」上带个蓝点（没看过）
  */
-function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject<HTMLDivElement | null>) {
+function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject<HTMLDivElement | null>, failed: boolean) {
 	const stick = useRef(true);
 	const touching = useRef(false);
 	const [away, setAway] = useState(false);
@@ -117,7 +117,7 @@ function useStick(scroller: RefObject<HTMLDivElement | null>, content: RefObject
 			el.removeEventListener("touchend", up);
 			el.removeEventListener("touchcancel", up);
 		};
-	}, [scroller, content]);
+	}, [scroller, content, failed]);
 	return { away, unseen, toBottom };
 }
 
@@ -143,7 +143,6 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const key = `${project}/${session}`;
 	const scroller = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
-	const { away, unseen, toBottom } = useStick(scroller, content);
 	const [reveal, setReveal] = useState<Reveal | null>(null);
 	const first = useRef(true);
 
@@ -159,6 +158,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			retry.current.wait = Math.min(retry.current.wait * 2, 30_000);
 		},
 	});
+	// 新会话、分叉刚开始跑，记录文件还没写出来（404）：等着，文件有了会推 session 过来再拉
+	const starting = error instanceof ApiError && error.status === 404 && runs.some((x) => x.session === session && x.status === "running");
+	// 出错时整页换成「没打开」，滚动的那一层卸掉了；拉到了再挂上：靠它让下面挂在滚动层上的 effect 重新挂
+	const failed = !!error && !data && !starting;
+	const { away, unseen, toBottom } = useStick(scroller, content, failed);
 	useEffect(() => {
 		if (!data) return;
 		keep(key, data);
@@ -189,7 +193,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			clearTimeout(timer);
 			el.removeEventListener("scroll", onScroll);
 		};
-	}, [key]);
+	}, [key, failed]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
 	useEvent("hello", load);
 
@@ -252,9 +256,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const onStart = useCallback(() => setPeek(lastPanel()), []);
 	const setOpen = useCallback((o: boolean) => (o ? openPanel(lastPanel()) : go({ panel: "none" })), []);
 
-	// 新会话、分叉刚开始跑，记录文件还没写出来（404）：等着，文件有了会推 session 过来再拉
-	const starting = error instanceof ApiError && error.status === 404 && runs.some((x) => x.session === session && x.status === "running");
-	if (error && !data && !starting)
+	if (failed && error)
 		return (
 			<Placeholder icon={temporary(error) ? WifiOff : TriangleAlert} title="没打开" text={temporary(error) ? `${error.message}，过一会儿自己再试` : error.message}>
 				<Button variant="outline" size="sm" onClick={load}>重试</Button>
