@@ -144,6 +144,31 @@
 /* diff 一行一行拼的词，颜色放在 --shiki-light / --shiki-dark 里（diff.tsx） */
 .diff span[style] { color: var(--shiki-light); }
 .dark .diff span[style] { color: var(--shiki-dark); }
+
+/* 表格（components/table.tsx）：Markdown 的和图解的一个样子。放不下时两种排法：.table-scroll 横着滚、第一列钉住；.table-cards 一行一张卡片 */
+/* 宽表的内容不往外撑：不然整条回复跟着变宽，手机上左右都被切掉，量出来的宽度也是撑大之后的 */
+.table-box { contain: inline-size; }
+.table-frame table { width: 100%; border-collapse: collapse; font-size: var(--text-md); line-height: var(--text-md--line-height); }
+.table-frame th { text-align: left; font-weight: 500; white-space: nowrap; background: var(--muted); }
+.table-frame th, .table-frame td { padding: 0.375rem 0.75rem; vertical-align: top; }
+.table-frame tbody tr { border-top: 1px solid var(--border); }
+.table-frame td[data-short] { white-space: nowrap; }
+.table-scroll code { white-space: nowrap; }
+.table-frame a { text-decoration: underline; text-underline-offset: 4px; }
+.table-scroll table { width: max-content; min-width: 100%; }
+.table-scroll td { max-width: 16em; }
+.table-scroll[data-more] { mask-image: linear-gradient(to right, black calc(100% - 2rem), transparent); }
+.table-scroll td:first-child { position: sticky; left: 0; background: var(--background); box-shadow: 1px 0 0 var(--border); }
+.table-scroll th:first-child { position: sticky; left: 0; box-shadow: 1px 0 0 var(--border); }
+.table-cards table, .table-cards tbody, .table-cards tr, .table-cards td { display: block; }
+.table-cards thead { display: none; }
+.table-cards tbody { display: flex; flex-direction: column; gap: 0.5rem; }
+.table-cards tbody tr { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 0.5rem 0.75rem; }
+.table-cards td { padding: 0; text-align: left !important; }
+.table-cards td:first-child { font-weight: 600; }
+.table-cards td + td { margin-top: 0.375rem; }
+.table-cards td:empty { display: none; }
+.table-cards td + td[data-label]::before { content: attr(data-label); display: block; font-size: var(--text-2xs); line-height: var(--text-2xs--line-height); color: var(--muted-foreground); }
 html, body, #root { height: 100%; }
 
 /*

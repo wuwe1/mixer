@@ -24,6 +24,7 @@
 - **上下文**：输入框右下角的小圆环是你正在看的那条路上用了多少上下文（只有百分比，多少 token 指着看）
 - **输入框底下**：权限、模型和思考强度（一个菜单：默认、各系列最新的（出了新版自动换）、固定版本，最下面一排思考强度，只列这个模型支持的；列表是问本机的 claude / codex 的，Claude 出了新模型菜单里就有，7 天内标「新」。选了之后这个会话一直用它；没选过就接着用上一条回复的那个系列）、「+」里是图片（选图或粘贴，点缩略图画箭头、随手画线）和 skill（也可以打「/」，选了在开头插入「/名字 」）。只能分叉时发送按钮是分叉的图标
 - **用量**：侧栏最底下一行是 Claude、Codex 所有窗口里用得最多的那个（「Codex · 5 小时 82% · 10/6 19:40 重置」）和一条灰色细条，点开「用量」看每个账号的每个窗口（电脑上是浮层，手机上从下面出来）；用 pi 花了钱的，每个 provider 一段「pi · deepseek」，今天、本月花了多少美元（按 pi 自己记的价，本月花得多的在前，不算进侧栏那一行）。Claude 的 mixer 里每次运行时更新，终端里用掉的要等下次 mixer 运行才算进来；Codex 的每 10 分钟读一次、跑完一轮也读；pi 的每分钟读一次。旧了写明多久前更新。正在看的会话那个 agent 有窗口用到 80% 以上，输入框里上下文旁边多一句「5 小时 82%」
+- **表格**：放得下就是普通的表；手机上放不下时，长句子的表一行一张卡片（列名写在每格上面），数字多、列多的横着滚（第一列钉住）；右上角「按表格看 / 按卡片看」换着看
 - **图解**：Claude 讲概念、流程、算法、取舍、数据时，会在回复里放图：流程图、时序图、树、图表、逐帧演示（上一步 / 下一步 / 播放）、对比、小测验等。指着图表看数值，「看数据」换成表格。只有在 mixer 里跑的会话里 Claude 才知道能画（终端里开的会话不知道）；写坏的那一块显示「画不出来」和哪里不对，别的照画
 - **确认**：Claude 动手前请求确认。当前会话的出现在对话里；别的会话的浮在右下角
 - **用词**：你的「消息」、Claude 的「回复」、「继续」、「分叉」、「编辑并分叉」、「排队」、「运行中」；权限是「自动 / 每次询问 / 计划模式」。界面上的字照这套来
@@ -70,8 +71,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/runs.ts` | 起 `claude -p`（新会话 / 续接 / 分叉 / 从中间分叉），一个会话一个进程（`Proc`），一轮是一次运行（`Run`）；管确认请求、后台任务（`stopTask`、`taskOutput`），开着的进程推 `host`、在 hello 的 `hosts` 里 |
 | `server/skills.ts` | 输入框里能选的 skill：名字按 init 事件记下的，加上扫 skill 文件夹补的新建的，描述从 `SKILL.md` 读 |
 | 图解（`web/src/lib/visual.ts`） | 回复里 ```ui 代码块的格式：每种组件的 zod 定义和「什么时候用」，`prompt()` 给 Claude 的说明（`runs.ts` 起进程时 `--append-system-prompt` 带上，从定义生成，约 2k token），`parse` 读 JSON（正在写的半截也读：没写完的字符串照已有的算、括号补上，`done` 说明写完没有），`checkNode` / `check` 逐个组件校验（中文的错误，带路径）。不碰 React，服务端也用；改它和改 `tail.ts` 一样算服务端的代码。加一种组件改两处：这里的 `DEFS`、`components/visual/index.tsx` 的 `VIEWS` |
-| `server/models.ts` | 能选的模型（`/api/models/claude`、`/api/models/codex`，一个样子：`web/src/lib/model-info.ts` 的 `ModelInfo`，第一项是默认）。Claude 的起一个 `claude -p --safe-mode`（不跑 hooks、不写会话）只发 `control_request` 的 `initialize`，回的 `models` 有默认、别名（最新的）、固定版本、`supportedEffortLevels`；存进 `state.json`，起来 5 秒后、每小时、运行的 init 里 `claude_code_version` 变了、网页要时超过 10 分钟就重读。Codex 的是 `model/list`（`supportedReasoningEfforts`、`defaultReasoningEffort`）。第一次见到的型号记时间（按 agent，头一回那批不算），7 天内 `isNew` |
-| `web/src/components/visual/` | 画图解：`markdown.tsx` 遇到 ```ui 交给它（`lazy.tsx` 的 `Visual`，第一次遇到才加载，带着 dagre、katex）。一个组件一个组件地画：没写完的是「正在画」，写完了还不对的是「画不出来」加原因和原文。`graph.tsx` 的 Graph 用 dagre 排；Tree 自己排（dagre 会调换兄弟的先后）；Sequence 自己排；字宽用 canvas 量。`chart.tsx` 按容器宽度画（手机上字不缩小），一个纵轴、悬停出数、能切成表格。`layout.tsx` 的 `usePlayer` / `Controls` 是 Stepper、ArrayViz 共用的播放条 |
+| `web/src/components/visual/` | 画图解：`markdown.tsx` 遇到 ```ui 交给它（`lazy.tsx` 的 `Visual`，第一次遇到才加载，带着 dagre、katex）。一个组件一个组件地画：没写完的是「正在画」，写完了还不对的是「画不出来」加原因和原文。`graph.tsx` 的 Graph 用 dagre 排（组能套组：实线框浅底是真实存在的东西、虚线框是逻辑上的一组；`kinds` 按类型上系列色；`stack` 叠成几层；`note` 便签）；给 Claude 的说明里有画 Graph 的五步（先列内容，再包含、关联、按类型上色、强调）；Tree 自己排（dagre 会调换兄弟的先后）；Sequence 自己排；字宽用 canvas 量。`chart.tsx` 按容器宽度画（手机上字不缩小），一个纵轴、悬停出数、能切成表格。`layout.tsx` 的 `usePlayer` / `Controls` 是 Stepper 的播放条。组件宁少而强：数组上的算法不另设组件，用 Stepper 每帧一个没有箭头的 Graph（没有箭头、没有组时节点按顺序排成等宽一行，`dim` 淡掉、指针写在 `note`）；删掉的组件在 `visual.ts` 的 `legacy` 里换成现在的写法，旧回复照样画 |
 | `mcp/approve.ts` | 每次运行带的 MCP 服务 `mixer`，工具 `approve` 把确认请求转给网页 |
 | `server/main.ts` | HTTP 接口、SSE（`/api/events`）、监视 transcript 目录；打包出来的 js / css 第一次被要时压成 br、gzip 存着。接口的 JSON 大于 8KB 就压（br 质量 5，不收 br 的 gzip），在线程池里压、不挡别的请求和推送。会话文件变了推 `session`（0.5 秒合一次），在工作区里的带上侧栏那一行（`sessions.row`，不算 parent）。SSE 连上先发 `build`（入口脚本的路径当版本号，重新打包后再发一次），再发 `hello`（`sse.ts`）；每 25 秒一个 `ping`。`keepAliveTimeout` 120 秒：cloudflared 会把空闲连接留约 90 秒，Node 默认的 5 秒会偶发 502。打包不清空 `dist`（开着的旧页面还要按需拿旧的块），打包后删一天前、没被引用的旧文件 |
 | `server/sse.ts` | SSE 的连接们。连上先发 `hello`（运行、确认请求、排队、用量、工作区、在跑的那几次正在写的那几段），和之后的事件在同一条流里、先后不会乱；算 hello 期间的事件攒着接在后面。页面拿它整个换掉，不再另外拉 |
@@ -82,6 +82,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `web/src/components/lazy.tsx` | 首屏用不着的按需加载：浏览会话、新会话、skill 选择第一次打开才拿，项目页、文件、改动面板加载时是 Spinner |
 | `composer.tsx` / `fork-dialog.tsx` | 输入框和底下那排选项 / 从这里分叉、编辑并分叉的对话框 |
 | `web/src/components/login.tsx` | `Gate`：上次认出来了的设备先画应用、同时问 `/api/auth/status`，没认出来再换成登录页（配对码建 passkey / passkey 登录）；第一次打开的先问。接口回 401 时也换成它 |
+| `table.tsx` | 表格（Markdown 的、图解的 Table 共用 `TableFrame`）：按每列要多宽估（最长那格的字数，一列最多算 14 个字宽）放不放得下；放不下时列不多或多是长句子排成卡片（第一列当标题，其余每格上面小字写列名，列名在 `data-label`：Markdown 的由 `markdown.tsx` 的 `rehypeTableLabels` 补），不然横着滚、第一列钉住、右边没到头时渐隐；右上角能换着看。外框 `contain: inline-size`，宽表不把整条回复撑宽。样子在 `index.css` 的 `.table-frame` |
 | `web/src/lib/live.tsx` | 全页面共用的工作区、运行、开着的 claude 进程（`hosts`，带后台任务）、确认请求，和会话状态的算法。`change` 移出后弹「已移出工作区 · 撤销」。`session` 通知带的那一行攒 1.5 秒就地换掉（parent 留原来的）；运行结束、看过了、放进来移出去这些才整个重拉工作区。第一次和重连全靠 `hello`（用量也在这里）：hello 来了，攒着的侧栏行作废，hello 之前发出的工作区请求回来就丢掉 |
 | `web/src/lib/tail.ts` | 运行输出流 → 正在写的那几段，服务端和网页共用。服务端把 `stream_event` 缩成短事件（`project`：`["m",消息id]` / `["b",第几段,种类,…]` / `["d",第几段,字]`；签名、stop、`message_delta`、空增量不推），同一段连着的增量攒 60ms 合成一个（`coalesce`），再攒一份、编序号（只数推出去的）。Codex 的流也走这一套。快照在 `hello` 里带着，新开始的运行、接不上的才拿 `/api/runs/:id/tail`（先把攒着的推出去），再按序号接推送（`run-event` 带 `seq`） |
 | `web/src/lib/thread.ts` | 会话记录 → 对话的纯函数：节点树、走成一条路、工具调用收成一组、分叉点、正在写的段变成节点；增量合并（`merge`，会话、子代理的对话共用） |

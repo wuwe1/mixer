@@ -8,6 +8,7 @@ import type { Spec } from "@/lib/visual";
 import { cn } from "@/lib/utils";
 import { Code } from "../code";
 import { Markdown } from "../markdown";
+import { TableFrame } from "../table";
 import { Frame } from "./index";
 
 export const TextView = ({ spec }: { spec: Spec<"Text"> }) => <Markdown text={spec.text} />;
@@ -46,22 +47,23 @@ export function MathView({ spec }: { spec: Spec<"Math"> }) {
 
 export const CodeView = ({ spec }: { spec: Spec<"Code"> }) => <Code code={spec.code} lang={spec.lang ?? "text"} className="overflow-x-auto rounded-lg border bg-muted/40 p-3" />;
 
+/** 放不下时（手机上）排成卡片或横着滚：TableFrame 挑，样子在 index.css 的 .table-frame */
 export function TableView({ spec }: { spec: Spec<"Table"> }) {
 	return (
-		<div className="overflow-x-auto rounded-lg border">
-			<table className="w-full text-md">
-				<thead className="bg-muted/40 text-left">
-					<tr>{spec.columns.map((c, i) => <th key={i} className="px-3 py-1.5 font-medium whitespace-nowrap">{c}</th>)}</tr>
+		<TableFrame>
+			<table>
+				<thead>
+					<tr>{spec.columns.map((c, i) => <th key={i}>{c}</th>)}</tr>
 				</thead>
 				<tbody>
 					{spec.rows.map((r, i) => (
-						<tr key={i} className="border-t">
-							{spec.columns.map((_, j) => <td key={j} className={cn("px-3 py-1.5 align-top", typeof r[j] === "number" && "text-right tabular-nums")}>{r[j] ?? ""}</td>)}
+						<tr key={i}>
+							{spec.columns.map((c, j) => <td key={j} data-label={c} className={cn(typeof r[j] === "number" && "text-right tabular-nums")}>{r[j] ?? ""}</td>)}
 						</tr>
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 
