@@ -2,7 +2,7 @@
 // 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、等你确认的请求。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx。
 import { ChevronLeft, ChevronRight, Clock, Square, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";

@@ -2,7 +2,7 @@
 // 是什么、跑了多久、停止；能看输出的点一下展开最后一段（开着时每 2 秒拿一次）。跑完了 Claude 会被叫醒接着做
 import { Activity, Bot, ChevronRight, Radar, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";

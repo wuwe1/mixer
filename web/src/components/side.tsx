@@ -7,7 +7,7 @@ import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";

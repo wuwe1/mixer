@@ -1,7 +1,7 @@
 // 确认请求：Claude 要执行命令、改文件时问你。当前会话的请求出现在对话里（前面就是 Claude 的思路）；别的会话的浮在右下角，带「查看」。
 import { Check, ChevronRight, ShieldQuestion, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";

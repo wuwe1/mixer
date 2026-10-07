@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "@/lib/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { App } from "./app";
 import { Gate } from "./components/login";
@@ -35,7 +35,7 @@ createRoot(document.getElementById("root") as HTMLElement).render(
 					</LiveProvider>
 				</Gate>
 			</Boundary>
-			<Toaster position="top-center" />
+			<Toaster />
 		</TooltipProvider>
 	</StrictMode>,
 );

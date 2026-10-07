@@ -362,6 +362,17 @@ const touched = (kind: keyof typeof dirty) => (_: unknown, f: string | Buffer | 
 watch(join(ROOT, "server"), { recursive: true }, touched("server"));
 watch(join(ROOT, "mcp"), { recursive: true }, touched("server"));
 watch(join(ROOT, "web", "index.html"), touched("web"));
+// 别处打的包（终端里 pnpm build）：dist 的 index.html 换了就告诉开着的页面
+let distTimer: ReturnType<typeof setTimeout> | null = null;
+if (existsSync(DIST))
+	watch(DIST, (_, f) => {
+		if (String(f ?? "") !== "index.html") return;
+		distTimer ??= setTimeout(() => {
+			distTimer = null;
+			const old = version;
+			if (readVersion() && version !== old) emit("build", { version });
+		}, 500);
+	});
 const SHARED = new Set(["lib/tail.ts", "lib/visual.ts"]);
 watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(SHARED.has(String(f ?? "").split(sep).join("/")) ? "server" : "web")(e, f));
 setInterval(() => {
@@ -426,7 +437,8 @@ const server = createServer(async (req, res) => {
 		} else if (path.startsWith("/api/") && !(await access.who(req))) return json(res, 401, { error: "要先登录", login: true });
 		if (path === "/api/events") {
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-			res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
+			// 每次连上都从磁盘重读：别处打过包（终端里 pnpm build）时，记着的还是旧的，页面会一直提示刷新、刷了还提示
+			res.write(readVersion() ? sse.frame("build", { version }) : ": hi\n\n");
 			res.on("close", () => sse.leave(res));
 			res.on("error", () => sse.leave(res));
 			return void sse.join(res, workspace.hello).catch((e) => console.error(e));
@@ -474,7 +486,7 @@ server.listen(PORT, "127.0.0.1", () => {
 	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
 	tunnel.keep(PORT);
 	usage.start();
+	models.start();
 	// 先把所有会话扫一遍（第一次要读完所有记录，之后按修改时间缓存），侧栏第一次打开就快
 	tree().catch((e) => console.error(e));
 });
-	models.start();

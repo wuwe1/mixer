@@ -1,7 +1,7 @@
 // 浏览会话：本机所有的会话（按文件夹，文件夹和会话都是新的在上面），点一个就打开它、放进工作区
 import { Check, GitFork, MessageSquare } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSidebar } from "@/components/ui/sidebar";

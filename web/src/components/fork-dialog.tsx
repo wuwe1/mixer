@@ -2,7 +2,7 @@
 // 开一个新会话，带着到那一处为止的上下文，原会话不动；改写的是第一条消息就是在同一个项目里开新会话。
 import { GitFork } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";

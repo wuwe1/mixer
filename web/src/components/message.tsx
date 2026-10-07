@@ -4,7 +4,7 @@
 // 最后一条回复的常驻；手机上工具组的分叉常驻（点工具组是展开）。图片点了在当前页面放大。
 import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, ListChecks, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";

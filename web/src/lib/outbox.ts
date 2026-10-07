@@ -1,7 +1,7 @@
 // 你写的消息不丢：输入框里的草稿随打随存；点了发送的先记进发件箱，真写进会话记录了才删。
 // 发送请求失败、运行一开始就出错、排着队服务重启了（队列只在内存里），都放回输入框。都存在这台设备的 localStorage 里。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import type { Node, Queued, Run } from "./api";
 
 type Item = { id: string; session: string; text: string; at: number; mode: string; run?: string; queued?: string };

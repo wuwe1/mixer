@@ -5,7 +5,7 @@
 // 服务每次连上先推 hello：这时的运行、确认请求、排队、用量、工作区、正在写的那几段，各处拿它整个换掉（不另外拉：拉回来的可能比推来的旧）。
 // 服务每次连上、每次重新打包后推 build（页面的版本）：和这个页面不一样就提示刷新，在后台的回到前台时直接刷新。
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 type Handler = (data: any) => void; // biome-ignore lint: 各种事件的数据不一样
 const handlers = new Map<string, Set<Handler>>();

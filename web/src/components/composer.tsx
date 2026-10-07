@@ -4,17 +4,18 @@
 // 下面一排：权限、模型、「+」（图片、skill）；右边是后台任务、运行中的停止和时长、订阅快用完的窗口、上下文用了多少、发送。
 import { Bot, Code, GitFork, Hand, ImagePlus, ListChecks, Plus, Send, Sparkles, Square, SquareSlash } from "lucide-react";
 import { Fragment, memo, type ReactNode, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { api, type Node, type Run } from "@/lib/api";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { api, type Node, type Run } from "@/lib/api";
 import { type Status, useLive } from "@/lib/live";
 import { type Agent as Kind, family, lastCtx, MODELS, modelFor, pretty, windowOf } from "@/lib/model";
-import { useDraft, useOutbox } from "@/lib/outbox";
 import { effortLabel, type ModelInfo } from "@/lib/model-info";
+import { useDraft, useOutbox } from "@/lib/outbox";
 import { forkPoint, type Walk } from "@/lib/thread";
 import { nearLimit } from "@/lib/usage";
 import { AttachStrip, encode, type Shot, toShots } from "./attach";
@@ -251,7 +252,7 @@ function QuotaHint({ agent }: { agent: Kind }) {
 const withSkill = (text: string, name: string) => `/${name} ${text.replace(/^\/\S+\s*/, "")}`;
 
 /** 「+」：加图片、选 skill（列表在 skills.tsx，点了才加载）。没有 skill（Codex）就直接选图 */
-function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill?: () => void }) {
+export function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill?: () => void }) {
 	const file = useRef<HTMLInputElement>(null);
 	const pick = () => file.current?.click();
 	const button = (
@@ -307,16 +308,16 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 	const mode = why ? "fork" : "resume";
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState(() => modelFor(agent, w.path, chosen) ?? "");
-	const [busy, setBusy] = useState(false);
 	const [effort, setEffort] = useState(chosenEffort ?? "");
+	const [busy, setBusy] = useState(false);
 	const [skills, setSkills] = useState(false);
 	const [shots, setShots] = useState<Shot[]>([]);
 	const input = useRef<HTMLTextAreaElement>(null);
 	// 换了会话、或者在别处（终端、另一个页面）换了模型：跟着变
 	const fallback = modelFor(agent, w.path, chosen) ?? "";
 	useEffect(() => setModel(fallback), [session, fallback]);
-	const send = async () => {
 	useEffect(() => setEffort(chosenEffort ?? ""), [session, chosenEffort]);
+	const send = async () => {
 		if ((!text.trim() && !shots.length) || busy) return;
 		setBusy(true);
 		// 请求在路上时还能接着打字、加图：回来之后只拿掉发出去的

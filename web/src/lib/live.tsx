@@ -2,7 +2,7 @@
 // 会话的「状态」由这几样合起来算：等你确认 > 在跑 > 后台任务在跑（Claude 闲着，跑完了会叫醒它）> 跑完了没看 / 出错了 > 终端里开着。
 // 都从 SSE 连上时的 hello 来（第一次、每次重连），之后按推来的事件改；只有工作区有时还要整个拉一次。
 import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { api, type Approval, type Group, type Hello, type Host, type Queued, type Run, type SessionMeta } from "./api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
