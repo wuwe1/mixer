@@ -1,4 +1,4 @@
-// usage.ts：各个账号拼成一样的样子（Claude 的 rate_limit_event、get_usage，Codex 的 account/rateLimits/read）、hello 里带着；
+// usage.ts：各个账号拼成一样的样子（Claude 的 rate_limit_event、get_usage）、hello 里带着；
 // pi 的花费：按 provider、本地日期加起来，增量读、半行不算、换月重算；
 // shared/usage.ts：挑最紧的窗口（过了重置时间的不算）、输入框旁边的提醒、钱怎么写
 import assert from "node:assert/strict";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type Account, money, nearLimit, tightest } from "../shared/usage.ts";
 
-// 不碰这台机器的 ~/.claude、~/.codex、data/
+// 不碰这台机器的 ~/.claude、data/
 const tmp = mkdtempSync(join(tmpdir(), "mixer-usage-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");
@@ -70,46 +70,18 @@ test("Claude 的 get_usage → 账号：0–100 换成 0–1、ISO 时间换成�
 });
 
 /** account/rateLimits/read 回来的样子（真的 app-server 回的，去掉了账号 id 这些） */
-const READ = {
-	rateLimits: {
-		limitId: "codex", limitName: null,
-		primary: { usedPercent: 82, windowDurationMins: 300, resetsAt: 1791269435 },
-		secondary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: 1791800240 },
-		credits: { hasCredits: false, unlimited: false, balance: "0" },
-		individualLimit: null, spendControlReached: false, planType: "plus", rateLimitReachedType: null,
-	},
-	rateLimitsByLimitId: null,
-	rateLimitResetCredits: { availableCount: 2, credits: null },
-	accountId: null, rateLimitUpsell: null,
-};
-
-test("Codex 的 account/rateLimits/read → 账号：百分比换成 0–1，窗口按时长起名，余额、免费重置写在 note", () => {
-	const at = "2026-10-06T00:00:00.000Z";
-	assert.deepEqual(usage.codexAccount(READ, at), {
-		id: "codex", label: "Codex", kind: "quota", at, note: "还能免费重置 2 次",
-		windows: [{ label: "5 小时", used: 0.82, resetsAt: 1791269435_000 }, { label: "本周", used: 0.01, resetsAt: 1791800240_000 }],
-	});
-	const rich = usage.codexAccount({ rateLimits: { ...READ.rateLimits, secondary: null, credits: { hasCredits: true, unlimited: false, balance: "12.5" } } }, at);
-	assert.ok(rich?.kind === "quota");
-	assert.equal(rich.note, "余额 12.5");
-	assert.equal(rich.windows.length, 1);
-	const unlimited = usage.codexAccount({ rateLimits: { ...READ.rateLimits, credits: { hasCredits: false, unlimited: true, balance: null } } }, at);
-	assert.equal(unlimited?.kind === "quota" && unlimited.note, "额度不限");
-	assert.equal(usage.codexAccount({}, at), null);
-});
-
 test("最紧的窗口：所有账号里用得最多的，过了重置时间的不算；输入框只看自己那个 agent 的、80% 起", () => {
 	const now = 1_000_000;
 	const q = (id: string, windows: [string, number, number | null][]): Account => ({ id, label: id, kind: "quota", at: "", windows: windows.map(([label, used, resetsAt]) => ({ label, used, resetsAt })) });
 	const accounts: Account[] = [
 		q("claude", [["5 小时", 0.95, now - 1], ["本周", 0.4, now + 1]]),
-		q("codex", [["5 小时", 0.82, now + 60_000], ["本周", 0.5, null]]),
+		q("other", [["5 小时", 0.82, now + 60_000], ["本周", 0.5, null]]),
 		{ id: "pi", label: "pi", kind: "spend", at: "", spend: { today: 1, month: 2, currency: "USD", budget: 1 } },
 	];
 	const t = tightest(accounts, now);
-	assert.equal(t?.account.id, "codex");
+	assert.equal(t?.account.id, "other");
 	assert.equal(t?.window.label, "5 小时");
-	assert.equal(nearLimit(accounts, "codex", now)?.used, 0.82);
+	assert.equal(nearLimit(accounts, "other", now)?.used, 0.82);
 	// Claude 的 95% 已经过了重置时间：剩下的 40% 不到 80%
 	assert.equal(nearLimit(accounts, "claude", now), null);
 	assert.equal(tightest([q("claude", [["5 小时", 0.9, now - 1]])], now), null);

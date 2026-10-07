@@ -1,15 +1,15 @@
 # mixer
 
-mixer is a small web app that lets you watch and drive the Claude Code (and Codex) sessions on your Mac from a browser — including your phone. It reads the local session transcripts, runs your own logged-in `claude` CLI for new turns, forks and permission prompts, and serves everything on 127.0.0.1; remote access goes through Cloudflare Tunnel + Access or Tailscale Funnel + passkeys. It is a personal tool: whoever can reach it can run commands on your Mac as you.
+mixer is a small web app that lets you watch and drive the Claude Code sessions on your Mac from a browser — including your phone. It reads the local session transcripts, runs your own logged-in `claude` CLI for new turns, forks and permission prompts, and serves everything on 127.0.0.1; remote access goes through Cloudflare Tunnel + Access or Tailscale Funnel + passkeys. It is a personal tool: whoever can reach it can run commands on your Mac as you.
 
-远程看、远程驱动本机的 Claude Code 会话（也能看、能跑 Codex 的会话）。只给自己用。
+远程看、远程驱动本机的 Claude Code 会话。只给自己用。
 
 ## 是什么
 
 - **侧栏是工作区**：放你挑进来的文件夹和会话。每行带状态标记：运行中、待确认、跑完没看、出错、终端里开着
 - **会话页**：和 Claude 的对话按原样显示（思考、工具调用和结果、子代理、上下文压缩、后台任务通知），运行中的回复边写边出来。可以继续（运行中发的会排队）、停止、在请求确认时允许或拒绝，从任意一条回复或工具调用「分叉」，或「编辑并分叉」自己的一条消息
 - **输入框**：权限（自动 / 每次询问 / 计划模式）、模型、skill、图片（可以在图上画箭头、随手画线）；右下角是上下文用了多少
-- **项目页**：开新会话（选 Claude Code 或 Codex），看仓库文件、未提交的改动（GitHub 样式的 diff）和最近的提交
+- **项目页**：开新会话，看仓库文件、未提交的改动（GitHub 样式的 diff）和最近的提交
 - **图解**：Claude 讲概念、流程、算法、数据时在回复里放图（流程图、时序图、图表、逐帧演示、对比、小测验……），像 claude.ai 的 artifact；模型只写 JSON，画法是 mixer 自己的组件
 - **用量**：侧栏底下是订阅这周、5 小时窗口用了多少
 - 手机上侧栏从左边拉出来，可以「添加到主屏幕」当 App 用
@@ -21,9 +21,9 @@ mixer is a small web app that lets you watch and drive the Claude Code (and Code
 - macOS（常驻用 launchd；别的系统没试过）
 - Node.js 22.18+（直接跑 `.ts`，不用编译），pnpm 10，git
 - 装好、登录过的 `claude` 命令行（mixer 只用它，走你自己的订阅，不要 API key）
-- 可选：Codex.app（跑 Codex 会话，用它带的 `codex`，`MIXER_CODEX` 可改路径）；`cloudflared`（Cloudflare Tunnel）或 Tailscale（Funnel）——手机访问二选一
+- 可选：`cloudflared`（Cloudflare Tunnel）或 Tailscale（Funnel）——手机访问二选一
 
-mixer 用到了 `claude` 命令行帮助里没写的参数（`--thinking-display summarized`、`--resume-session-at`），也直接读 Claude Code、Codex 的会话记录（内部格式）。在较新的 Claude Code 上用着没问题，但它们换了版本可能就要跟着改。
+mixer 用到了 `claude` 命令行帮助里没写的参数（`--thinking-display summarized`、`--resume-session-at`），也直接读 Claude Code 的会话记录（内部格式）。在较新的 Claude Code 上用着没问题，但它们换了版本可能就要跟着改。
 
 ## 装和跑
 

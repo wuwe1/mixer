@@ -28,18 +28,12 @@ export const lastCtx = (path: Node[]) => {
 };
 
 /** 下一条用哪个模型：在 mixer 里选过的；没选过就接着用上一条回复的那个系列（从终端开的会话不会被换成默认的）；都没有就是默认 */
-const defaultModel = (path: Node[], chosen: string | null) => {
+export const modelFor = (path: Node[], chosen: string | null) => {
 	if (chosen) return chosen;
 	const c = lastCtx(path);
 	const f = c && family(c.model);
 	return f && MODELS.some((m) => m.v === f) ? f : null;
 };
-
-/** 会话是哪家的：Claude Code 还是 Codex */
-export type Kind = "claude" | "codex";
-/** Codex 的会话下一条用哪个模型：选过的；没选过就接着用上一条回复的（完整型号）；都没有就是 Codex 的默认 */
-const codexModel = (path: Node[], chosen: string | null) => chosen ?? lastCtx(path)?.model ?? null;
-export const modelFor = (agent: Kind, path: Node[], chosen: string | null) => (agent === "codex" ? codexModel(path, chosen) : defaultModel(path, chosen));
 
 /** 模型的上下文窗口：完整型号直接查；别名用学到的同系列里最新的那个 */
 export function windowOf(model: string, windows: Record<string, number>) {

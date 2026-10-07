@@ -2,7 +2,7 @@
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
 // 每条消息、每组工具调用后面几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。平时收着，指着、点一下那条才出现，
 // 最后一条回复的常驻；手机上工具组的分叉常驻（点工具组是展开）。图片点了在当前页面放大。
-import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, ListChecks, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
+import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
@@ -20,8 +20,6 @@ import { StatusIcon } from "./side";
 const ICON: Record<string, typeof Wrench> = {
 	Bash: SquareTerminal, Read: FileText, Write: Pencil, Edit: Pencil, MultiEdit: Pencil, NotebookEdit: Pencil, Grep: Search, Glob: Search,
 	WebSearch: Globe, WebFetch: Globe, Agent: Bot, Task: Bot,
-	// Codex 的
-	exec_command: SquareTerminal, shell: SquareTerminal, write_stdin: SquareTerminal, apply_patch: Pencil, web_search: Globe, update_plan: ListChecks,
 };
 const toolIcon = (name: string) => ICON[name] ?? (name.startsWith("mcp__") ? Globe : Wrench);
 

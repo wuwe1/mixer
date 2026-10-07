@@ -47,7 +47,6 @@ export function Browse({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 										<CommandItem key={s.id} value={`${projectName(p)} ${sessionTitle(s)} ${s.first ?? ""} ${s.last ?? ""} ${s.id}`} onSelect={() => pick(p, s)} className={kid ? "pl-6" : undefined}>
 											{kid ? <GitFork className="text-muted-foreground" /> : <MessageSquare className="text-muted-foreground" />}
 											<span className="min-w-0 flex-1 truncate text-md">{sessionTitle(s)}</span>
-											{s.agent === "codex" && <span className="shrink-0 text-2xs text-muted-foreground">Codex</span>}
 											{inWorkspace(s.id) && <Check className="text-muted-foreground" aria-label="已在工作区" />}
 											<span className="shrink-0 text-2xs text-muted-foreground tabular-nums">{since(s.mtime)}</span>
 											<StatusIcon s={status(s)} />

@@ -1,4 +1,4 @@
-// 会话记录（Claude Code、Codex、pi 的）两边共用的：按行读、接着上次读到的地方读、截短、读过的留多少
+// 会话记录（Claude Code、pi 的）共用的：按行读、接着上次读到的地方读、截短、读过的留多少
 import { createReadStream, type Stats } from "node:fs";
 
 /**

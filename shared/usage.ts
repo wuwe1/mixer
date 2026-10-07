@@ -3,8 +3,8 @@
 /** 一个窗口：用了多少（0–1）、什么时候重置（毫秒，null 是不知道） */
 export type Window = { label: string; used: number; resetsAt: number | null };
 /**
- * quota：有窗口的订阅（Claude、Codex 的 5 小时、本周）；spend：按花的钱算的（pi 的每个 provider：今天、本月，预算还没地方设）。
- * at：最近一次更新的时间；note：一句补充（Codex 的余额、还能免费重置几次）
+ * quota：有窗口的订阅（Claude 的 5 小时、本周）；spend：按花的钱算的（pi 的每个 provider：今天、本月，预算还没地方设）。
+ * at：最近一次更新的时间；note：一句补充
  */
 export type Quota = { id: string; label: string; kind: "quota"; windows: Window[]; at: string; note?: string };
 export type Spend = { id: string; label: string; kind: "spend"; spend: { today: number; month: number; currency: string; budget?: number }; at: string };
@@ -29,7 +29,7 @@ export function tightest(accounts: Account[], now = Date.now()): { account: Quot
 	return best;
 }
 
-/** 这个账号（claude / codex）快用完了的窗口（≥ 80%）：输入框旁边提醒一句；没有是 null */
+/** 这个账号（claude）快用完了的窗口（≥ 80%）：输入框旁边提醒一句；没有是 null */
 export function nearLimit(accounts: Account[], id: string, now = Date.now()) {
 	const t = tightest(accounts.filter((a) => a.id === id), now);
 	return t && t.window.used >= 0.8 ? t.window : null;

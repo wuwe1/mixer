@@ -1,28 +1,24 @@
 // 用量：各个账号用了多少，拼成一样的样子（shared/usage.ts 的 Account）给网页：侧栏最底下一行、点开的「用量」、输入框旁边快满了的提醒。
 //   Claude：models.ts 每 10 分钟起一个 claude -p --safe-mode 问 get_usage（不花 token、不写会话；终端里用掉的也算进来）→ claudeRead；
 //     mixer 里每次运行的 rate_limit_event（runs.ts → claude()）先到先更新。get_usage 是命令行标着 Experimental 的，旧版、没登录、出错就只剩运行时的
-//   Codex：codex app-server 的 account/rateLimits/read（连接是 codex-run.ts 那个）：起来 15 秒后、之后每 10 分钟、
-//     它推 account/rateLimits/updated（零碎的，按它的说法重新读一次）、每跑完一轮
 //   pi（按花的钱算，kind: "spend"）：~/.pi/agent/sessions 里每条回复记下的花费，按 provider 加起来（今天、本月），见 readPi
-// Claude、Codex 最后的样子记在 state.json（重启后接着显示）；pi 的每次从记录算，不记。变了推 usage（整张表）
+// Claude 最后的样子记在 state.json（重启后接着显示）；pi 的每次从记录算，不记。变了推 usage（整张表）
 import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Account, Spend } from "../shared/usage.ts";
-import * as codexRun from "./codex-run.ts";
 import { type Cursor, lines, resume } from "./jsonl.ts";
 import { say } from "./log.ts";
 import { emit } from "./sse.ts";
 import * as state from "./state.ts";
 
-type Raw = Record<string, any>; // biome-ignore lint: app-server 的回复
+type Raw = Record<string, any>; // biome-ignore lint: 命令行的回复
 
-/** 侧栏、面板里的先后：Claude、Codex，然后按花的钱的本月花得多的在前 */
-const ORDER = ["claude", "codex"];
-const rank = (id: string) => (ORDER.includes(id) ? ORDER.indexOf(id) : ORDER.length);
+/** 侧栏、面板里的先后：Claude，然后按花的钱的本月花得多的在前。以前记下的 Codex 的不要了 */
+const rank = (id: string) => (id === "claude" ? 0 : 1);
 const month = (a: Account) => (a.kind === "spend" ? a.spend.month : 0);
-export const list = (): Account[] => [...Object.values(state.usage()), ...pi].sort((a, b) => rank(a.id) - rank(b.id) || month(b) - month(a) || a.id.localeCompare(b.id));
+export const list = (): Account[] => [...Object.values(state.usage()).filter((a) => a.id !== "codex"), ...pi].sort((a, b) => rank(a.id) - rank(b.id) || month(b) - month(a) || a.id.localeCompare(b.id));
 
 function put(a: Account) {
 	state.setUsage(a);
@@ -83,36 +79,6 @@ export function claudeRead(p: Promise<unknown>) {
 		if (e.message !== claudeError) say(`读 Claude 用量失败：${e.message}`);
 		claudeError = e.message;
 	});
-}
-
-/**
- * account/rateLimits/read 的回复 → 账号。rateLimits 的 primary、secondary 是两个窗口（usedPercent 0–100、windowDurationMins、resetsAt 秒）。
- * 有余额（credits）、还能免费重置（rateLimitResetCredits）的写一句 note。没有 rateLimits 是 null
- */
-export function codexAccount(r: Raw, at = new Date().toISOString()): Account | null {
-	const s = r?.rateLimits as Raw | null | undefined;
-	if (!s) return null;
-	const windows = [s.primary, s.secondary].filter((w): w is Raw => typeof w?.usedPercent === "number").map((w) => ({ label: windowLabel(w.windowDurationMins), used: w.usedPercent / 100, resetsAt: typeof w.resetsAt === "number" ? w.resetsAt * 1000 : null }));
-	const c = s.credits as Raw | null | undefined;
-	const resets = Number(r.rateLimitResetCredits?.availableCount ?? 0);
-	const note = [c?.unlimited ? "额度不限" : c?.hasCredits && c.balance ? `余额 ${c.balance}` : null, resets > 0 ? `还能免费重置 ${resets} 次` : null].filter(Boolean).join(" · ");
-	return { id: "codex", label: "Codex", kind: "quota", windows, at, ...(note ? { note } : {}) };
-}
-
-/** 读一次 Codex 的：没登录的不读；出错不吵（同样的错只记一次） */
-let reading: Promise<void> | null = null;
-let lastError = "";
-export function readCodex() {
-	reading ??= (async () => {
-		if (!(await codexRun.request("account/read", {})).account) return;
-		const a = codexAccount(await codexRun.request("account/rateLimits/read"));
-		if (a) put(a);
-		lastError = "";
-	})().catch((e: Error) => {
-		if (e.message !== lastError) say(`读 Codex 用量失败：${e.message}`);
-		lastError = e.message;
-	}).finally(() => { reading = null; });
-	return reading;
 }
 
 /**
@@ -201,20 +167,10 @@ export function readPi(now = new Date()) {
 	return piReading;
 }
 
-/** 起来之后：pi 的 5 秒后读一次，之后每分钟（换天、换月也靠它重算）。装了 Codex 才去读（15 秒后第一次，之后每 10 分钟）；它说变了、跑完一轮，攒 3 秒读一次 */
+/** 起来之后：pi 的 5 秒后读一次，之后每分钟（换天、换月也靠它重算） */
 export function start() {
 	setTimeout(() => {
 		readPi();
 		setInterval(() => readPi(), 60_000).unref();
 	}, 5000).unref();
-	setTimeout(() => {
-		if (!codexRun.bin()) return;
-		readCodex();
-		setInterval(readCodex, 600_000).unref();
-		let soon: ReturnType<typeof setTimeout> | null = null;
-		codexRun.onNote((m) => {
-			if (m.method !== "account/rateLimits/updated" && m.method !== "turn/completed") return;
-			soon ??= setTimeout(() => { soon = null; readCodex(); }, 3000);
-		});
-	}, 15_000).unref();
 }

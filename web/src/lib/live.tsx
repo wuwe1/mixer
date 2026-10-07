@@ -24,7 +24,7 @@ type Live = {
 	hosts: Host[];
 	approvals: Approval[];
 	queue: Queued[];
-	/** 用量：各个账号（Claude、Codex）的窗口用了多少 */
+	/** 用量：各个账号（Claude、pi）用了多少 */
 	usage: Account[];
 	/** 会话现在怎样 */
 	status: (s: Pick<SessionMeta, "id" | "terminal" | "unread">) => Status;
@@ -157,7 +157,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			if (mine.some((r) => r.status === "running")) return "running";
 			if (hosts.some((h) => h.session === s.id && h.tasks.length)) return "background";
 			if (s.unread) return s.unread;
-			// 在 mixer 外面开着（服务端照 Claude Code、Codex 自己记的算，开了关了都推过来）
+			// 在 mixer 外面开着（服务端照 Claude Code 自己记的算，开了关了都推过来）
 			if (s.terminal) return "terminal";
 			return null;
 		};

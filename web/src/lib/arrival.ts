@@ -1,6 +1,5 @@
 // 发出去的那条到没到：纯函数，不碰 React（outbox.ts、use-stream.ts 用，测试也用）。
-// 每条发出去的带一个网页给的 uuid：claude 的记录里那条就用它（排队的几条合成一条时另给一个，运行的 merged 记着带了哪几条）；
-// Codex 的记录里是它自己给的 item id，运行开始跑了 uuid 就是它。不比字、不看时间。
+// 每条发出去的带一个网页给的 uuid：记录里那条就用它（排队的几条合成一条时另给一个，运行的 merged 记着带了哪几条）。不比字、不看时间。
 import type { Queued, Run } from "@shared/api.ts";
 
 /**

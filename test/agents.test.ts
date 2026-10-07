@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-// 不碰这台机器的 ~/.claude、~/.codex、data/
+// 不碰这台机器的 ~/.claude、data/
 const tmp = mkdtempSync(join(tmpdir(), "mixer-agents-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");

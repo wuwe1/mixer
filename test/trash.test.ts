@@ -1,36 +1,21 @@
-// trash.ts：删掉会话（Claude 的挪进废纸篓、Codex 的 codex archive），删不得的 409；sessions.ts 的 expires（cleanupPeriodDays）
+// trash.ts：删掉会话（挪进废纸篓），删不得的 409；sessions.ts 的 expires（cleanupPeriodDays）
 import assert from "node:assert/strict";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-// 不碰这台机器的 ~/.claude、~/.codex、~/.Trash、data/；codex 换成假的，只记下参数
+// 不碰这台机器的 ~/.claude、~/.Trash、data/
 const tmp = mkdtempSync(join(tmpdir(), "mixer-trash-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");
 const PROJECT = "-tmp-demo";
 const dir = join(tmp, ".claude", "projects", PROJECT);
 mkdirSync(dir, { recursive: true });
-const day = join(tmp, ".codex", "sessions", "2026", "01", "01");
-mkdirSync(day, { recursive: true });
-mkdirSync(join(tmp, ".codex", "archived_sessions"), { recursive: true });
-const ARGS = join(tmp, "codex-args");
-const fake = (name: string, body: string) => {
-	const f = join(tmp, name);
-	writeFileSync(f, `#!/bin/sh\necho "$@" >> "${ARGS}"\n${body}\n`);
-	chmodSync(f, 0o755);
-	return f;
-};
-// 真的 codex archive 把文件挪去 archived_sessions
-const ok = fake("codex-ok", `find "$HOME/.codex/sessions" -name "*$2.jsonl" -exec mv {} "$HOME/.codex/archived_sessions/" \\;`);
-const bad = fake("codex-bad", `echo "no such session" >&2\nexit 1`);
-process.env.MIXER_CODEX = ok;
 
 const trash = await import("../server/trash.ts");
 const { listSessions, parse, row } = await import("../server/sessions.ts");
 const state = await import("../server/state.ts");
-const codex = await import("../server/codex.ts");
 const terminals = await import("../server/terminals.ts");
 
 const line = (r: object) => `${JSON.stringify(r)}\n`;
@@ -91,47 +76,7 @@ test("没有这个会话：404", async () => {
 	await rejects(trash.remove(PROJECT, "cccccccc-0000-4000-8000-000000000001"), 404, /没有/);
 });
 
-test("Codex：codex archive <id>，find 不再认它；codex 失败回 500 带上它说的", async () => {
-	const ID = "dddddddd-0000-4000-8000-000000000001";
-	const BAD = "dddddddd-0000-4000-8000-000000000002";
-	const fix = readFileSync(join(import.meta.dirname, "fixtures", "codex", "old.jsonl"), "utf8");
-	for (const id of [ID, BAD]) {
-		const f = join(day, `rollout-2026-01-01T00-00-00-${id}.jsonl`);
-		writeFileSync(f, fix.replaceAll("11111111-1111-4111-8111-111111111111", id));
-		old(f);
-		// 刚建的文件：监视到时由 fromPath 记下（find 扫目录两秒最多一次）
-		assert.ok(codex.fromPath(`2026/01/01/rollout-2026-01-01T00-00-00-${id}.jsonl`));
-	}
-	state.addToWorkspace("-tmp-demo", "/tmp/demo", ID);
-	await trash.remove("-tmp-demo", ID);
-	assert.equal(readFileSync(ARGS, "utf8").trim(), `archive ${ID}`);
-	assert.equal(codex.find(ID), null);
-	assert.equal(ID in (state.workspace()?.sessions ?? {}), false);
-	process.env.MIXER_CODEX = bad;
-	await rejects(trash.remove("-tmp-demo", BAD), 500, /no such session/);
-	assert.ok(codex.find(BAD));
-	process.env.MIXER_CODEX = ok;
-});
-
-test("Codex：有别的进程拿着线程锁（终端里开着）不调 codex；刚写过不挡", async () => {
-	const ID = "eeeeeeee-0000-4000-8000-000000000001";
-	const rel = `2026/01/01/rollout-2026-01-01T00-00-00-${ID}.jsonl`;
-	writeFileSync(join(tmp, ".codex", "sessions", rel), readFileSync(join(import.meta.dirname, "fixtures", "codex", "old.jsonl"), "utf8").replaceAll("11111111-1111-4111-8111-111111111111", ID));
-	assert.ok(codex.fromPath(rel));
-	mkdirSync(terminals.LOCKS, { recursive: true });
-	const fd = openSync(join(terminals.LOCKS, `${ID}.lock`), "w");
-	const before = readFileSync(ARGS, "utf8");
-	try {
-		await rejects(trash.remove("-tmp-demo", ID), 409, /终端里开着/);
-		assert.equal(readFileSync(ARGS, "utf8"), before);
-	} finally {
-		closeSync(fd);
-	}
-	await trash.remove("-tmp-demo", ID);
-	assert.equal(readFileSync(ARGS, "utf8"), `${before}archive ${ID}\n`);
-});
-
-test("expires：最后修改 + cleanupPeriodDays（默认 30，settings.json 改了重读）；Codex 是 null", async () => {
+test("expires：最后修改 + cleanupPeriodDays（默认 30，settings.json 改了重读）", async () => {
 	const id = "ffffffff-0000-4000-8000-000000000001";
 	const file = claude(id, "过期");
 	const m = await row(PROJECT, id);
@@ -141,9 +86,6 @@ test("expires：最后修改 + cleanupPeriodDays（默认 30，settings.json 改
 	assert.equal((await row(PROJECT, id))?.expires, new Date(mtime + 7 * 86_400_000).toISOString());
 	assert.equal((await listSessions(PROJECT)).find((s) => s.id === id)?.expires, new Date(mtime + 7 * 86_400_000).toISOString());
 	assert.ok(existsSync(file));
-	const cx = (await listSessions("-tmp-demo")).find((s) => s.agent === "codex");
-	assert.ok(cx);
-	assert.equal(cx.expires, null);
 });
 
 test("撤销「移出整个文件夹」：文件夹连同里面的会话一起放回", () => {

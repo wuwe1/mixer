@@ -1,8 +1,8 @@
-// terminals.ts：在 mixer 外面开着的会话。Claude 的照 ~/.claude/sessions/<pid>.json（进程活着、启动时间对得上、不是 mixer 自己的），
-// Codex 的照 ~/.codex/thread-writer-locks/<线程 id>.lock 有没有进程开着（lsof）。HOME 是临时目录，登记文件、锁文件都是假的
+// terminals.ts：在 mixer 外面开着的会话，照 ~/.claude/sessions/<pid>.json（进程活着、启动时间对得上、不是 mixer 自己的）。
+// HOME 是临时目录，登记文件都是假的
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,7 +12,6 @@ process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");
 const t = await import("../server/terminals.ts");
 mkdirSync(t.REGISTRY, { recursive: true });
-mkdirSync(t.LOCKS, { recursive: true });
 
 const A = "aaaaaaaa-0000-4000-8000-000000000001";
 /** 照 Claude Code 写的样子登记一个进程 */
@@ -92,26 +91,6 @@ test("Claude：登记文件读到一半（正在写）用上次的，不当成�
 	assert.equal(await t.held(A), false);
 });
 
-test("Codex：有进程开着线程的锁文件才算；留下的锁文件（进程被杀了）不算；mixer 的 app-server 不算", async () => {
-	const ID = "01a115ee-7dbf-7083-a4d1-a91cf0b60f4f";
-	const lock = join(t.LOCKS, `${ID}.lock`);
-	writeFileSync(join(t.LOCKS, ".coordination.lock"), "");
-	writeFileSync(lock, "");
-	assert.equal(await t.held(ID), false);
-	const fd = openSync(lock, "r");
-	try {
-		assert.equal(await t.held(ID), true);
-		assert.equal(t.of(ID), "idle");
-		t.mine.add(process.pid);
-		assert.equal(await t.held(ID), false);
-		t.mine.delete(process.pid);
-	} finally {
-		closeSync(fd);
-	}
-	assert.equal(await t.held(ID), false);
-	rmSync(lock);
-});
-
 test("开着、关了、在跑闲着换了：告诉 start 给的（带 Claude 登记的 cwd）", async () => {
 	const seen: [string, string | null][] = [];
 	t.start((id, cwd) => seen.push([id, cwd]));
@@ -133,6 +112,5 @@ test("开着、关了、在跑闲着换了：告诉 start 给的（带 Claude �
 
 test("登记的文件夹没有：谁都没开着", async () => {
 	rmSync(t.REGISTRY, { recursive: true, force: true });
-	rmSync(t.LOCKS, { recursive: true, force: true });
 	assert.equal(await t.held(A), false);
 });

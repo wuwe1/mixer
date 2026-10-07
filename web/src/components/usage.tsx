@@ -1,4 +1,4 @@
-// 用量：侧栏最底下一行，所有账号（Claude、Codex）里最紧的那个窗口，和一条细条（pi 这种按花的钱算的不算）；点开是「用量」，每个账号的每个窗口、花的钱。
+// 用量：侧栏最底下一行，所有账号里最紧的那个窗口，和一条细条（pi 这种按花的钱算的不算）；点开是「用量」，每个账号的每个窗口、花的钱。
 // 电脑上是贴着侧栏的浮层，手机上从下面出来、整屏宽。条一律是灰的：用量只是中性的数，不上色
 import { Gauge } from "lucide-react";
 import { SidebarFooter } from "@/components/ui/sidebar";
@@ -72,12 +72,12 @@ function AccountUsage({ a, now }: { a: Account; now: number }) {
 
 /** 「用量」里的：每个账号一段；还没有就是空状态 */
 function UsageList({ accounts }: { accounts: Account[] }) {
-	if (!accounts.length) return <Placeholder icon={Gauge} text="还没有用量：在 mixer 里跑一次 Claude、登录 Codex，或者这个月用 pi 花过钱之后就有" />;
+	if (!accounts.length) return <Placeholder icon={Gauge} text="还没有用量：在 mixer 里跑一次 Claude，或者这个月用 pi 花过钱之后就有" />;
 	const now = Date.now();
 	return <div className="flex flex-col gap-4">{accounts.map((a) => <AccountUsage key={a.id} a={a} now={now} />)}</div>;
 }
 
-/** 侧栏最底下：最紧的那个窗口（「Codex · 5 小时 82% · 10/6 19:40 重置」）和细条，旧了写明多久前更新。点开看全部 */
+/** 侧栏最底下：最紧的那个窗口（「Claude · 5 小时 82% · 10/6 19:40 重置」）和细条，旧了写明多久前更新。点开看全部 */
 export function UsageFooter() {
 	const { usage } = useLive();
 	const t = tightest(usage);

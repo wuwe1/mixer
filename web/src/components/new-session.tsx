@@ -107,10 +107,10 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 	);
 }
 
-/** 写第一句话：在一个文件夹（cwd）或一个已有的项目（project）里开新会话，输入框是 prompt.tsx 的 PromptBox（模型菜单连带选 agent）。lead：放在提示语前面 */
+/** 写第一句话：在一个文件夹（cwd）或一个已有的项目（project）里开新会话，输入框是 prompt.tsx 的 PromptBox。lead：放在提示语前面 */
 export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; lead?: string; onStarted?: () => void }) {
 	const p = usePrompt({ new: target }, onStarted);
-	return <PromptBox p={p} autoFocus={autoFocus} placeholder={`${lead ?? ""}要 ${p.choice.agent === "codex" ? "Codex" : "Claude"} 做什么……`} send={{ label: "开始" }} />;
+	return <PromptBox p={p} autoFocus={autoFocus} placeholder={`${lead ?? ""}要 Claude 做什么……`} send={{ label: "开始" }} />;
 }
 
 export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {

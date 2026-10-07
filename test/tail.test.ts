@@ -112,7 +112,7 @@ test("coalesce：同一段连着的增量合成一个，别的事件、换了一
 	assert.deepEqual(shape(fold(out)), shape(fold(evs)));
 	// 不改传进来的事件
 	assert.deepEqual(evs[2], ["d", 0, "想"]);
-	// 两段的增量交错（Codex 不会，Claude 一条消息一次只写一段）：换段就推，先后不乱
+	// 两段的增量交错（Claude 一条消息一次只写一段，不会这样）：换段就推，先后不乱
 	assert.deepEqual(merged([["d", 0, "a"], ["d", 1, "b"], ["d", 1, "c"], ["d", 0, "d"]]), [["d", 0, "a"], ["d", 1, "bc"], ["d", 0, "d"]]);
 });
 

@@ -1,2 +1,0 @@
-{"timestamp":"2026-01-01T00:00:22.000Z","type":"session_meta","payload":{"id":"44444444-4444-4444-8444-444444444444","cwd":"/tmp/demo","originator":"codex_cli_rs","cli_version":"0.50.0","instructions":"系统提示","thread_source":"guardian_review"}}
-{"timestamp":"2026-01-01T00:00:23.000Z","type":"event_msg","payload":{"type":"user_message","message":"内部"}}

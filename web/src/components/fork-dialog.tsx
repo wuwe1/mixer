@@ -4,18 +4,17 @@
 import { GitFork } from "lucide-react";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { Kind } from "@/lib/model";
 import { forkPoint, type User, type Walk } from "@/lib/thread";
 import { type Of, PromptBox, usePrompt } from "./prompt";
 
 export type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
 
-export function ForkDialog({ project, session, w, chosen, chosenEffort, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
+export function ForkDialog({ project, session, w, chosen, chosenEffort, target, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; target: ForkTarget | null; onClose: () => void }) {
 	// 关的时候有动画：那一会儿还画着刚才那个
 	const [shown, setShown] = useState(target);
 	if (target && target !== shown) setShown(target);
 	const t = target ?? shown;
-	const of = { project, session, agent, path: w.path, chosen, chosenEffort };
+	const of = { project, session, path: w.path, chosen, chosenEffort };
 	return (
 		<Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
 			<DialogContent className="sm:max-w-xl">
@@ -26,7 +25,6 @@ export function ForkDialog({ project, session, w, chosen, chosenEffort, target, 
 					</DialogTitle>
 					<DialogDescription>
 						{t?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${t?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
-						{agent === "codex" && t?.kind === "at" && " Codex 按轮分叉：带上的是这一轮整轮。"}
 					</DialogDescription>
 				</DialogHeader>
 				{t && <ForkBox key={t.kind === "edit" ? t.n.uuid : t.at} of={of} t={t} onSent={onClose} />}

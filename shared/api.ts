@@ -6,25 +6,23 @@ import type { Account } from "./usage.ts";
 export type Project = { id: string; path: string | null; sessions: number; mtime: string };
 export type SessionMeta = {
 	id: string;
-	/** Codex 的会话（server/codex.ts）；没有就是 Claude Code 的 */
-	agent?: "codex";
-	/** Claude：/rename、/branch 起的名字（custom-title）优先，没有用 ai-title；Codex：session_index 的 thread_name */
+	/** /rename、/branch 起的名字（custom-title）优先，没有用 ai-title */
 	title: string | null; first: string | null; last: string | null;
 	/** title 是人起的名字（Claude 的 custom-title）：分叉的也用它，不用 fresh */
 	custom: boolean;
 	/** 分叉后自己问的第一句（前面的记录是从原会话原样复制来的）；不是分叉、或者认不出来是 null */
 	fresh: string | null; prompts: number; size: number; mtime: string;
 	/**
-	 * 在 mixer 外面开着（终端、IDE、桌面版：server/terminals.ts 照 Claude Code、Codex 自己记的算）：只能分叉。
-	 * busy 是 Claude 登记的在跑；idle 是闲着（Codex 看不出在不在跑，也是 idle）；null 是没开着
+	 * 在 mixer 外面开着（终端、IDE、桌面版：server/terminals.ts 照 Claude Code 自己记的算）：只能分叉。
+	 * busy 是 Claude 登记的在跑；idle 是闲着；null 是没开着
 	 */
 	terminal: "busy" | "idle" | null;
 	/**
 	 * 直接从哪个会话分叉出来的（原会话的文件可能已经删了）。Claude：mixer 里分叉的照 state 记的，终端里 /branch 的照记录里的 forkedFrom，
-	 * 终端里 --fork-session 的没有标记、按第一句的 uuid 猜（server/sessions.ts 的 guess）；Codex：forked_from_id
+	 * 终端里 --fork-session 的没有标记、按第一句的 uuid 猜（server/sessions.ts 的 guess）
 	 */
 	parent: string | null; unread: "done" | "error" | null;
-	/** Claude Code 什么时候会删掉它（最后修改 + cleanupPeriodDays）；Codex 的是 null */
+	/** Claude Code 什么时候会删掉它（最后修改 + cleanupPeriodDays） */
 	expires: string | null;
 };
 export type ProjectTree = Omit<Project, "sessions"> & { sessions: SessionMeta[] };
@@ -39,7 +37,7 @@ export type Ctx = { used: number; model: string };
  * 下面几样都照记录里结构化的那份（参数、toolUseResult），不从文字里认：
  *   agent：它开的子代理（Agent、forked 的 Skill）；async：开了就回来、子代理在后台跑（async_launched，或 Skill 的 forked + background）；
  *   task：它开的后台任务的 id（后台命令的 backgroundTaskId、Monitor 的 taskId）；
- *   file：这一步读写的那个文件（参数里的 file_path / notebook_path，Codex 的补丁里第一个）；files：它真改了的文件（成功了才有；绝对路径）
+ *   file：这一步读写的那个文件（参数里的 file_path / notebook_path）；files：它真改了的文件（成功了才有；绝对路径）
  */
 export type ToolNode = Base & {
 	k: "tool"; id: string; name: string; summary: string; input: string; result: { text: string; error: boolean; cut: boolean; images: number } | null; resultUuid: string | null;
@@ -78,7 +76,7 @@ export type Status =
 	| { git: false }
 	| { git: true; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[]; log: Commit[] };
 /**
- * 一次运行。uuid：这条消息在记录里的 uuid（Claude 的就是写进 stdin 时带的；Codex 的是它给的 item id，开始跑了才有；叫醒的那一轮没有消息，null）；
+ * 一次运行。uuid：这条消息在记录里的 uuid（就是写进 stdin 时带的；叫醒的那一轮没有消息，null）；
  * merged：它带着网页发的哪几条（各自发的时候的 uuid：一条就是它自己，排队的几条合成一条时是几个）；images：带了几张图；
  * version：结束时会话记录写到哪了（和 /api/sessions 的 ?since 一样的「epoch:rev」，网页的数据到了这里，这次运行写的就都拿到了）。
  * 还在跑、刚结束还没算出来时没有这一项；null 是没有记录（一开始就出错了）
@@ -100,7 +98,7 @@ export type Host = { id: string; project: string; session: string; turn: string 
 export type Queued = { id: string; uuid: string; project: string; session: string; prompt: string; images: number; permission: string; model: string | null; effort: string | null; at: string };
 /**
  * 确认请求归会话，不归哪一轮（后台子代理在 Claude 闲着时也会问）。cwd：路径写成相对的用。
- * toolUse：是哪个工具调用（Codex 的没有）；agent：子代理在问时是哪个（description 是开它时的说明，可能是空的）
+ * toolUse：是哪个工具调用；agent：子代理在问时是哪个（description 是开它时的说明，可能是空的）
  */
 export type Approval = { id: string; project: string; cwd: string; session: string; tool: string; input: Record<string, unknown>; at: string; toolUse: string | null; agent: { id: string; description: string } | null };
 /** SSE 连上时先来的（server/sse.ts）：这时的全部状态（hosts：开着的 claude 进程和它们的后台任务；用量是各个账号的，lib/usage.ts）。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */

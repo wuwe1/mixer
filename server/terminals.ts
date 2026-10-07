@@ -1,37 +1,33 @@
-// 哪些会话在 mixer 外面开着（终端、IDE、桌面版、别人起的 claude -p……）：照 Claude Code、Codex 自己记的算，不猜。
+// 哪些会话在 mixer 外面开着（终端、IDE、桌面版、别人起的 claude -p……）：照 Claude Code 自己记的算，不猜。
 // 开着的（不管在跑还是闲着）mixer 只能分叉：不许续接、不许删，免得两边同时写一个会话。关了马上就能接着用。
-//   Claude：每个 claude 进程在 ~/.claude/sessions/<pid>.json 登记自己（pid、sessionId、procStart、status busy / idle……）。
+//   每个 claude 进程在 ~/.claude/sessions/<pid>.json 登记自己（pid、sessionId、procStart、status busy / idle……）。
 //     进程里 /resume、/clear、分叉换了会话，它跟着改 sessionId；正常退出删掉文件，被杀的留着（pid 还会被别的进程复用）。
 //     所以要进程活着、启动时间和 procStart 对得上（ps 的 lstart，LC_ALL=C TZ=UTC：Claude Code 自己认「别的进程开着这个会话」也是这么核对的）；
 //     有 parkedJobId 的是停放了的，不算（也照它）
-//   Codex：有进程在写一个线程时拿着 ~/.codex/thread-writer-locks/<线程 id>.lock（TUI、exec、app-server、桌面版都是，没在跑一轮也拿着）。
-//     被杀的文件留着，所以看有没有进程开着它（lsof）。看不出在不在跑，算 idle
-//   mixer 自己起的 claude、codex app-server 不算：runs.ts、codex-run.ts 起进程时记进 mine
+//   mixer 自己起的 claude 不算：runs.ts、models.ts 起进程时记进 mine
 // 什么时候查：
-//   两个文件夹有变化（登记、改状态、换会话、退出删文件，锁文件建了删了）：0.3 秒合一次
+//   登记的文件夹有变化（登记、改状态、换会话、退出删文件）：0.3 秒合一次
 //   每 2 秒看一眼开着会话的那些进程还在不在（kill 0，不起进程）：被杀、崩了的不删文件，没了马上查
-//   每 30 秒整个查一次兜底：Codex 重新拿一个留下的锁文件不一定有文件事件；pid 被复用；文件夹后来才有
+//   每 30 秒整个查一次兜底：pid 被复用；文件夹后来才有
 //   续接、删除之前当场查一次（held），不用缓存
 import { execFile } from "node:child_process";
 import { existsSync, type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SessionMeta } from "../shared/api.ts";
 import { say } from "./log.ts";
 
 export const REGISTRY = join(homedir(), ".claude", "sessions");
-export const LOCKS = join(homedir(), ".codex", "thread-writer-locks");
 const PS = existsSync("/bin/ps") ? "/bin/ps" : "ps";
-const LSOF = existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
 const run = promisify(execFile);
 
-/** busy：Claude 登记的在跑；idle：闲着（Codex 看不出来，也是 idle） */
+/** busy：登记的在跑；idle：闲着 */
 export type Terminal = NonNullable<SessionMeta["terminal"]>;
 /** 开着一个会话的进程。cwd：Claude 登记的（推侧栏那一行时找项目用） */
 type Holder = { pid: number; state: Terminal; cwd: string | null };
 
-/** mixer 自己起的进程：claude（runs.ts）、codex app-server（codex-run.ts） */
+/** mixer 自己起的 claude 进程（runs.ts、models.ts） */
 export const mine = new Set<number>();
 
 /** 会话 id → 开着它的进程（上次查的） */
@@ -134,37 +130,6 @@ async function claude(): Promise<Map<string, Holder>> {
 	return out;
 }
 
-/** lsof 用不了时：Codex 的用上次查的 */
-let lastCodex = new Map<string, Holder>();
-async function codex(): Promise<Map<string, Holder>> {
-	let names: string[];
-	try { names = readdirSync(LOCKS); } catch { names = []; }
-	const ids = new Set(names.flatMap((n) => /^([0-9a-f-]{36})\.lock$/.exec(n)?.[1] ?? []));
-	if (!ids.size) return (lastCodex = new Map());
-	let out: string;
-	try {
-		out = (await run(LSOF, ["-w", "-F", "pn", "+d", LOCKS], { timeout: 10_000 })).stdout;
-	} catch (e) {
-		// 谁都没开着：退出码 1
-		const err = e as { code?: unknown; stdout?: string };
-		if (err.code !== 1) {
-			warn("lsof 查 Codex 的线程锁", e);
-			return lastCodex;
-		}
-		out = err.stdout ?? "";
-	}
-	const m = new Map<string, Holder>();
-	let pid = 0;
-	for (const l of out.split("\n")) {
-		if (l.startsWith("p")) pid = Number(l.slice(1));
-		else if (l.startsWith("n") && pid && !mine.has(pid)) {
-			const id = basename(l.slice(1)).replace(/\.lock$/, "");
-			if (ids.has(id)) add(m, id, { pid, state: "idle", cwd: null });
-		}
-	}
-	return (lastCodex = m);
-}
-
 /** 一个会话被几个进程开着：有一个在跑就算在跑 */
 function add(m: Map<string, Holder>, id: string, h: Holder) {
 	const o = m.get(id);
@@ -176,8 +141,7 @@ let listener: (id: string, cwd: string | null) => void = () => {};
 
 async function check() {
 	try {
-		const [a, b] = await Promise.all([claude(), codex()]);
-		const next = new Map([...b, ...a]);
+		const next = await claude();
 		const before = open;
 		open = next;
 		for (const id of new Set([...before.keys(), ...next.keys()])) {
@@ -204,21 +168,19 @@ export function refresh(): Promise<void> {
 	return again;
 }
 
-const watching = new Map<string, FSWatcher>();
-/** 监视两个文件夹（还没有的下次再来） */
+let watching: FSWatcher | null = null;
+/** 监视登记的文件夹（还没有的下次再来） */
 function arm() {
-	for (const dir of [REGISTRY, LOCKS]) {
-		if (watching.has(dir) || !existsSync(dir)) continue;
-		try {
-			// 不拖着进程不退（测试）：服务本来就一直开着
-			const w = watch(dir, () => soon()).unref();
-			w.on("error", () => {
-				w.close();
-				watching.delete(dir);
-			});
-			watching.set(dir, w);
-		} catch {}
-	}
+	if (watching || !existsSync(REGISTRY)) return;
+	try {
+		// 不拖着进程不退（测试）：服务本来就一直开着
+		const w = watch(REGISTRY, () => soon()).unref();
+		w.on("error", () => {
+			w.close();
+			watching = null;
+		});
+		watching = w;
+	} catch {}
 }
 let timer: NodeJS.Timeout | null = null;
 const soon = () => {

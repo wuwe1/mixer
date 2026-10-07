@@ -10,7 +10,6 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Node, Project, SessionMeta, Sub } from "../shared/api.ts";
 import { summarize } from "../shared/tail.ts";
-import * as codex from "./codex.ts";
 import { BRIEF_RESULT, BRIEF_THOUGHT, type Cursor, cut, epoch, lines, lru, resume, serial } from "./jsonl.ts";
 import { chosenEffort, chosenModel, forkOf, unread, windows } from "./state.ts";
 import * as terminals from "./terminals.ts";
@@ -48,9 +47,9 @@ function projectPath(dir: string): string | null {
 
 /** 上次列出来的项目：按 id 找路径的（projectOf）先看它 */
 let known: Project[] = [];
-/** 所有项目（Claude、Codex 的合在一起），新的在前。每次都重新列，记下来给 projectOf */
+/** 所有项目，新的在前。每次都重新列，记下来给 projectOf */
 export function listProjects(): Project[] {
-	const claude = !existsSync(PROJECTS) ? [] : readdirSync(PROJECTS, { withFileTypes: true })
+	known = !existsSync(PROJECTS) ? [] : readdirSync(PROJECTS, { withFileTypes: true })
 		.filter((d) => d.isDirectory())
 		.map((d) => {
 			const dir = join(PROJECTS, d.name);
@@ -58,20 +57,8 @@ export function listProjects(): Project[] {
 			const mtime = Math.max(0, ...files.map((f) => statSync(join(dir, f)).mtimeMs));
 			return { id: d.name, path: projectPath(dir), sessions: files.length, mtime: new Date(mtime).toISOString() };
 		})
-		.filter((p) => p.sessions > 0);
-	// Codex 的会话按 cwd 算出同样的项目 id：同一个文件夹的并到一起，只有 Codex 会话的文件夹另加
-	const by = new Map(claude.map((p) => [p.id, p]));
-	for (const c of codex.projects()) {
-		const p = by.get(c.id);
-		const mtime = new Date(c.mtime).toISOString();
-		if (!p) by.set(c.id, { ...c, mtime });
-		else {
-			p.sessions += c.sessions;
-			p.path ??= c.path;
-			if (mtime > p.mtime) p.mtime = mtime;
-		}
-	}
-	known = [...by.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
+		.filter((p) => p.sessions > 0)
+		.sort((a, b) => b.mtime.localeCompare(a.mtime));
 	return known;
 }
 /** 项目 id → 项目：上次列的里没有（新建的文件夹）、还不知道路径的再列一遍 */
@@ -235,19 +222,17 @@ async function family(project: string) {
 
 export async function listSessions(project: string): Promise<SessionMeta[]> {
 	const metas = await Promise.all((await family(project)).map(async (x) => live(await metaOf(project, x))));
-	const others = (await codex.list(project)).map(live);
-	return [...metas, ...others].sort((a, b) => b.mtime.localeCompare(a.mtime));
+	return metas.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 /** 侧栏里一个会话的那一行（会话文件变了，随通知推过去，侧栏不用整个工作区重拉） */
 export async function row(project: string, id: string): Promise<SessionMeta | null> {
-	const at = locate(project, id);
-	return at && metaAt(project, at);
+	const file = locate(project, id);
+	return file ? metaAt(project, file) : null;
 }
-async function metaAt(project: string, at: Located) {
-	if (at.cx) return live(await codex.metaOf(at.cx));
+async function metaAt(project: string, file: string) {
 	if (!roots.has(project)) await family(project);
-	return live(await metaOf(project, await scanMeta(at.file)));
+	return live(await metaOf(project, await scanMeta(file)));
 }
 
 /** 会话删掉了（trash.ts）：读过的记录、扫过的信息、它的子代理都丢掉 */
@@ -582,51 +567,32 @@ export function safe(s: string): string {
 export const sessionFile = (project: string, id: string) => join(PROJECTS, safe(project), `${safe(id)}.jsonl`);
 export const agentFile = (project: string, id: string, agent: string) => join(PROJECTS, safe(project), safe(id), "subagents", `agent-${safe(agent)}.jsonl`);
 
-/**
- * 会话在哪、是谁的。Claude 的文件在就是 Claude 的：Claude 的 id 也长得像 Codex 的，先问 codex.find 的话每次都对不上、去扫 ~/.codex。
- * 不在再问 codex.find（cx 是它的信息）；都没有是 null
- */
-type Located = { file: string; cx: codex.Info | null };
-export function locate(project: string, id: string): Located | null {
+/** 会话的记录文件；没有是 null */
+export function locate(project: string, id: string): string | null {
 	const file = sessionFile(project, id);
-	if (existsSync(file)) return { file, cx: null };
-	const cx = codex.find(id);
-	return cx ? { file: cx.file, cx } : null;
+	return existsSync(file) ? file : null;
 }
-const parsedAt = (at: Located) => (at.cx ? codex.parse(at.file) : parse(at.file));
-/** 读好的会话（Claude、Codex 的都是）或子代理的记录：节点、点开看的详情都在里面。没有这个会话就是 ENOENT（404） */
-function source(project: string, id: string, agentId?: string) {
-	if (agentId) return parse(agentFile(project, id, agentId));
-	const at = locate(project, id);
-	return at ? parsedAt(at) : parse(sessionFile(project, id));
-}
+/** 读好的会话或子代理的记录：节点、点开看的详情都在里面。没有这个会话就是 ENOENT（404） */
+const source = (project: string, id: string, agentId?: string) => parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
 
 /**
  * 一个会话。since 是上次拿到的 version（「epoch:rev」）：对得上就只给之后新建、改过的节点（delta），
  * 跑的时候每 0.5 秒拉一次，不用每次把几 MB 的整个会话再发一遍。
- * windows：Claude 的是 mixer 跑完时记下的（state.json），Codex 的记录里有
+ * windows：mixer 跑完时记下的（state.json）
  */
 export async function session(project: string, id: string, since?: string | null) {
-	const at = locate(project, id);
-	if (!at) throw Object.assign(new Error("没有这个会话"), { status: 404 });
-	const [p, meta] = await Promise.all([parsedAt(at), metaAt(project, at)]);
-	const leaf = "parents" in p ? leafOf(p) : null;
-	const touched = "parents" in p ? await touchedOf(at.file, p) : [...p.touched];
-	return { meta, ...changes(p, since), windows: "windows" in p ? p.windows : windows(), model: chosenModel(id), effort: chosenEffort(id), leaf, touched };
+	const file = locate(project, id);
+	if (!file) throw Object.assign(new Error("没有这个会话"), { status: 404 });
+	const [p, meta] = await Promise.all([parse(file), metaAt(project, file)]);
+	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id), effort: chosenEffort(id), leaf: leafOf(p), touched: await touchedOf(file, p) };
 }
 
-/**
- * 会话记录现在写到哪了（和 session() 给的 version 一样）：读一遍（接着上次读的）再看。没有这个会话是 null。
- * Codex 的给了 turn：等记录里这一轮收尾了（ended）再看，最多等 wait 毫秒
- */
-export async function version(project: string, id: string, turn?: string | null, wait = 5000): Promise<string | null> {
-	for (const until = Date.now() + wait; ; ) {
-		const at = locate(project, id);
-		if (!at) return null;
-		const p = await parsedAt(at);
-		if (!turn || !("ended" in p) || p.ended.has(turn) || Date.now() >= until) return `${p.epoch}:${p.rev}`;
-		await new Promise((ok) => setTimeout(ok, 200));
-	}
+/** 会话记录现在写到哪了（和 session() 给的 version 一样）：读一遍（接着上次读的）再看。没有这个会话是 null */
+export async function version(project: string, id: string): Promise<string | null> {
+	const file = locate(project, id);
+	if (!file) return null;
+	const p = await parse(file);
+	return `${p.epoch}:${p.rev}`;
 }
 
 /**

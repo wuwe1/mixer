@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ToolNode } from "../shared/api.ts";
 
-// 不碰这台机器的 ~/.claude、~/.codex、data/
+// 不碰这台机器的 ~/.claude、data/
 const tmp = mkdtempSync(join(tmpdir(), "mixer-sessions-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");

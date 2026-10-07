@@ -207,16 +207,15 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
 	const m = meta ?? data?.meta;
 	const st = status(m ?? { id: session, terminal: null, unread: null });
-	const codex = m?.agent === "codex";
-	// 子代理（Codex 没有）：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
-	const spawning = useMemo(() => !codex && !!nodes?.some(spawner), [codex, nodes]);
+	// 子代理：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
+	const spawning = useMemo(() => !!nodes?.some(spawner), [nodes]);
 	const subs = useSubs(project, session, spawning);
-	// 终端里开着、Claude 登记着在跑：和 mixer 里在跑一样画 ping 点；闲着的（Codex 的看不出来，也算闲着）只是开着
+	// 终端里开着、Claude 登记着在跑：和 mixer 里在跑一样画 ping 点；闲着的只是开着
 	const outside = st === "terminal" && m?.terminal === "busy";
 	const busy = st === "running" || st === "waiting" || st === "background" || outside;
 	// 在 mixer 里开着 claude 进程：后台子代理在不在跑看它报的后台任务；没有进程（终端里开的、进程退了）才猜
 	const jobs = hosts.find((h) => h.session === session)?.tasks ?? null;
-	const spawned = useSpawns(w && !codex ? w.path : null, subs, busy, jobs);
+	const spawned = useSpawns(w ? w.path : null, subs, busy, jobs);
 	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
 	// 开着的会话跑完了（页面在前台）：算看过了
@@ -297,7 +296,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary>
-									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
+									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -313,7 +312,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} agent={codex ? "codex" : "claude"} onSent={onSent} />}
+				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} onSent={onSent} />}
 			</div>
 
 			{wide && panel && (

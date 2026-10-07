@@ -166,7 +166,6 @@ function SessionRow({ s, r, project, kid, onDelete }: { s: SessionMeta; r: Route
 						<button type="button" onClick={() => { if (menu.open.current) return; openSession(project, s.id); setOpenMobile(false); }}>
 							{kid && <GitFork className="size-3! text-muted-foreground" />}
 							<span className={cn("min-w-0 flex-1 truncate text-md", st === "done" || st === "error" || st === "waiting" ? "font-medium" : "")}>{sessionTitle(s)}</span>
-							{s.agent === "codex" && <span className="shrink-0 text-2xs text-muted-foreground">Codex</span>}
 							{/* 右边：时间，最右一格是状态标记（每行都留着这一格，时间才对得齐）。正在发生的（运行中、待确认、后台任务）时间总是「刚刚」，不写；终端中打开可能闲着好几天，照写。
 							    Claude Code 7 天内要清理的，时间换成「N 天后清理」 */}
 							<span className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground tabular-nums">
@@ -190,7 +189,7 @@ function SessionRow({ s, r, project, kid, onDelete }: { s: SessionMeta; r: Route
 	);
 }
 
-/** 删掉一个会话：先问一句，说清楚会怎样、怎么找回（Claude 的挪进废纸篓，Codex 的 codex archive）。删的正开着就回到项目页 */
+/** 删掉一个会话：先问一句，说清楚会怎样、怎么找回（挪进废纸篓）。删的正开着就回到项目页 */
 function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route; onClose: () => void }) {
 	const [busy, setBusy] = useState(false);
 	// 关上的动画里还显示刚才那个
@@ -219,7 +218,7 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 					<AlertDialogTitle>删除会话？</AlertDialogTitle>
 					<AlertDialogDescription>
 						<span className="block font-medium break-all text-foreground">{shown && sessionTitle(shown.s)}</span>
-						{shown?.s.agent === "codex" ? "用 codex archive 归档，Codex 里看不到，codex unarchive 能恢复。" : "从 Claude Code 的历史里也会消失（终端里 claude --resume 看不到），记录移到废纸篓，从那里能找回。"}
+						从 Claude Code 的历史里也会消失（终端里 claude --resume 看不到），记录移到废纸篓，从那里能找回。
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>

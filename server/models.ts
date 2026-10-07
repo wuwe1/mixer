@@ -1,15 +1,13 @@
 // 能选的模型：Claude 的问本机的 claude（stream-json 的 control_request initialize 回的 models：默认、各系列最新的别名、固定的版本，
-// 每个支持哪些思考强度），Codex 的问 app-server（codex-run.ts 的 model/list）。两边给网页的是一个样子（shared/model-info.ts 的 ModelInfo），
-// 第一项是「默认」（id ""）。
+// 每个支持哪些思考强度），给网页的样子是 shared/model-info.ts 的 ModelInfo，第一项是「默认」（id ""）。
 // 问的时候起一个 claude -p --safe-mode（control：不跑 hooks、不连 MCP，几秒就回，不写会话记录、不花 token），同一个进程顺便问 get_usage
-// （Claude 的用量，交给 usage.ts：终端里用掉的也算进来）。起来 5 秒后、之后每 10 分钟（跟 Codex 的用量一样：5 小时的窗口 10 分钟最多动几个百分点，
+// （Claude 的用量，交给 usage.ts：终端里用掉的也算进来）。起来 5 秒后、之后每 10 分钟（5 小时的窗口 10 分钟最多动几个百分点，
 // 网页 30 分钟才算旧）、每次运行的 init 里命令行版本变了、网页要的时候列表超过 10 分钟，都问一次。
 // Claude 出了新模型（命令行升级、账号开了新的），列表跟着变。
-// 第一次见到的型号（Claude 按 resolvedModel，别名换了新版也算；Codex 按 id）记下时间（state.json），7 天内标「新」
+// 第一次见到的型号（按 resolvedModel，别名换了新版也算）记下时间（state.json），7 天内标「新」
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import type { ModelInfo } from "../shared/model-info.ts";
-import * as codexRun from "./codex-run.ts";
 import { say } from "./log.ts";
 import * as state from "./state.ts";
 import * as terminals from "./terminals.ts";
@@ -35,7 +33,6 @@ export function fromInit(models: Raw[], firstSeen: Record<string, string>, now =
 			label: value === "default" ? "默认" : String(m.displayName ?? value),
 			resolved,
 			efforts: Array.isArray(m.supportedEffortLevels) ? m.supportedEffortLevels.map(String) : [],
-			defaultEffort: null,
 			latest: value !== "default" && (resolved ? value !== resolved : !value.startsWith("claude-")),
 			isNew: value !== "default" && !!seen && now - Date.parse(seen) < WEEK,
 		});
@@ -136,16 +133,6 @@ export async function claude(): Promise<ModelInfo[]> {
 	if (!c) return refresh();
 	if (Date.now() - Date.parse(c.at) > 600_000) reread();
 	return fromInit(c.models as Raw[], state.modelsSeen("claude"));
-}
-
-/** Codex 的：model/list 的，前面加上「默认」（是 isDefault 那个，思考强度也照它的） */
-export async function codex(): Promise<ModelInfo[]> {
-	const list = await codexRun.listModels();
-	state.sawModels("codex", list.map((m) => m.id));
-	const seen = state.modelsSeen("codex");
-	const def = list.find((m) => m.isDefault);
-	const rows = list.map((m) => ({ id: m.id, label: m.label, resolved: m.id, efforts: m.efforts, defaultEffort: m.defaultEffort, latest: false, isNew: !!seen[m.id] && Date.now() - Date.parse(seen[m.id]) < WEEK }));
-	return [{ id: "", label: "默认", resolved: def?.id ?? null, efforts: def?.efforts ?? [], defaultEffort: def?.defaultEffort ?? null, latest: false, isNew: false }, ...rows];
 }
 
 /** 起来 5 秒后读一次，之后每 10 分钟（模型列表和用量一起） */

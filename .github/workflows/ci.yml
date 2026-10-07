@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    # 只跑在 macOS 上（launchd、Codex.app 的路径这些），测试不依赖本机的会话记录
+    # 只跑在 macOS 上（launchd、ps 的格式这些），测试不依赖本机的会话记录
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

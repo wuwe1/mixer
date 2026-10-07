@@ -9,7 +9,7 @@ import { type Spawn, spawner } from "@/lib/agents";
 import { type Agent, api, enc, type Node, type Sub } from "@shared/api";
 import { useEvent } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
-import { type Kind, pretty } from "@/lib/model";
+import { pretty } from "@/lib/model";
 import { go } from "@/lib/route";
 import { type Block, blocks, headOf, isLive, liveNodes, pointOf, type Tree, type User, type Walk } from "@/lib/thread";
 import { useIncremental } from "@/lib/use-incremental";
@@ -115,10 +115,10 @@ function AliveDot() {
 }
 
 /**
- * kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样）；spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；
+ * spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；
  * keys：记录里有的段（流里的哪几段已经写进去了，和 useStream 用的同一份）
  */
-export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, stream, status, busy, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
+export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, stream, status, busy, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
 	const { approvals } = useLive();
 	/** 开着看的子代理 */
 	const [agent, setAgent] = useState<string | null>(null);
@@ -194,7 +194,7 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
-			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} target={fork} agent={kind} onClose={() => setFork(null)} />
+			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} target={fork} onClose={() => setFork(null)} />
 		</>
 	);
 }

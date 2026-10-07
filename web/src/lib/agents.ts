@@ -46,7 +46,7 @@ export function useSubs(project: string, session: string, on: boolean): Map<stri
 }
 
 /**
- * 用 spawns.ts 算，path 是 null 就不算（Codex 的会话）。jobs：这个会话在 mixer 里开着的 claude 进程报的后台任务，没有进程是 null。
+ * 用 spawns.ts 算，path 是 null（还没拿到会话）就不算。jobs：这个会话在 mixer 里开着的 claude 进程报的后台任务，没有进程是 null。
  * 没有进程时只靠「90 秒内写过」算在跑的，过了时候要变：到点了重算
  */
 export function useSpawns(path: Node[] | null, subs: Map<string, Sub>, busy: boolean, jobs: Job[] | null) {

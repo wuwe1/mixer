@@ -128,7 +128,7 @@ function liveSummary(json: string) {
 /**
  * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
  * 你发的那条也一样：记录里出现之前先按原文顶上（不然流比文件快，会先看到思考、后看到你的消息），uuid 就是记录里那条的，写进去之后 React 的 key 不变。
- * Codex 的 item id 开始跑了才知道，之前先用网页发的时候给的。ids：记录里有的（tree 的 ids）
+ * ids：记录里有的（tree 的 ids）
  */
 export function liveNodes(stream: Stream, ids: Set<string>, keys: Set<string>): Node[] {
 	const ts = new Date().toISOString();

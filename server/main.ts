@@ -1,6 +1,6 @@
 // mixer 的服务：127.0.0.1:4848（MIXER_PORT 可改），手机经隧道访问：Cloudflare Tunnel + Access，或 Tailscale Funnel + passkey（access.ts 认人，这个服务能在本机跑 claude）。
 //   读：项目、会话（显示节点树）、子 agent、工具的完整结果、会话里的图片；仓库的文件、内容、git 状态、改动、提交
-//   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹；删掉会话（移到废纸篓 / codex archive）
+//   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹；删掉会话（移到废纸篓）
 //   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化、子代理在做什么
 // 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
 // 每个接口在 ROUTES 里写明谁能用（user / open，见 refuse）；写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）。
@@ -11,7 +11,6 @@ import { dirname, extname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
-import * as codex from "./codex.ts";
 import * as dirs from "./dirs.ts";
 import { say } from "./log.ts";
 import * as models from "./models.ts";
@@ -219,16 +218,9 @@ if (existsSync(PROJECTS)) {
 		if (a) subChanged(a[1], a[2], a[3]);
 	});
 }
-// Codex 的会话：年/月/日/rollout-…-<id>.jsonl，项目按它的 cwd 算
-if (existsSync(codex.CODEX)) {
-	watch(codex.CODEX, { recursive: true }, (_, f) => {
-		const i = codex.fromPath(String(f ?? "").split(sep).join("/"));
-		if (i) changed(i.project, i.id);
-	});
-}
-// 在 mixer 外面开着、关了（terminals.ts）：和会话文件变了一样推。项目先看工作区，再按 Claude 登记的 cwd 算，Codex 的问 codex.ts
+// 在 mixer 外面开着、关了（terminals.ts）：和会话文件变了一样推。项目先看工作区，再按登记的 cwd 算
 terminals.start((id, cwd) => {
-	const project = state.workspace()?.sessions[id] ?? (cwd ? dirs.projectId(cwd) : codex.find(id)?.project);
+	const project = state.workspace()?.sessions[id] ?? (cwd ? dirs.projectId(cwd) : null);
 	if (project) changed(project, id);
 });
 
@@ -281,9 +273,8 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	["GET", /^\/api\/projects$/, "user", (_q, res) => json(res, 200, listProjects())],
 	["GET", /^\/api\/tree$/, "user", async (_q, res) => json(res, 200, await tree())],
 	["GET", /^\/api\/workspace$/, "user", async (_q, res) => json(res, 200, await workspace.view())],
-	// 能选的模型：Claude 的问命令行、Codex 的问 app-server（models.ts），第一项是默认
-	["GET", /^\/api\/models\/claude$/, "user", async (_q, res) => json(res, 200, await models.claude())],
-	["GET", /^\/api\/models\/codex$/, "user", async (_q, res) => json(res, 200, await models.codex())],
+	// 能选的模型：问命令行（models.ts），第一项是默认
+	["GET", /^\/api\/models$/, "user", async (_q, res) => json(res, 200, await models.claude())],
 	["GET", /^\/api\/projects\/([\w.-]+)\/sessions$/, "user", async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
 	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, "user", async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
 	// 会话开过的子代理：各自对应哪个 Agent 工具调用、现在在做什么
@@ -360,7 +351,7 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
 		const folder = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : null;
 		const cwd = folder ?? projectPath(b.project);
-		const r = await runs.start({ project: folder ? dirs.projectId(folder) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, effort: typeof b.effort === "string" ? b.effort : null, agent: typeof b.agent === "string" ? b.agent : null, uuid: typeof b.uuid === "string" ? b.uuid : null });
+		const r = await runs.start({ project: folder ? dirs.projectId(folder) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, effort: typeof b.effort === "string" ? b.effort : null, uuid: typeof b.uuid === "string" ? b.uuid : null });
 		json(res, 200, r);
 	}],
 	["POST", /^\/api\/dirs$/, "user", async (req, res) => {
@@ -383,7 +374,7 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 		if (changed) emit("workspace", null);
 		json(res, 200, { ok: true });
 	}],
-	// 删掉一个会话（trash.ts）：Claude 的移到废纸篓，Codex 的 codex archive。在跑、排队、待确认、终端里开着的回 409
+	// 删掉一个会话（trash.ts）：移到废纸篓。在跑、排队、待确认、终端里开着的回 409
 	["POST", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, "user", async (_q, res, m) => {
 		await trash.remove(m[1], m[2]);
 		emit("workspace", null);

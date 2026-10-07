@@ -11,13 +11,11 @@
 // session_state_changed 的 idle 要等后台子代理全跑完才来（可能半小时），只拿来决定关不关进程，不拿来结束运行。
 // 要确认的工具调用（--permission-prompt-tool stdio）：命令行在 stdout 发 can_use_tool 的 control_request，转到网页上（approvals），人点了在 stdin 回 control_response。
 // 确认请求归会话、不归哪一轮：后台子代理在 Claude 闲着时也会来问（带 agent_id）。
-// 同一个会话在 mixer 外面开着（终端、IDE、桌面版：terminals.ts，照 Claude Code、Codex 自己记的算，在跑闲着都算），不许直接续接，只能分叉：免得两边同时往一个文件里写。
+// 同一个会话在 mixer 外面开着（终端、IDE、桌面版：terminals.ts，照 Claude Code 自己记的算，在跑闲着都算），不许直接续接，只能分叉：免得两边同时往一个文件里写。
 // 正在 mixer 里跑的会话再「接着说」就排队：这次运行一结束（跑完、出错、被停），排着的话合成一条续接发出去。
 // Claude 闲着、只是后台任务开着进程：不排队，直接写进去马上跑。
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import * as codex from "./codex.ts";
-import * as codexRun from "./codex-run.ts";
 import { say } from "./log.ts";
 import * as models from "./models.ts";
 import { locate, version } from "./sessions.ts";
@@ -35,21 +33,19 @@ export type Run = {
 	from: string | null;
 	session: string | null;
 	mode: "new" | "resume" | "fork";
-	/** 哪个 agent 跑的：Claude Code（claude -p）或 Codex（codex app-server） */
-	agent: "claude" | "codex";
 	/** 分叉点：从这条 Claude 的消息之后分出去；null 是从最新处 */
 	at: string | null;
 	prompt: string;
 	permission: string;
 	/** --model：别名（opus、sonnet…）或完整型号；null 是用 Claude Code 的默认 */
 	model: string | null;
-	/** 思考强度（low…max）；null 是用 Claude Code / Codex 的默认 */
+	/** 思考强度（low…max）；null 是用 Claude Code 的默认 */
 	effort: string | null;
 	status: RunStatus;
 	started: string;
 	ended: string | null;
 	error: string | null;
-	/** 这条消息在记录里的 uuid：claude 的是写进 stdin 时带的（记录里那条就是它）；Codex 的是它给的 item id（开始跑了才知道）；叫醒的那一轮没有消息，null */
+	/** 这条消息在记录里的 uuid：写进 stdin 时带的（记录里那条就是它）；叫醒的那一轮没有消息，null */
 	uuid: string | null;
 	/** 带着网页发的哪几条（发的时候网页给的 uuid）：一条就是它自己，排着队的几条合成一条时是几个。网页的发件箱按它认自己发的那条到哪了 */
 	merged: string[];
@@ -78,7 +74,7 @@ export type Image = { media: string; data: string };
 export type Queued = { id: string; uuid: string; project: string; cwd: string; session: string; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; at: string };
 
 /**
- * 一次运行要的（start 里理好的）：模型、思考强度、图片都在里面。sid：新会话、分叉的 claude 由 mixer 定的会话 id（续接、Codex 是 null）。
+ * 一次运行要的（start 里理好的）：模型、思考强度、图片都在里面。sid：新会话、分叉由 mixer 定的会话 id（续接是 null）。
  * uuid：写进 stdin 时带的（claude 的记录里那条就是它）；merged：带着网页发的哪几条
  */
 type Params = { project: string; cwd: string; session: string | null; sid: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; uuid: string; merged: string[] };
@@ -86,12 +82,12 @@ type Params = { project: string; cwd: string; session: string | null; sid: strin
 /** cancelled：问的那边不等了（claude 发了 control_cancel_request、进程退了），不用回 */
 type Decision = { allow: boolean; message?: string; cancelled?: boolean };
 /**
- * 给网页的确认请求：归哪个会话；cwd：路径写成相对的用。tool_use：是哪个工具调用（Codex 的没有）；
+ * 给网页的确认请求：归哪个会话；cwd：路径写成相对的用。tool_use：是哪个工具调用；
  * agent：子代理在问时是哪个（id 是子代理记录 agent-<id>.jsonl 的，description 是开它时的说明）
  */
 export type Approval = { id: string; project: string; cwd: string; session: string; tool: string; input: unknown; at: string; toolUse: string | null; agent: { id: string; description: string } | null };
 /**
- * by：谁问的、跟着谁作废：claude 的是进程 id（进程退了才作废：这一轮完了，后台子代理还可能在等），Codex 的是运行 id（这一轮完了就作废）。
+ * by：问的那个 claude 进程的 id，进程退了才作废（这一轮完了，后台子代理还可能在等）。
  * req：claude 的 control_request 的 request_id（control_cancel_request 按它认）。timer：10 分钟没人点就拒绝
  */
 type Asking = Approval & { by: string; req: string | null; resolve: (d: Decision) => void; timer: NodeJS.Timeout };
@@ -100,7 +96,7 @@ type Asking = Approval & { by: string; req: string | null; resolve: (d: Decision
  * 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照）。
  * stopping：点了停止、还没停下来：状态还是 running（这时发的话照样排队，真停下来了才算结束、才发出去）
  * out：推给网页的短事件先过这里（同一段连着来的增量攒着合成一个）
- * halt：停这一轮（claude 发 interrupt，Codex 发 turn/interrupt）
+ * halt：停这一轮（发 interrupt）
  */
 type Live = Run & { halt?: () => void; tail: Tail; stopping?: boolean; out: ReturnType<typeof coalesce>; pics: Image[] };
 const runs = new Map<string, Live>();
@@ -162,7 +158,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
  * 发一条（新会话、续接、分叉）。uuid：网页给这条的（不给就现给一个），claude 的记录里那条就用它；merged：排队的几条合成的这一条带着哪几条（drain 用）。
  * from：drain 用，这一条是队列里的这几条合成的。查终端（await）的时候它们还留在队列里：close() 看得见、不关 stdin；查完才拿出来
  */
-export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; effort?: string | null; agent?: string | null; uuid?: string | null; merged?: string[]; from?: Queued[] }) {
+export async function start(o: { project: string; cwd: string; session: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images?: Image[]; permission: string; model?: string | null; effort?: string | null; uuid?: string | null; merged?: string[]; from?: Queued[] }) {
 	const images = o.images ?? [];
 	const uuid = o.uuid || randomUUID();
 	// 要写进命令行的 stdin、记录里：只认 UUID。同一条发两遍（页面重试）不认
@@ -178,14 +174,11 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (effort && !/^[a-z]+$/.test(effort)) throw new Error("思考强度不对");
 	const resume = o.mode === "new" ? null : o.session;
 	if (o.mode !== "new" && !resume) throw new Error("要接哪个会话？");
-	// 会话 id 要放进命令行参数：只认 UUID（Claude、Codex 都是），免得被当成别的参数
+	// 会话 id 要放进命令行参数：只认 UUID，免得被当成别的参数
 	if (resume && !UUID.test(resume)) throw new Error("会话 id 不对");
-	// 新会话按选的；续接、分叉跟着原会话是谁的
-	const cx = resume ? (locate(o.project, resume)?.cx ?? null) : null;
-	const agent: Run["agent"] = o.mode === "new" ? (o.agent === "codex" ? "codex" : "claude") : cx ? "codex" : "claude";
-	if (o.at && !(agent === "codex" ? /^[\w-]+$/ : /^[0-9a-f-]{36}$/).test(o.at)) throw new Error("分叉点不对");
-	// 新会话、分叉的 claude：会话 id 由 mixer 定（--session-id）。Codex 的线程 id 是 app-server 给的
-	const p: Params = { ...o, model, effort, images, sid: agent === "claude" && o.mode !== "resume" ? randomUUID() : null, uuid, merged: o.merged ?? [uuid] };
+	if (o.at && !/^[0-9a-f-]{36}$/.test(o.at)) throw new Error("分叉点不对");
+	// 新会话、分叉：会话 id 由 mixer 定（--session-id）
+	const p: Params = { ...o, model, effort, images, sid: o.mode !== "resume" ? randomUUID() : null, uuid, merged: o.merged ?? [uuid] };
 	if (o.mode === "resume" && resume) {
 		// 在 mixer 外面开着（当场查）就挡，不看 mixer 里有没有它的运行、进程：mixer 里跑完之后在终端里接着聊的、两边都开着的一样。
 		// 查完到起进程之间不能再 await：不然同时来的两条续接会都起一个进程
@@ -208,10 +201,9 @@ export async function start(o: { project: string; cwd: string; session: string |
 			return { queued: queueView(q) };
 		}
 		// 进程还开着（Claude 闲着、只是后台任务开着它）：直接写进去，马上跑
-		const h = agent === "claude" ? hostOf(resume) : undefined;
+		const h = hostOf(resume);
 		if (h) return turn(h, p);
 	}
-	if (agent === "codex") return startCodex(fresh(p, agent), p, cx);
 	return turn(launch(p), p);
 }
 
@@ -274,7 +266,7 @@ const control = (h: Proc, request: Record<string, unknown>) => write(h, { type: 
 
 /** 写进这个进程一条消息（一次运行）：权限、模型、思考强度和上一轮不一样先换掉，再写消息，带上 uuid 认它的下落 */
 function turn(h: Proc, o: Params) {
-	const run = fresh(o, "claude");
+	const run = fresh(o);
 	run.halt = () => interrupt(h, run);
 	runs.set(run.id, run);
 	const uuid = o.uuid;
@@ -392,7 +384,7 @@ function tasks(h: Proc, ev: Record<string, unknown>) {
 
 /** 通知叫醒的一轮：没有人说的话，权限、模型接着用进程现在的 */
 function wake(h: Proc) {
-	const run = fresh({ project: h.project, cwd: h.cwd, session: h.session, sid: null, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] }, "claude");
+	const run = fresh({ project: h.project, cwd: h.cwd, session: h.session, sid: null, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] });
 	run.halt = () => interrupt(h, run);
 	runs.set(run.id, run);
 	h.wake = run;
@@ -512,8 +504,8 @@ function reply(h: Proc, ev: Record<string, unknown>) {
 	else w.fail(new Error(String(r.error ?? "出错了")));
 }
 
-/** 一次运行的样子（两种 agent 一样） */
-function fresh(o: Params, agent: Run["agent"]): Live {
+/** 一次运行的样子 */
+function fresh(o: Params): Live {
 	const id = randomUUID().slice(0, 8);
 	const run: Live = {
 		id,
@@ -522,7 +514,6 @@ function fresh(o: Params, agent: Run["agent"]): Live {
 		from: o.session,
 		session: o.mode === "resume" ? o.session : o.sid,
 		mode: o.mode,
-		agent,
 		at: o.mode === "fork" ? (o.at ?? null) : null,
 		prompt: o.prompt,
 		permission: o.permission,
@@ -532,8 +523,8 @@ function fresh(o: Params, agent: Run["agent"]): Live {
 		started: new Date().toISOString(),
 		ended: null,
 		error: null,
-		// Codex 的 item id 开始跑了才有（codex-run 的 user）；叫醒的那一轮没有
-		uuid: agent === "claude" && o.uuid ? o.uuid : null,
+		// 叫醒的那一轮没有
+		uuid: o.uuid || null,
 		merged: o.merged,
 		images: o.images.length,
 		pics: o.images,
@@ -547,7 +538,7 @@ function fresh(o: Params, agent: Run["agent"]): Live {
 }
 
 /**
- * 会话 id 有了（claude 的起进程前就定了；Codex 新会话、分叉的等 app-server 回来）：网页对上这次运行，
+ * 会话 id 有了（起进程前就定了）：网页对上这次运行，
  * 记下选的模型、分叉的来处（state.fork），放进工作区
  */
 function known(run: Live, session: string) {
@@ -574,10 +565,10 @@ function push(run: Live, ev: Record<string, unknown>) {
 }
 
 /**
- * 运行结束（跑完、出错、被停）：记下来、作废它的确认请求、接着发排队的。点过停止的一律算停止。
- * 作废的只有 Codex 的（by 是运行 id：app-server 的确认按轮）；claude 的归进程，这一轮完了后台子代理可能还在等
+ * 运行结束（跑完、出错、被停）：记下来、接着发排队的。点过停止的一律算停止。
+ * 确认请求不作废：它们归进程，这一轮完了后台子代理可能还在等
  */
-function finish(run: Live, status: "done" | "error" | "stopped", error: string | null, turn: string | null = null) {
+function finish(run: Live, status: "done" | "error" | "stopped", error: string | null) {
 	if (run.ended) return;
 	run.out.flush();
 	run.status = run.stopping ? "stopped" : status;
@@ -590,60 +581,26 @@ function finish(run: Live, status: "done" | "error" | "stopped", error: string |
 	if (run.session && run.status === "error" && run.mode !== "resume" && none) {
 		if (state.forget(run.session)) emit("workspace", null);
 	} else if (run.session) state.finished(run.project, run.session, run.status === "error");
-	for (const a of [...approvals.values()]) if (a.by === run.id) decide(a.id, { allow: false, message: "运行已结束" });
 	// 没有记录：没什么可等的，当场给 null
 	if (none) run.version = null;
 	emit("run", view(run));
-	if (!none) seal(run, turn);
+	if (!none) seal(run);
 	if (run.session) drain(run.session);
 }
 
 /**
  * 这次运行写的都在记录里了，记下会话写到哪了（version），再推一次 run：网页的数据到了这里就收掉流里的那几段、发件箱看那条到没到。
  * claude 在报 result、这条消息的下落之前先把记录写完了（试过）：结束时读就是全的。
- * Codex 的记录在 turn/completed 之后才写完（task_complete 那几行晚一点）：等到记录里这一轮收尾了再算，最多等 5 秒。
  * 图这时也不用留了：记录里有了
  */
-async function seal(run: Live, turn: string | null) {
+async function seal(run: Live) {
 	let v: string | null = null;
 	try {
-		if (run.session) v = await version(run.project, run.session, run.agent === "codex" ? turn : null);
+		if (run.session) v = await version(run.project, run.session);
 	} catch {}
 	run.version = v;
 	run.pics = [];
 	emit("run", view(run));
-}
-
-/** Codex：codex app-server 上跑一轮（codex-run.ts）。分叉点是节点，Codex 按轮分叉：换成它所在的那一轮 */
-function startCodex(run: Live, o: Params, cx: ReturnType<typeof codex.find>) {
-	runs.set(run.id, run);
-	emit("run", view(run));
-	(async () => {
-		try {
-			const at = o.mode === "fork" && o.at && cx ? await codex.turnOf(cx, o.at) : null;
-			if (o.mode === "fork" && o.at && !at) throw new Error("找不到分叉点在哪一轮");
-			const h = await codexRun.launch({ ...o, at }, {
-				event: (ev) => push(run, ev),
-				session: (sid) => known(run, sid),
-				// 这一轮的第一条你的消息（mixer 不在一轮中间插话，只有这一条）
-				user: (id) => {
-					if (run.uuid) return;
-					run.uuid = id;
-					emit("run", view(run));
-				},
-				// 线程 id 在 turn/start 之前就有了（上面的 session），来问时一定有
-				ask: (tool, input) => open({ by: run.id, req: null, project: run.project, cwd: run.cwd, session: run.session ?? "", toolUse: null, agent: null }, tool, input),
-				end: (status, error, turn) => finish(run, status, error ?? null, turn),
-			});
-			// 起的时候点了停止：现在才有 turn 能停。起得慢、停止的 10 秒兜底已经把这次运行结束了（stopping 也清掉了）：照样停，
-			// 不然界面上写着已停止，Codex 却开跑了
-			if (run.ended || run.stopping) h.stop();
-			else run.halt = h.stop;
-		} catch (e) {
-			finish(run, "error", e instanceof Error ? e.message : String(e));
-		}
-	})();
-	return view(run);
 }
 
 /** 给网页的：图片只给张数 */
@@ -684,8 +641,8 @@ function drain(session: string) {
 }
 
 /**
- * 停：claude 发 interrupt（只停这一轮，后台任务接着跑；10 秒没停下来就 SIGINT 整个进程，再 5 秒 SIGKILL），Codex 发 turn/interrupt。
- * 这一轮真结束了（claude 是这条消息的 cancelled / completed、叫醒那一轮的 result、进程退出；Codex 是 turn/completed）才算，免得同一个会话又开一次运行、两边一起写；这期间发的话排队。Codex 10 秒没回音也按停止结束
+ * 停：发 interrupt（只停这一轮，后台任务接着跑；10 秒没停下来就 SIGINT 整个进程，再 5 秒 SIGKILL）。
+ * 这一轮真结束了（这条消息的 cancelled / completed、叫醒那一轮的 result、进程退出）才算，免得同一个会话又开一次运行、两边一起写；这期间发的话排队
  */
 export function stop(id: string) {
 	const r = runs.get(id);
@@ -694,7 +651,6 @@ export function stop(id: string) {
 	r.stopping = true;
 	emit("run", view(r));
 	r.halt?.();
-	if (r.agent === "codex") setTimeout(() => finish(r, "stopped", null), 10_000).unref();
 	return true;
 }
 
@@ -726,7 +682,7 @@ const approvalView = ({ by: _b, req: _q, resolve: _r, timer: _t, ...a }: Asking)
 
 export const answer = (id: string, allow: boolean, message?: string) => decide(id, { allow, message });
 
-/** 确认请求有了结果（人点了、10 分钟没人点、claude 不等了、claude 退出了、Codex 这一轮结束了）：收掉卡片，回给问的那边（不等了的不回） */
+/** 确认请求有了结果（人点了、10 分钟没人点、claude 不等了、claude 退出了）：收掉卡片，回给问的那边（不等了的不回） */
 function decide(id: string, d: Decision) {
 	const a = approvals.get(id);
 	if (!a) return false;
