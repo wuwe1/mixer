@@ -76,27 +76,53 @@ function make(side: "left" | "right") {
 export const sidebar = make("left");
 export const panel = make("right");
 
+const EDGE = 24;
+const standalone = () => (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
+
+/**
+ * iOS 从屏幕最左边往右滑是「返回上一页」（有前进的页时最右边往左是「前进」），Safari 里和加到主屏幕的 app 里都有。
+ * 主屏幕 app 里没有地址栏、用不着它：两条边 EDGE 以内一按下就拦掉，系统就不返回了。不管开着什么（对话框、菜单、面板）都拦，
+ * 不跟着抽屉的手势走：抽屉的手势在开着对话框时不接，那时从边上一滑就退回上一页了。
+ * 拦了 touchstart 浏览器就不再发 click，手指没动的点按自己补一个。Safari 里拦不住（系统先抢），留给系统。页面最外层调一次
+ */
+export function guardEdges() {
+	if (!standalone()) return;
+	let tap: { el: Element; x: number; y: number } | null = null;
+	document.addEventListener("touchstart", (e) => {
+		tap = null;
+		const t = e.touches[0];
+		if (e.touches.length !== 1 || !e.cancelable || (t.clientX >= EDGE && t.clientX <= innerWidth - EDGE)) return;
+		e.preventDefault();
+		tap = { el: e.target as Element, x: t.clientX, y: t.clientY };
+	}, { passive: false });
+	document.addEventListener("touchend", (e) => {
+		const t = e.changedTouches[0];
+		if (!tap || Math.abs(t.clientX - tap.x) >= 10 || Math.abs(t.clientY - tap.y) >= 10) return;
+		const el = tap.el;
+		tap = null;
+		(el.closest("input, textarea, select, [contenteditable]") as HTMLElement | null)?.focus();
+		el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+	}, { passive: true });
+	document.addEventListener("touchcancel", () => { tap = null; }, { passive: true });
+}
+
 /**
  * 横着滑开关抽屉：左边的往右滑打开、往左滑关上；右边的反过来。
- * iOS 从屏幕最左边往右滑是「返回上一页」（有前进的页时最右边往左是「前进」），Safari 里和加到主屏幕的 app 里都有，滑快了系统会抢先：
- * - Safari 里离那条边 EDGE 以内起手的不管，留给系统
- * - 主屏幕 app 里没有地址栏、用不着它：这一条里一按下就拦掉，系统就不返回了，从边上滑也能开。
- *   拦了 touchstart 浏览器就不再发 click，手指没动的点按自己补一个
+ * Safari 里离那条边 EDGE 以内起手的不管，留给系统的「返回」；主屏幕 app 里边上已经拦掉了（guardEdges），从边上滑也能开。
  * 手指一动就定方向：横着的（而且是要开 / 关的方向）就拦下这次滑动，底下的内容不跟着上下滚；竖着的就放手，照常滚。
  * 开着别的对话框、菜单时不管（另一边的抽屉开着也是 role="dialog"）；按在能往那个方向滚的代码、表格上，是在滚它
  */
-const EDGE = 24;
 /** 松手时速度超过它（px/ms）就算甩：按甩的方向开或关 */
 const FLING = 0.5;
 
 export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolean; open: boolean; setOpen: (open: boolean) => void; onStart?: () => void }) {
 	useEffect(() => {
 		if (!on) return;
-		const standalone = (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
+		const app = standalone();
 		// 往哪边滑是打开：左边的抽屉往右（+1），右边的往左（-1）
 		const opening = d.side === "left" ? 1 : -1;
 		// from：按下时抽屉开到哪（动画途中按住的，停在看到的位置）；pts：最近的手指位置，松手时算速度
-		let g: { x: number; y: number; dir: "h" | null; track: boolean; tap: Element | null; from: number; w: number; pts: [number, number][] } | null = null;
+		let g: { x: number; y: number; dir: "h" | null; track: boolean; from: number; w: number; pts: [number, number][] } | null = null;
 		/** 没拖成（竖着滑、反方向、取消）：按下时停住的动画接着走完 */
 		const settle = () => d.to(open ? 1 : 0);
 		/** el 能不能顺着手指往 sign 那边滑的方向滚（手指往右滑，内容往左滚回去） */
@@ -113,15 +139,10 @@ export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolea
 			if (document.querySelector(`[role="dialog"]:not([data-drawer="${d.side}"]), [role="menu"], [role="alertdialog"]`)) return;
 			const t = e.touches[0];
 			const edge = d.side === "left" ? t.clientX < EDGE : t.clientX > innerWidth - EDGE;
-			let tap: Element | null = null;
-			if (edge && standalone && e.cancelable) {
-				e.preventDefault();
-				tap = e.target as Element;
-			}
-			let track = open || standalone || !edge;
+			let track = open || app || !edge;
 			const sign = open ? -opening : opening;
 			if (track) for (let el = e.target as Element | null; el; el = el.parentElement) if (scrolls(el, sign)) track = false;
-			g = { x: t.clientX, y: t.clientY, dir: null, track, tap, from: track ? d.grab() : 0, w: d.width(), pts: [[e.timeStamp, t.clientX]] };
+			g = { x: t.clientX, y: t.clientY, dir: null, track, from: track ? d.grab() : 0, w: d.width(), pts: [[e.timeStamp, t.clientX]] };
 		};
 		const move = (e: TouchEvent) => {
 			if (!g?.track) return;
@@ -153,13 +174,8 @@ export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolea
 			if (!g) return;
 			const t = e.changedTouches[0];
 			const dx = t.clientX - g.x;
-			const dy = t.clientY - g.y;
-			const { dir, tap, track, from, w, pts } = g;
+			const { dir, track, from, w, pts } = g;
 			g = null;
-			if (tap && !dir && Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-				(tap.closest("input, textarea, select, [contenteditable]") as HTMLElement | null)?.focus();
-				tap.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-			}
 			if (dir) {
 				// 甩得够快就按甩的方向，不然看拉开了没有一半
 				const [t0, x0] = pts.find(([at]) => e.timeStamp - at <= 100) ?? pts[pts.length - 1];
