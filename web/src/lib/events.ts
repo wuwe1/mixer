@@ -10,8 +10,20 @@ import { toast } from "@/lib/toast";
 
 type Handler = (data: any) => void; // biome-ignore lint: 各种事件的数据不一样
 const handlers = new Map<string, Set<Handler>>();
-const TYPES = ["hello", "run", "run-event", "approval", "approval-done", "queue", "queue-error", "session", "state", "usage", "workspace", "agent"];
 let es: EventSource | null = null;
+/**
+ * 这条连接上登记了哪些事件名：EventSource 只把登记过名字的事件交出来。按 useEvent 订的名字登记，不另写一份名单
+ * （以前手写的名单漏了 host，后台任务、后台子代理平时都不更新，要等重连的 hello）
+ */
+let listening = new Set<string>();
+function listen(type: string) {
+	if (!es || listening.has(type)) return;
+	listening.add(type);
+	es.addEventListener(type, (m) => {
+		heard = Date.now();
+		for (const h of handlers.get(type) ?? []) h(JSON.parse((m as MessageEvent).data));
+	});
+}
 let up = true;
 const upListeners = new Set<(u: boolean) => void>();
 /** 断了之后多久再连：1 秒起，每次翻倍，最多 30 秒；连上了回到 1 秒 */
@@ -31,12 +43,8 @@ function connect() {
 	if (es) return;
 	heard = Date.now();
 	es = new EventSource("/api/events");
-	for (const type of TYPES) {
-		es.addEventListener(type, (m) => {
-			heard = Date.now();
-			for (const h of handlers.get(type) ?? []) h(JSON.parse((m as MessageEvent).data));
-		});
-	}
+	listening = new Set();
+	for (const type of handlers.keys()) listen(type);
 	es.addEventListener("ping", () => { heard = Date.now(); });
 	es.addEventListener("build", (m) => { heard = Date.now(); built(JSON.parse((m as MessageEvent).data)); });
 	es.onopen = () => {
@@ -109,6 +117,7 @@ export function useEvent(type: string, h: Handler) {
 		const set = handlers.get(type) ?? new Set();
 		handlers.set(type, set);
 		set.add(h);
+		listen(type);
 		return () => { set.delete(h); };
 	}, [type, h]);
 }

@@ -15,23 +15,13 @@ import * as state from "./state.ts";
 
 type Raw = Record<string, any>; // biome-ignore lint: 命令行的回复
 
-/** 侧栏、面板里的先后：Claude，然后按花的钱的本月花得多的在前。以前记下的 Codex 的不要了 */
-const rank = (id: string) => (id === "claude" ? 0 : 1);
+/** 侧栏、面板里的先后：Claude，然后按花的钱的本月花得多的在前 */
 const month = (a: Account) => (a.kind === "spend" ? a.spend.month : 0);
-export const list = (): Account[] => [...Object.values(state.usage()).filter((a) => a.id !== "codex"), ...pi].sort((a, b) => rank(a.id) - rank(b.id) || month(b) - month(a) || a.id.localeCompare(b.id));
+export const list = (): Account[] => [...Object.values(state.usage()), ...pi].sort((a, b) => Number(b.id === "claude") - Number(a.id === "claude") || month(b) - month(a) || a.id.localeCompare(b.id));
 
 function put(a: Account) {
 	state.setUsage(a);
 	emit("usage", list());
-}
-
-/** 窗口多长（分钟）→ 叫什么：300「5 小时」、10080「本周」，别的「N 小时」「N 天」 */
-export function windowLabel(mins: number | null | undefined): string {
-	if (!mins || mins <= 0) return "窗口";
-	if (mins === 10080) return "本周";
-	if (mins < 60) return `${Math.round(mins)} 分钟`;
-	if (mins < 1440) return `${Math.round(mins / 60)} 小时`;
-	return `${Math.round(mins / 1440)} 天`;
 }
 
 /** Claude 的两个窗口（used 0–1、resetsAt 毫秒）→ 账号 */

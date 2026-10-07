@@ -132,7 +132,10 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 		setErr(null);
 		setDiff(null);
 		setMode(initial);
-		api<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`).then(setF, (e: Error) => setErr(e.message));
+		// 快速换文件时，上一个的回包晚到不能盖掉这个的
+		let live = true;
+		api<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`).then((x) => live && setF(x), (e: Error) => live && setErr(e.message));
+		return () => { live = false; };
 	}, [project, path, initial]);
 	useEffect(() => {
 		if (mode !== "diff" || diff !== null) return;

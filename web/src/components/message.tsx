@@ -76,7 +76,7 @@ export const UserMessage = memo(function UserMessage({ n, project, session, onFo
 		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col items-end gap-1.5 outline-none">
 			<Bubble text={n.text} srcs={userImages(project, session, n)} />
 			<div className="flex items-center gap-2 px-1 text-2xs text-muted-foreground">
-				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-2xs" title="运行中发的，插进了这次运行">排队</Badge>}
+				{n.queued && <Badge variant="outline" className="h-4 px-1.5 text-2xs" title="运行中发的，插进了这次运行">中途插入</Badge>}
 				<span className="tabular-nums">{clock(n.ts)}</span>
 				<span className={cn("items-center", reveal)}>
 					<CopyAction text={n.text} />

@@ -82,7 +82,7 @@ export type Status =
  * 还在跑、刚结束还没算出来时没有这一项；null 是没有记录（一开始就出错了）
  */
 export type Run = {
-	id: string; project: string; cwd: string; from: string | null; session: string | null; mode: "new" | "resume" | "fork"; at: string | null;
+	id: string; project: string; cwd: string; from: string | null; session: string; mode: "new" | "resume" | "fork"; at: string | null;
 	prompt: string; permission: string; model: string | null; effort: string | null; status: "running" | "done" | "error" | "stopped"; started: string; ended: string | null; error: string | null;
 	uuid: string | null; merged: string[]; images: number; version?: string | null;
 };

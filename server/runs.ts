@@ -22,38 +22,9 @@ import { locate, version } from "./sessions.ts";
 import * as state from "./state.ts";
 import * as terminals from "./terminals.ts";
 import * as usage from "./usage.ts";
+import type { Approval, Host, Run, Task } from "../shared/api.ts";
 import { coalesce, emptyTail, project, step, type Tail } from "../shared/tail.ts";
 import { prompt as visual } from "../shared/visual.ts";
-
-export type RunStatus = "running" | "done" | "error" | "stopped";
-export type Run = {
-	id: string;
-	project: string;
-	cwd: string;
-	from: string | null;
-	session: string | null;
-	mode: "new" | "resume" | "fork";
-	/** 分叉点：从这条 Claude 的消息之后分出去；null 是从最新处 */
-	at: string | null;
-	prompt: string;
-	permission: string;
-	/** --model：别名（opus、sonnet…）或完整型号；null 是用 Claude Code 的默认 */
-	model: string | null;
-	/** 思考强度（low…max）；null 是用 Claude Code 的默认 */
-	effort: string | null;
-	status: RunStatus;
-	started: string;
-	ended: string | null;
-	error: string | null;
-	/** 这条消息在记录里的 uuid：写进 stdin 时带的（记录里那条就是它）；叫醒的那一轮没有消息，null */
-	uuid: string | null;
-	/** 带着网页发的哪几条（发的时候网页给的 uuid）：一条就是它自己，排着队的几条合成一条时是几个。网页的发件箱按它认自己发的那条到哪了 */
-	merged: string[];
-	/** 带了几张图（图本身在 Live 的 pics：记录里还没有时，网页先从这里拿） */
-	images: number;
-	/** 结束时会话记录写到哪了（「epoch:rev」）：网页的数据到了这里，这次运行写的就都拿到了。还没算出来没有这一项，没有记录是 null */
-	version?: string | null;
-};
 
 /**
  * Claude 开着的一个后台任务：background_tasks_changed（整张表）里的。
@@ -62,10 +33,6 @@ export type Run = {
 type Job = { id: string; type: string; description: string; started: string; ambient: boolean };
 /** task_started 里的：开它的工具调用、说明（子代理来问时卡片上写是哪个）。和 background_tasks_changed 谁先来都行，按任务 id 另记一份 */
 type Spawn = { tool: string | null; ambient: boolean; description: string };
-/** 给网页的：tool 是开它的工具调用；output 是能看输出（后台命令、Monitor：get_task_output 只认 local_bash） */
-export type Task = { id: string; type: string; description: string; started: string; tool: string | null; output: boolean };
-/** 一个 claude 进程（网页上要的）：turn 是正在跑的那一轮（运行 id），null 是 Claude 闲着、等后台任务 */
-export type Host = { id: string; project: string; session: string; turn: string | null; tasks: Task[] };
 
 /** 消息里带的图片（base64） */
 export type Image = { media: string; data: string };
@@ -74,18 +41,13 @@ export type Image = { media: string; data: string };
 export type Queued = { id: string; uuid: string; project: string; cwd: string; session: string; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; at: string };
 
 /**
- * 一次运行要的（start 里理好的）：模型、思考强度、图片都在里面。sid：新会话、分叉由 mixer 定的会话 id（续接是 null）。
- * uuid：写进 stdin 时带的（claude 的记录里那条就是它）；merged：带着网页发的哪几条
+ * 一次运行要的（start 里理好的）：模型、思考强度、图片都在里面。from：接着哪个会话（新会话是 null）；session：跑在哪个会话
+ * （续接就是 from，新会话、分叉是 mixer 定的新 id）。uuid：写进 stdin 时带的（记录里那条就是它）；merged：带着网页发的哪几条
  */
-type Params = { project: string; cwd: string; session: string | null; sid: string | null; mode: Run["mode"]; at?: string | null; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; uuid: string; merged: string[] };
+type Params = { project: string; cwd: string; from: string | null; session: string; mode: Run["mode"]; at?: string | null; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; uuid: string; merged: string[] };
 
 /** cancelled：问的那边不等了（claude 发了 control_cancel_request、进程退了），不用回 */
 type Decision = { allow: boolean; message?: string; cancelled?: boolean };
-/**
- * 给网页的确认请求：归哪个会话；cwd：路径写成相对的用。tool_use：是哪个工具调用；
- * agent：子代理在问时是哪个（id 是子代理记录 agent-<id>.jsonl 的，description 是开它时的说明）
- */
-export type Approval = { id: string; project: string; cwd: string; session: string; tool: string; input: unknown; at: string; toolUse: string | null; agent: { id: string; description: string } | null };
 /**
  * by：问的那个 claude 进程的 id，进程退了才作废（这一轮完了，后台子代理还可能在等）。
  * req：claude 的 control_request 的 request_id（control_cancel_request 按它认）。timer：10 分钟没人点就拒绝
@@ -178,7 +140,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (resume && !UUID.test(resume)) throw new Error("会话 id 不对");
 	if (o.at && !/^[0-9a-f-]{36}$/.test(o.at)) throw new Error("分叉点不对");
 	// 新会话、分叉：会话 id 由 mixer 定（--session-id）
-	const p: Params = { ...o, model, effort, images, sid: o.mode !== "resume" ? randomUUID() : null, uuid, merged: o.merged ?? [uuid] };
+	const p: Params = { project: o.project, cwd: o.cwd, from: resume, session: o.mode === "resume" && resume ? resume : randomUUID(), mode: o.mode, at: o.at, prompt: o.prompt, model, effort, images, permission: o.permission, uuid, merged: o.merged ?? [uuid] };
 	if (o.mode === "resume" && resume) {
 		// 在 mixer 外面开着（当场查）就挡，不看 mixer 里有没有它的运行、进程：mixer 里跑完之后在终端里接着聊的、两边都开着的一样。
 		// 查完到起进程之间不能再 await：不然同时来的两条续接会都起一个进程
@@ -210,9 +172,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 /** 起一个 claude 进程：stdin 留着写每一轮的消息、control_request。输出一行一个 JSON，按进程处理，事件归到正在跑的那一轮 */
 function launch(o: Params): Proc {
 	const id = randomUUID().slice(0, 8);
-	const resume = o.mode === "new" ? null : o.session;
-	const session = o.mode === "resume" ? o.session : o.sid;
-	if (!session) throw new Error("没有会话 id");
+	const { from: resume, session } = o;
 	// --thinking-display summarized：思考给摘要（流里有、也写进记录）。不加的话 -p 下大多只有签名、没有文字。帮助里没写，试过可用
 	// --permission-prompt-tool stdio：要确认的在 stdout 发 can_use_tool，答案写回 stdin（Agent SDK 走的就是这条）
 	const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--thinking-display", "summarized", "--permission-mode", o.permission, "--permission-prompt-tool", "stdio"];
@@ -289,7 +249,7 @@ function turn(h: Proc, o: Params) {
 	write(h, { type: "user", uuid, message: { role: "user", content } });
 	emit("run", view(run));
 	emit("host", hostView(h));
-	known(run, h.session);
+	known(run);
 	return view(run);
 }
 
@@ -384,7 +344,7 @@ function tasks(h: Proc, ev: Record<string, unknown>) {
 
 /** 通知叫醒的一轮：没有人说的话，权限、模型接着用进程现在的 */
 function wake(h: Proc) {
-	const run = fresh({ project: h.project, cwd: h.cwd, session: h.session, sid: null, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] });
+	const run = fresh({ project: h.project, cwd: h.cwd, from: h.session, session: h.session, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] });
 	run.halt = () => interrupt(h, run);
 	runs.set(run.id, run);
 	h.wake = run;
@@ -511,8 +471,8 @@ function fresh(o: Params): Live {
 		id,
 		project: o.project,
 		cwd: o.cwd,
-		from: o.session,
-		session: o.mode === "resume" ? o.session : o.sid,
+		from: o.from,
+		session: o.session,
 		mode: o.mode,
 		at: o.mode === "fork" ? (o.at ?? null) : null,
 		prompt: o.prompt,
@@ -537,19 +497,11 @@ function fresh(o: Params): Live {
 	return run;
 }
 
-/**
- * 会话 id 有了（起进程前就定了）：网页对上这次运行，
- * 记下选的模型、分叉的来处（state.fork），放进工作区
- */
-function known(run: Live, session: string) {
-	if (run.session !== session) {
-		run.session = session;
-		emit("run", view(run));
-	}
-	state.chooseModel(session, run.model, run.effort);
-	if (run.mode === "fork" && run.from) state.fork(session, { session: run.from, at: run.at });
-	// 在 mixer 里跑过的会话放进工作区（新会话、分叉的文件夹放到最上面）
-	if (state.addToWorkspace(run.project, run.cwd, session)) emit("workspace", null);
+/** 写进去了：记下选的模型、分叉的来处（state.fork），放进工作区（新会话、分叉的文件夹放到最上面） */
+function known(run: Live) {
+	state.chooseModel(run.session, run.model, run.effort);
+	if (run.mode === "fork" && run.from) state.fork(run.session, { session: run.from, at: run.at });
+	if (state.addToWorkspace(run.project, run.cwd, run.session)) emit("workspace", null);
 }
 
 /** 增量最多攒这么久再推：一个字一个事件的话，包在外面的比字本身还长 */
@@ -577,15 +529,15 @@ function finish(run: Live, status: "done" | "error" | "stopped", error: string |
 	run.ended = new Date().toISOString();
 	delete run.halt;
 	// 新会话、分叉一开始就出错（claude 起不来、参数不对），记录都没写出来：工作区里、state 里的这个 id 都拿掉，免得留个看不见的
-	const none = !run.session || !locate(run.project, run.session);
-	if (run.session && run.status === "error" && run.mode !== "resume" && none) {
+	const none = !locate(run.project, run.session);
+	if (run.status === "error" && run.mode !== "resume" && none) {
 		if (state.forget(run.session)) emit("workspace", null);
-	} else if (run.session) state.finished(run.project, run.session, run.status === "error");
+	} else state.finished(run.project, run.session, run.status === "error");
 	// 没有记录：没什么可等的，当场给 null
 	if (none) run.version = null;
 	emit("run", view(run));
 	if (!none) seal(run);
-	if (run.session) drain(run.session);
+	drain(run.session);
 }
 
 /**
@@ -596,7 +548,7 @@ function finish(run: Live, status: "done" | "error" | "stopped", error: string |
 async function seal(run: Live) {
 	let v: string | null = null;
 	try {
-		if (run.session) v = await version(run.project, run.session);
+		v = await version(run.project, run.session);
 	} catch {}
 	run.version = v;
 	run.pics = [];
@@ -668,7 +620,7 @@ function interrupt(h: Proc, run: Live) {
  * 挂起一个确认请求，等网页上的人点。10 分钟没人点就拒绝。
  * claude 的（asked）归进程的会话，不管它这会儿有没有在跑的一轮（后台子代理在 Claude 闲着时也会问）
  */
-function open(w: Pick<Asking, "by" | "req" | "project" | "cwd" | "session" | "toolUse" | "agent">, tool: string, input: unknown): Promise<Decision> {
+function open(w: Pick<Asking, "by" | "req" | "project" | "cwd" | "session" | "toolUse" | "agent">, tool: string, input: Record<string, unknown>): Promise<Decision> {
 	return new Promise((resolve) => {
 		const id = randomUUID().slice(0, 8);
 		const timer = setTimeout(() => decide(id, { allow: false, message: "10 分钟没人确认，拒绝了" }), 10 * 60_000).unref();

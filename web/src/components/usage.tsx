@@ -15,10 +15,10 @@ const updated = (at: string) => {
 	const ago = since(at);
 	return ago === "刚刚" ? "刚刚更新" : ago.includes("/") ? `${ago} 更新` : `${ago}前更新`;
 };
-/** 半小时没更新：侧栏那一行写明多久前（Claude 的只有 mixer 里运行时才更新） */
+/** 半小时没更新：侧栏那一行写明多久前（Claude 的每 10 分钟问一次，问不到时会旧） */
 const stale = (at: string) => Date.now() - Date.parse(at) > 30 * 60_000;
-/** 账号底下的一句说明：数是怎么来的 */
-const HOW: Record<string, string> = { claude: "mixer 里每次运行时更新；终端里用掉的，下次在 mixer 里运行后才算进来" };
+/** Claude 底下的一句说明：数是怎么来的 */
+const HOW = "每 10 分钟问一次本机的 claude（终端里用掉的也算），mixer 里运行时随时更新";
 
 function Bar({ used }: { used: number }) {
 	return (
@@ -64,8 +64,7 @@ function AccountUsage({ a, now }: { a: Account; now: number }) {
 				<span className="ml-auto text-2xs text-muted-foreground tabular-nums">{updated(a.at)}</span>
 			</div>
 			{a.kind === "quota" ? a.windows.map((w) => <WindowRow key={w.label} w={w} now={now} />) : <SpendRows s={a.spend} />}
-			{a.kind === "quota" && a.note && <p className="text-2xs text-muted-foreground">{a.note}</p>}
-			{HOW[a.id] && <p className="text-2xs text-muted-foreground">{HOW[a.id]}</p>}
+			{a.id === "claude" && <p className="text-2xs text-muted-foreground">{HOW}</p>}
 		</section>
 	);
 }

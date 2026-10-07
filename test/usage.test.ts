@@ -19,16 +19,6 @@ const { hello } = await import("../server/workspace.ts");
 
 const saved = () => JSON.parse(readFileSync(join(tmp, "data", "state.json"), "utf8"));
 
-test("窗口多长 → 叫什么", () => {
-	assert.equal(usage.windowLabel(300), "5 小时");
-	assert.equal(usage.windowLabel(10080), "本周");
-	assert.equal(usage.windowLabel(60), "1 小时");
-	assert.equal(usage.windowLabel(1440), "1 天");
-	assert.equal(usage.windowLabel(43200), "30 天");
-	assert.equal(usage.windowLabel(30), "30 分钟");
-	assert.equal(usage.windowLabel(null), "窗口");
-});
-
 test("Claude 的 rate_limit_event → 账号：秒换成毫秒，缺的窗口不写；记下、推 usage", () => {
 	const a = usage.claudeAccount({ five_hour: { utilization: 0.82, resetsAt: 100 }, seven_day: null, other: { utilization: 1 } }, "2026-10-06T00:00:00.000Z");
 	assert.deepEqual(a, { id: "claude", label: "Claude", kind: "quota", at: "2026-10-06T00:00:00.000Z", windows: [{ label: "5 小时", used: 0.82, resetsAt: 100_000 }] });

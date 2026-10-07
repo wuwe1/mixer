@@ -4,9 +4,9 @@
 export type Window = { label: string; used: number; resetsAt: number | null };
 /**
  * quota：有窗口的订阅（Claude 的 5 小时、本周）；spend：按花的钱算的（pi 的每个 provider：今天、本月，预算还没地方设）。
- * at：最近一次更新的时间；note：一句补充
+ * at：最近一次更新的时间
  */
-export type Quota = { id: string; label: string; kind: "quota"; windows: Window[]; at: string; note?: string };
+export type Quota = { id: string; label: string; kind: "quota"; windows: Window[]; at: string };
 export type Spend = { id: string; label: string; kind: "spend"; spend: { today: number; month: number; currency: string; budget?: number }; at: string };
 export type Account = Quota | Spend;
 

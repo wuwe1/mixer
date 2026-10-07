@@ -54,7 +54,6 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	const [approvals, setApprovals] = useState<Approval[]>([]);
 	const [queue, setQueue] = useState<Queued[]>([]);
 	const [usage, setUsage] = useState<Account[]>([]);
-	const following = useRef(new Set<string>());
 	/** 这个页面开的新会话、分叉（follow 过的）：一开始就出错、什么都没写出来时说一声 */
 	const mine = useRef(new Set<string>());
 	const runsRef = useRef(runs);
@@ -129,15 +128,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			if (failed(r)) toast.error(`启动失败：${r.error ?? ""}`.slice(0, 300));
 			if (r.version !== undefined) mine.current.delete(r.id);
 		}
-		if (r.session && following.current.has(r.id)) {
-			following.current.delete(r.id);
-			openSession(r.project, r.session);
-		}
-		if (r.status !== "running") {
-			// 没拿到会话 id 就结束了（一开始就出错）：不等了
-			following.current.delete(r.id);
-			loadWorkspace();
-		}
+		if (r.status !== "running") loadWorkspace();
 	}, [loadWorkspace]));
 	// 进程变了（开始、结束一轮，后台任务多了少了）：整个换掉；gone 是退出了
 	useEvent("host", useCallback((h: Host | { id: string; gone: true }) => setHosts((l) => ("gone" in h ? l.filter((x) => x.id !== h.id) : [...l.filter((x) => x.id !== h.id), h])), []));
@@ -161,13 +152,12 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			if (s.terminal) return "terminal";
 			return null;
 		};
-		/** 新会话、分叉：会话 id 一出来就打开。推送可能比请求的回复先到：已经出错结束了的当场说 */
+		/** 新会话、分叉：马上打开（会话 id 起进程前就定了）。推送可能比请求的回复先到：已经出错结束了的当场说 */
 		const follow = (run: Run) => {
 			const now = runsRef.current.find((x) => x.id === run.id) ?? run;
 			if (failed(now)) return void toast.error(`启动失败：${now.error ?? ""}`.slice(0, 300));
 			if (now.version === undefined) mine.current.add(run.id);
-			if (run.session) openSession(run.project, run.session);
-			else following.current.add(run.id);
+			openSession(run.project, run.session);
 		};
 		const ids = new Set((workspace ?? []).flatMap((g) => g.sessions.map((s) => s.id)));
 		const change = async (op: WorkspaceOp) => {

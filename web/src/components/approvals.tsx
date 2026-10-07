@@ -10,6 +10,7 @@ import { useLive } from "@/lib/live";
 import { openSession } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./message";
+import { sessionTitle } from "./side";
 
 /** 一行说清 Claude 想做什么；仓库里的路径写成相对路径 */
 export function what(a: Approval, cwd?: string): string {
@@ -78,10 +79,11 @@ export function ApprovalCard({ a, elsewhere, className }: { a: Approval; elsewhe
 export function FloatingApprovals({ current }: { current: string | null }) {
 	const { approvals, workspace } = useLive();
 	const notified = useRef(new Set<string>());
+	// 和侧栏一样的标题，前面带上文件夹名
 	const title = (sid: string) => {
 		for (const p of workspace ?? []) {
 			const s = p.sessions.find((x) => x.id === sid);
-			if (s) return `${p.path?.split("/").pop() ?? p.id} · ${s.title || s.last || s.first || sid.slice(0, 8)}`;
+			if (s) return `${p.path?.split("/").pop() ?? p.id} · ${sessionTitle(s)}`;
 		}
 		return sid.slice(0, 8);
 	};

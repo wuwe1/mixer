@@ -9,10 +9,11 @@ const FILE = join(DATA, "state.json");
 
 type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>>; forks: Record<string, Fork> };
 let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {}, forks: {} };
-// 老的 state.json 里的 sizes（以前按 mixer 放手时的文件大小猜「终端中打开」）不要了
+// 老的 state.json 里的 sizes（以前按 mixer 放手时的文件大小猜「终端中打开」）、Codex 的用量不要了
 try {
 	const { sizes: _old, ...saved } = JSON.parse(readFileSync(FILE, "utf8"));
 	state = { ...state, ...saved };
+	delete state.usage.codex;
 } catch {}
 
 function save() {
