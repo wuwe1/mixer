@@ -59,12 +59,38 @@ export type Approval = { id: string; run: string; tool: string; input: Record<st
 /** SSE 连上时先来的（server/sse.ts）：这时的全部状态（hosts：开着的 claude 进程和它们的后台任务；用量是各个账号的，lib/usage.ts）。workspace 是 null：服务端没算出来；tails：在跑的那几次正在写的那几段（按运行 id） */
 export type Hello = { runs: Run[]; hosts: Host[]; approvals: Approval[]; queue: Queued[]; usage: Account[]; workspace: Group[] | null; tails: Record<string, Tail> };
 
+/**
+ * 接口出错。status 0 是根本没连上（断网、mixer 在重启：浏览器只给一句英文，Safari 是「Load failed」）；
+ * temporary：等一下再试多半就好，没连上，或者隧道说后面没回应（502 / 503 / 504，回的是 cloudflared 的网页，不是 JSON）
+ */
+export class ApiError extends Error {
+	constructor(message: string, readonly status: number) {
+		super(message);
+	}
+	get temporary() {
+		return this.status === 0 || (this.status >= 502 && this.status <= 504);
+	}
+}
+export const temporary = (e: unknown) => e instanceof ApiError && e.temporary;
+
+/**
+ * 最多等 30 秒：手机换网、隧道留着半开的连接时请求会一直挂着，挂住的那个又挡着后面的（会话页一次只拉一个），对话就停在旧的不动了。
+ * 超时和连不上一样算「过一会儿再试」
+ */
+const TIMEOUT = 30_000;
+
 export async function api<T>(path: string, body?: unknown): Promise<T> {
-	const r = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+	let r: Response;
+	try {
+		const signal = AbortSignal.timeout(TIMEOUT);
+		r = await fetch(path, body === undefined ? { signal } : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
+	} catch (e) {
+		throw new ApiError(e instanceof DOMException && e.name === "TimeoutError" ? "mixer 没回应（等了 30 秒）" : "连不上 mixer", 0);
+	}
 	const d = await r.json().catch(() => null);
 	// 没登录（或者登录过期了）：外框换成登录页
 	if (r.status === 401 && d?.login) window.dispatchEvent(new Event("mixer:login"));
-	if (!r.ok) throw new Error(d?.error ?? `${r.status}`);
+	if (!r.ok) throw new ApiError(d?.error ?? (r.status >= 502 && r.status <= 504 ? `mixer 没回应（${r.status}），可能在重启` : `出错了（${r.status}）`), r.status);
 	return d as T;
 }
 

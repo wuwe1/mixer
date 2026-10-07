@@ -332,9 +332,7 @@ export const Composer = memo(function Composer({ project, session, w, status, wi
 			for (const s of sentShots) URL.revokeObjectURL(s.url);
 			setShots((x) => x.filter((s) => !sentShots.includes(s)));
 		} catch (e) {
-			// 连不上（断网、服务在重启）浏览器只给一句英文
-			const m = e instanceof TypeError ? "连不上 mixer" : e instanceof Error ? e.message : String(e);
-			toast.error(`没发出去：${m}，消息还在输入框里`);
+			toast.error(`没发出去：${e instanceof Error ? e.message : String(e)}，消息还在输入框里`);
 		} finally {
 			setBusy(false);
 		}

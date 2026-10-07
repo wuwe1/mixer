@@ -1,6 +1,6 @@
 // 代码高亮：shiki 放在 Worker 里跑（第一次用到才起），先显示原文，高亮好了再换上；一次只跑一个，过时的请求直接丢掉。
 // 深浅两套主题跟着页面切换。太长的文件不高亮，直接显示。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const EXT: Record<string, string> = {
@@ -68,11 +68,26 @@ export const tokenize = (code: string, lang: string, done: (lines: Token[][] | n
 
 export function Code({ code, lang = "text", lines = false, className }: { code: string; lang?: string; lines?: boolean; className?: string }) {
 	const [html, setHtml] = useState<string | null>(null);
+	// 正在写的代码块每来一段字 code 就变：不先清掉上一次的颜色（会在彩色和原文之间闪），上一版还在高亮就等它回来再拿最新的那版，
+	// 不一来就取消重排（字来得比高亮快时永远等不到结果）
+	const want = useRef({ code, lang });
+	const job = useRef<(() => void) | null>(null);
 	useEffect(() => {
+		want.current = { code, lang };
 		if (lang === "text" || code.length > 400_000) return setHtml(null);
-		setHtml(null);
-		return highlight(code, lang, setHtml);
+		if (job.current) return;
+		const go = () => {
+			const w = want.current;
+			if (w.lang === "text" || w.code.length > 400_000) return;
+			job.current = highlight(w.code, w.lang, (h) => {
+				job.current = null;
+				setHtml(h);
+				if (want.current.code !== w.code || want.current.lang !== w.lang) go();
+			});
+		};
+		go();
 	}, [code, lang]);
+	useEffect(() => () => job.current?.(), []);
 	const cls = cn("code text-xs leading-code", lines && "code-lines", className);
 	if (html) return <div className={cls} dangerouslySetInnerHTML={{ __html: html }} />;
 	return (

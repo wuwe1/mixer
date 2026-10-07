@@ -10,7 +10,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, t
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import * as codex from "./codex.ts";
-import { lines } from "./jsonl.ts";
+import { lines, serial } from "./jsonl.ts";
 import { summarize } from "../web/src/lib/tail.ts";
 import { chosenEffort, chosenModel, ourLastWrite, unread, windows } from "./state.ts";
 
@@ -23,14 +23,6 @@ export const PROJECTS = join(homedir(), ".claude", "projects");
 type Cursor = { ino: number; size: number; mtime: number; offset: number };
 const resume = (c: Cursor | undefined, st: Stats) =>
 	!c || c.ino !== st.ino || st.size < c.offset ? "fresh" : c.size === st.size && c.mtime === st.mtimeMs ? "same" : "more";
-
-/** 同一个文件一次只让一个人往下读：两个同时从同一处接着读，新的记录会算两遍 */
-const locks = new Map<string, Promise<unknown>>();
-function serial<T>(key: string, f: () => Promise<T>): Promise<T> {
-	const p = (locks.get(key) ?? Promise.resolve()).then(f, f);
-	locks.set(key, p.catch(() => {}));
-	return p;
-}
 
 type Raw = Record<string, any>; // biome-ignore lint: 内部格式，没有类型
 

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Queued, type Run } from "@/lib/api";
 import { askNotify, useLive } from "@/lib/live";
@@ -31,17 +32,18 @@ export function ForkDialog({ project, session, w, chosen, chosenEffort, target, 
 	const [text, setText] = useState("");
 	const [permission, setPermission] = useState("auto");
 	const [model, setModel] = useState("");
-	useEffect(() => {
 	const [effort, setEffort] = useState("");
 	// 请求在路上：按钮禁用，网慢时点两下不会开出两个分叉
 	const [busy, setBusy] = useState(false);
+	useEffect(() => {
 		if (!target) return;
 		setText(target.kind === "edit" ? target.n.text : "");
 		setModel(modelFor(agent, w.path, chosen) ?? "");
-	}, [target]);
 		setEffort(chosenEffort ?? "");
+	}, [target]);
 	const send = async () => {
-		if (!target || !text.trim()) return;
+		if (!target || !text.trim() || busy) return;
+		setBusy(true);
 		try {
 			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
 			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
@@ -50,6 +52,8 @@ export function ForkDialog({ project, session, w, chosen, chosenEffort, target, 
 			onClose();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
 		}
 	};
 	return (
@@ -73,7 +77,7 @@ export function ForkDialog({ project, session, w, chosen, chosenEffort, target, 
 					</div>
 					<div className="flex gap-2">
 						<Button variant="outline" onClick={onClose}>取消</Button>
-						<Button onClick={send} disabled={!text.trim()}>分叉</Button>
+						<Button onClick={send} disabled={!text.trim() || busy}>{busy && <Spinner />}分叉</Button>
 					</div>
 				</DialogFooter>
 			</DialogContent>

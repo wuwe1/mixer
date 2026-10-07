@@ -143,7 +143,8 @@ export async function start(o: { project: string; cwd: string; session: string |
 		const h = agent === "claude" ? hostOf(resume) : undefined;
 		if (h) return turn(h, p, images, model);
 		const mtime = statSync(cx ? cx.file : sessionFile(o.project, resume)).mtimeMs;
-		if (!ours.length && Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
+		// 不看内存里有没有它的运行：跑完之后在终端里接着聊的，一样要挡
+		if (Date.now() - mtime < 90_000 && !state.ourLastWrite(resume, mtime)) {
 			throw new Error("这个会话还在别处跑着（90 秒内有写入）：现在只能分叉");
 		}
 	}
@@ -164,8 +165,8 @@ function launch(o: { project: string; cwd: string; mode: Run["mode"]; at?: strin
 	// 告诉 Claude 网页能画 ```ui 图解（visual.ts）。只在 mixer 起的进程里带：终端里画不出来
 	args.push("--append-system-prompt", VISUAL);
 	if (model) args.push("--model", model);
-	if (resume) args.push("--resume", resume);
 	if (o.effort) args.push("--effort", o.effort);
+	if (resume) args.push("--resume", resume);
 	if (o.mode === "fork") args.push("--fork-session", ...(o.at ? ["--resume-session-at", o.at] : []));
 	// CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS：每一轮开始、结束有 session_state_changed（running / idle），通知叫醒的那一轮也有
 	const child = spawn("claude", args, { cwd: o.cwd, env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" }, stdio: ["pipe", "pipe", "pipe"] });
@@ -220,12 +221,12 @@ function turn(h: Proc, o: { project: string; cwd: string; session: string | null
 		control(h, { subtype: "set_model", model: model ?? "default" });
 		h.model = model;
 	}
-	// 带图片：文字块 + 图片块；不带就是一段文字
 	// 思考强度没有 set_xxx：apply_flag_settings 的 effortLevel（null 是回到设置里的）。帮助里没写，试过可用
 	if (h.effort !== o.effort) {
 		control(h, { subtype: "apply_flag_settings", settings: { effortLevel: o.effort } });
 		h.effort = o.effort;
 	}
+	// 带图片：文字块 + 图片块；不带就是一段文字
 	const content = images.length ? [...(o.prompt.trim() ? [{ type: "text", text: o.prompt }] : []), ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.media, data: i.data } }))] : o.prompt;
 	write(h, { type: "user", message: { role: "user", content } });
 	emit("run", view(run));
@@ -252,8 +253,8 @@ function line(h: Proc, raw: string) {
 			emit("host", hostView(h));
 		}
 		if (run) known(run, ev.session_id);
-		if (Array.isArray(ev.skills)) state.learnCaps(h.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
 		models.sawVersion(ev.claude_code_version);
+		if (Array.isArray(ev.skills)) state.learnCaps(h.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
 	}
 	if (ev.type === "system" && (ev.subtype === "background_tasks_changed" || ev.subtype === "task_started")) tasks(h, ev);
 	// 后台任务的输出文件在开它的那个工具调用的结果里
@@ -388,8 +389,8 @@ function fresh(id: string, o: { project: string; cwd: string; session: string | 
 		prompt: o.prompt,
 		permission: o.permission,
 		model,
-		status: "running",
 		effort: o.effort,
+		status: "running",
 		started: new Date().toISOString(),
 		ended: null,
 		error: null,
@@ -456,9 +457,10 @@ function startCodex(run: Live, o: { mode: Run["mode"]; at?: string | null; promp
 				ask: (tool, input) => ask(run.id, tool, input),
 				end: (status, error) => finish(run, status, error ?? null),
 			});
-			// 起的时候点了停止：现在才有 turn 能停
-			if (!run.ended) run.halt = h.stop;
-			if (run.stopping) h.stop();
+			// 起的时候点了停止：现在才有 turn 能停。起得慢、停止的 10 秒兜底已经把这次运行结束了（stopping 也清掉了）：照样停，
+			// 不然界面上写着已停止，Codex 却开跑了
+			if (run.ended || run.stopping) h.stop();
+			else run.halt = h.stop;
 		} catch (e) {
 			finish(run, "error", e instanceof Error ? e.message : String(e));
 		}

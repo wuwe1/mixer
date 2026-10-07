@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, type Dirent, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { lines } from "./jsonl.ts";
+import { lines, serial } from "./jsonl.ts";
 
 export const CODEX = join(homedir(), ".codex", "sessions");
 const INDEX = join(homedir(), ".codex", "session_index.jsonl");
@@ -255,7 +255,8 @@ function resultOf(item: Raw): { text: string; error: boolean } {
  * 新版本（有 item_completed 的）按 item 拼：id 和 app-server 流里的一样，运行中正在写的那段写进记录后能对上（key「item id:0」）；
  * 老版本按 response_item 拼。分叉出来的会话文件里只有自己的记录：前面接上原会话 forked_from_ordinal_exclusive 之前的节点
  */
-async function parse(file: string): Promise<Parsed> {
+const parse = (file: string) => serial(`codex:${file}`, () => read(file));
+async function read(file: string): Promise<Parsed> {
 	const st = statSync(file);
 	const old = cache.get(file);
 	if (old && old.size === st.size && old.mtime === st.mtimeMs) {

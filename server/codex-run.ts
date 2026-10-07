@@ -208,9 +208,18 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 	};
 	const delta = (itemId: string, d: Raw) => { if (itemId === msg) stream({ type: "content_block_delta", index: 0, delta: d }); };
 
-	threads.set(tid, {
+	/** 这一轮结束了：只拿掉自己（同一个线程可能已经换成下一次运行的） */
+	const complete = (t: Raw) => {
+		if (threads.get(tid) === self) threads.delete(tid);
+		h.end(t.status === "completed" ? "done" : t.status === "interrupted" ? "stopped" : "error", t.status === "failed" ? errorText(t.error) || error : undefined);
+	};
+	/** turn/start 还没回、不知道自己这一轮的 id 时来的 turn/completed：可能是上一次运行迟到的（它被停止兜底结束了），先攒着，知道 id 再对 */
+	const early: Raw[] = [];
+	const self: Handler = {
 		note: (m) => {
 			const p = (m.params ?? {}) as Raw;
+			// 上一轮迟到的通知（带着别的 turnId）：不是这次运行的
+			if (turnId && p.turnId && p.turnId !== turnId) return;
 			if (m.method === "item/started" && p.item) begin(p.item);
 			else if (m.method === "item/agentMessage/delta") delta(String(p.itemId), { type: "text_delta", text: String(p.delta ?? "") });
 			else if (m.method === "item/reasoning/summaryTextDelta") delta(String(p.itemId), { type: "thinking_delta", thinking: String(p.delta ?? "") });
@@ -218,9 +227,9 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 			else if (m.method === "error") error = errorText(p.error);
 			else if (m.method === "turn/completed") {
 				const t = (p.turn ?? {}) as Raw;
-				if (turnId && t.id && t.id !== turnId) return;
-				threads.delete(tid);
-				h.end(t.status === "completed" ? "done" : t.status === "interrupted" ? "stopped" : "error", t.status === "failed" ? errorText(t.error) || error : undefined);
+				if (!turnId) return void early.push(t);
+				if (t.id && t.id !== turnId) return;
+				complete(t);
 			}
 		},
 		request: async (m) => {
@@ -242,7 +251,8 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 			// Codex 提问（request_user_input）、MCP 要输入：mixer 里还答不了，告诉它没人答
 			return deny(m);
 		},
-	});
+	};
+	threads.set(tid, self);
 
 	const input = [
 		...(o.prompt.trim() ? [{ type: "text", text: o.prompt, text_elements: [] }] : []),
@@ -253,8 +263,11 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 		const r = await s.call("turn/start", { threadId: tid, input, model, ...(effort ? { effort } : {}), approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" }, SLOW);
 		turnId = String(r.turn?.id ?? "") || null;
 	} catch (e) {
-		threads.delete(tid);
+		if (threads.get(tid) === self) threads.delete(tid);
 		throw e;
 	}
+	// 攒着的：是这一轮的才算（没拿到 id 就都算）
+	const mine = early.find((t) => !turnId || !t.id || t.id === turnId);
+	if (mine) complete(mine);
 	return { stop: () => { if (turnId) s.call("turn/interrupt", { threadId: tid, turnId }).catch(() => {}); } };
 }

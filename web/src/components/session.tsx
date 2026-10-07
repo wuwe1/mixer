@@ -1,7 +1,7 @@
 // 一个会话：中间是对话和输入框；右边是面板（宽屏常开，窄屏是从右边拉出来的整屏一页，往左滑打开、往右滑关上）：目录（你的消息）、文件、改动（默认只看这个会话改过的）。
 // 顶栏只有一个开关，三个 tab 在面板顶上，写字不用图标；开的是这台设备上次看的那个 tab。
 // 打开着的会话跑完了，就算看过了。
-import { ArrowDown, ChevronLeft, X } from "lucide-react";
+import { ArrowDown, ChevronLeft, TriangleAlert, WifiOff, X } from "lucide-react";
 import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { spawner, spawns, useSubs } from "@/lib/agents";
-import { api, enc, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
+import { type ApiError, api, enc, temporary, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
 import * as drawer from "@/lib/drawer";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
@@ -22,7 +22,7 @@ import { Composer } from "./composer";
 import { Conversation, type Reveal } from "./conversation";
 import { Changes, Files } from "./lazy";
 import { edited } from "./message";
-import { Boundary } from "./placeholder";
+import { Boundary, Placeholder } from "./placeholder";
 
 const PANELS: { v: Panel; label: string }[] = [
 	{ v: "outline", label: "目录" },
@@ -170,7 +170,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const wide = useWide();
 	const [data, setData] = useState<Session | null>(() => kept.get(`${project}/${session}`) ?? null);
 	const cur = useRef<Session | null>(data);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<ApiError | Error | null>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
 	const { away, unseen, toBottom } = useStick(scroller, content);
@@ -178,12 +178,14 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const first = useRef(true);
 
 	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）。
-	// 拿到过就只要之后变了的
+	// 拿到过就只要之后变了的。没拿到：已经有内容就接着显示它，没有才换成出错；连不上、502 这种过一会儿自己再拉（1、2、4…30 秒）
 	const pulling = useRef<{ key: string; again: boolean } | null>(null);
+	const retry = useRef<{ timer?: ReturnType<typeof setTimeout>; wait: number }>({ wait: 1000 });
 	const load = useCallback(() => {
 		const key = `${project}/${session}`;
 		if (pulling.current?.key === key) return void (pulling.current.again = true);
 		pulling.current = { key, again: false };
+		clearTimeout(retry.current.timer);
 		const done = () => {
 			const p = pulling.current;
 			if (p?.key !== key) return;
@@ -198,10 +200,20 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 					keep(key, cur.current);
 					setData(cur.current);
 					setError(null);
+					retry.current.wait = 1000;
 				}
 				done();
 			},
-			(e: Error) => { if (pulling.current?.key === key) setError(e.message); done(); },
+			(e: Error) => {
+				if (pulling.current?.key === key) {
+					if (!cur.current) setError(e);
+					if (temporary(e)) {
+						retry.current.timer = setTimeout(load, retry.current.wait);
+						retry.current.wait = Math.min(retry.current.wait * 2, 30_000);
+					}
+				}
+				done();
+			},
 		);
 	}, [project, session]);
 	useEffect(() => {
@@ -209,7 +221,9 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		setData(cur.current);
 		setError(null);
 		first.current = true;
+		retry.current.wait = 1000;
 		load();
+		return () => clearTimeout(retry.current.timer);
 	}, [project, session, load]);
 
 	// 记下看到哪儿：停下来 0.15 秒再记，贴在底部记 null
@@ -305,7 +319,12 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const setOpen = useCallback((o: boolean) => (o ? openPanel(lastPanel()) : go({ panel: "none" })), []);
 	drawer.useSwipe(drawer.panel, { on: !wide, open: !!narrow, setOpen, onStart });
 
-	if (error) return <p className="p-6 text-sm text-destructive">{error}</p>;
+	if (error && !data)
+		return (
+			<Placeholder icon={temporary(error) ? WifiOff : TriangleAlert} title="没打开" text={temporary(error) ? `${error.message}，过一会儿自己再试` : error.message}>
+				<Button variant="outline" size="sm" onClick={load}>重试</Button>
+			</Placeholder>
+		);
 	const panel = wide ? panelOf(r, wide) : (narrow ?? peek);
 	const prompts = w?.path.filter((n): n is Extract<Node, { k: "user" }> => n.k === "user") ?? [];
 	const jump = (uuid: string) => {

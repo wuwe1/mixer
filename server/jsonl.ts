@@ -23,3 +23,16 @@ export async function* lines(file: string, start = 0): AsyncGenerator<{ line: st
 		pos += chunk.length;
 	}
 }
+
+/**
+ * 同一个文件一次只让一个人往下读：两个同时从同一处接着读，新的记录会算两遍；同时整份重读，后写完的盖掉先写完的、节点的改动丢了。
+ * 排队用的只留「轮到下一个」，不留读出来的结果（不然这里攥着每个会话读过的全部内容，缓存的上限就没用了），排完了删掉
+ */
+const locks = new Map<string, Promise<void>>();
+export function serial<T>(key: string, f: () => Promise<T>): Promise<T> {
+	const p = (locks.get(key) ?? Promise.resolve()).then(f, f);
+	const next = p.then(() => {}, () => {});
+	locks.set(key, next);
+	next.then(() => { if (locks.get(key) === next) locks.delete(key); });
+	return p;
+}

@@ -395,7 +395,17 @@ setInterval(() => {
 	});
 }, 5000).unref();
 
-build();
+// 打包失败（页面代码写坏了、少装了包）不能挡住起服务：有旧的 dist 就先用旧的，等下次改好了再打包；连旧的都没有才退出，让 launchd 隔一会儿再拉。
+// 顶层抛出去会被上面的 uncaughtException 吞掉，后面的 listen 就不走了，进程靠文件监视挂着却不听端口
+try {
+	build();
+} catch (e) {
+	if (!existsSync(join(DIST, "index.html"))) {
+		say(`打包失败，也没有旧的页面，退出：${e instanceof Error ? e.message : e}`);
+		process.exit(1);
+	}
+	say(`打包失败，先用旧的页面：${e instanceof Error ? e.message : e}`);
+}
 readVersion();
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
