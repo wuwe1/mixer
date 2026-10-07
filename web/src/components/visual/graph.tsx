@@ -4,9 +4,9 @@
 // 组是框：实线框（浅底）是真实存在的东西，虚线框是逻辑上的一组，能一层套一层
 import { Graph as Dagre, layout } from "@dagrejs/dagre";
 import { useId, useMemo } from "react";
-import type { Spec, TreeItem } from "@/lib/visual";
+import type { Spec, TreeItem } from "@shared/visual";
 import { cn } from "@/lib/utils";
-import { useDone } from "./index";
+import { Frame, useDone } from "./index";
 
 const LABEL = 13;
 const NOTE = 11;
@@ -80,7 +80,7 @@ function Drawing({ g }: { g: Laid }) {
 	const id = useSvgId();
 	const tones = [...new Set(g.nodes.filter((n) => n.alt && n.tone).map((n) => n.tone as number))];
 	return (
-		<figure className="min-w-0 rounded-lg border bg-card p-3">
+		<Frame>
 			<Canvas w={g.w} h={g.h}>
 				<defs>
 					<Arrow id={id} />
@@ -113,17 +113,17 @@ function Drawing({ g }: { g: Laid }) {
 				{g.nodes.map((n) => <Box key={n.id} n={n} hatch={n.alt && n.tone ? `url(#${id}-h${n.tone})` : undefined} />)}
 			</Canvas>
 			{!!g.legend.length && (
-				<figcaption className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1 text-2xs text-muted-foreground">
+				<div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1 text-2xs text-muted-foreground">
 					{g.legend.map((k) => (
 						<span key={k.tone} className="flex items-center gap-1.5">
 							<span className="size-2.5 rounded-sm border" style={{ background: tint(k.tone), borderColor: line(k.tone) }} />
 							{k.label}
 						</span>
 					))}
-				</figcaption>
+				</div>
 			)}
-			{done && !!g.missing.length && <figcaption className="mt-2 text-2xs text-muted-foreground">没画的箭头：{g.missing.join("；")}</figcaption>}
-		</figure>
+			{done && !!g.missing.length && <div className="mt-2 text-2xs text-muted-foreground">没画的箭头：{g.missing.join("；")}</div>}
+		</Frame>
 	);
 }
 
@@ -181,16 +181,15 @@ function place(spec: Spec<"Graph">): Laid {
 	}
 	for (const [cid] of groups) g.setNode(`group:${cid}`, { paddingTop: 20 });
 	// 组套组：parent 指向别的组（不能是自己、不能绕成圈）
-	const depth = (cid: string, seen = new Set<string>()): number => {
-		const p = groups.get(cid)?.parent;
-		if (!p || !groups.has(p) || seen.has(p) || p === cid) return 0;
-		seen.add(cid);
-		return 1 + depth(p, seen);
-	};
+	const depth = (cid: string) => ancestors(groups, cid).size;
 	for (const [cid, c] of groups) if (c.parent && groups.has(c.parent) && c.parent !== cid && !ancestors(groups, c.parent).has(cid)) g.setParent(`group:${cid}`, `group:${c.parent}`);
 	for (const n of nodes.values()) if (n.group && groups.has(n.group)) g.setParent(n.id, `group:${n.group}`);
+	// 节点的类型 → 第几个系列色；图例只列用到了的
+	const list = [...nodes.values()].map((n) => ({ ...n, tone: n.kind ? kinds.get(n.kind)?.tone : undefined }));
+	const used = new Set(list.map((n) => n.tone));
+	const legend = [...kinds.values()].filter((k) => used.has(k.tone));
 	// 没有箭头、没有组：按 nodes 的顺序排成等宽的一行（TB 是一列），数组、栈、队列。交给 dagre 的话会叠成一列、顺序也不保
-	if (!spec.edges.length && !groups.size) return row([...nodes.values()], lr, kinds);
+	if (!spec.edges.length && !groups.size) return { ...row(list, lr), legend };
 	const missing: string[] = [];
 	spec.edges.forEach((e, i) => {
 		const lost = [e.from, e.to].filter((x) => !nodes.has(x));
@@ -200,9 +199,9 @@ function place(spec: Spec<"Graph">): Laid {
 	});
 	layout(g);
 	const info = g.graph();
-	const placed = [...nodes.values()].map((n): Placed => {
+	const placed = list.map((n): Placed => {
 		const p = g.node(n.id);
-		return { ...n, x: p.x, y: p.y, w: p.width, h: p.height, tone: n.kind ? kinds.get(n.kind)?.tone : undefined };
+		return { ...n, x: p.x, y: p.y, w: p.width, h: p.height };
 	});
 	// 外层的先画，里层的盖在上面
 	const boxes = [...groups].sort(([a], [b]) => depth(a) - depth(b)).map(([cid, c]) => {
@@ -210,8 +209,6 @@ function place(spec: Spec<"Graph">): Laid {
 		// 空的组 dagre 不给位置
 		return p && Number.isFinite(p.x) ? { id: cid, label: c.label, dashed: c.dashed, x: p.x - p.width / 2, y: p.y - p.height / 2 - 12, w: p.width, h: p.height + 12 } : null;
 	}).filter((c) => c !== null);
-	const used = new Set(placed.map((n) => n.tone));
-	const legend = [...kinds.values()].filter((k) => used.has(k.tone));
 	const edges = g.edges().map((ref) => {
 		const e = g.edge(ref) as { points: { x: number; y: number }[]; x?: number; y?: number; label?: string };
 		const src = spec.edges[Number(ref.name)];
@@ -231,20 +228,19 @@ function place(spec: Spec<"Graph">): Laid {
 	};
 }
 
-/** 排成一行（或一列）：一样宽、一样高，间距 8 */
-function row(list: Spec<"Graph">["nodes"], lr: boolean, kinds: Map<string, { label: string; tone: number }>): Laid {
+/** 排成一行（或一列）：一样宽、一样高，间距 8。只排位置，图例在外面 */
+function row(list: (Spec<"Graph">["nodes"][number] & { tone?: number })[], lr: boolean): Laid {
 	const sizes = list.map(sizeOf);
 	const [W, H, gap, m] = [Math.max(...sizes.map((s) => s.w)), Math.max(...sizes.map((s) => s.h)), 8, 8];
-	const nodes = list.map((n, i): Placed => ({ ...n, w: W, h: H, x: m + W / 2 + (lr ? i * (W + gap) : 0), y: m + H / 2 + (lr ? 0 : i * (H + gap)), tone: n.kind ? kinds.get(n.kind)?.tone : undefined }));
-	const used = new Set(nodes.map((n) => n.tone));
+	const nodes = list.map((n, i): Placed => ({ ...n, w: W, h: H, x: m + W / 2 + (lr ? i * (W + gap) : 0), y: m + H / 2 + (lr ? 0 : i * (H + gap)) }));
 	const span = (size: number) => m * 2 + list.length * size + (list.length - 1) * gap;
-	return { w: lr ? span(W) : m * 2 + W, h: lr ? m * 2 + H : span(H), nodes, groups: [], edges: [], legend: [...kinds.values()].filter((k) => used.has(k.tone)), missing: [] };
+	return { w: lr ? span(W) : m * 2 + W, h: lr ? m * 2 + H : span(H), nodes, groups: [], edges: [], legend: [], missing: [] };
 }
 
-/** 一个组往外的所有组（防止 parent 绕成圈） */
+/** 一个组往外的所有组（不含自己；防止 parent 绕成圈）。有几个就是套在第几层 */
 function ancestors(groups: Map<string, { parent?: string }>, cid: string) {
 	const out = new Set<string>();
-	for (let p = groups.get(cid)?.parent; p && groups.has(p) && !out.has(p); p = groups.get(p)?.parent) out.add(p);
+	for (let p = groups.get(cid)?.parent; p && p !== cid && groups.has(p) && !out.has(p); p = groups.get(p)?.parent) out.add(p);
 	return out;
 }
 
@@ -314,7 +310,7 @@ export function SequenceView({ spec }: { spec: Spec<"Sequence"> }) {
 		return { names, x, head, rows, w: Math.ceil(head + 16 + (names.length - 1) * gap + noteW), h: y };
 	}, [spec]);
 	return (
-		<figure className="min-w-0 rounded-lg border bg-card p-3">
+		<Frame>
 			<Canvas w={s.w} h={s.h}>
 				<defs><Arrow id={id} /></defs>
 				{s.names.map((a) => (
@@ -340,6 +336,6 @@ export function SequenceView({ spec }: { spec: Spec<"Sequence"> }) {
 					);
 				})}
 			</Canvas>
-		</figure>
+		</Frame>
 	);
 }

@@ -10,7 +10,7 @@ const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 export default defineConfig({
 	root: "web",
 	plugins: [react(), tailwindcss()],
-	resolve: { alias: { "@": path.resolve(import.meta.dirname, "web/src") } },
+	resolve: { alias: { "@": path.resolve(import.meta.dirname, "web/src"), "@shared": path.resolve(import.meta.dirname, "shared") } },
 	build: { outDir: "dist", emptyOutDir: false, chunkSizeWarningLimit: 4000 },
 	// 高亮的 Worker 要按需加载语言，得是 ES 模块
 	worker: { format: "es" },

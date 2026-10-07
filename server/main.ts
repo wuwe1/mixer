@@ -3,7 +3,7 @@
 //   写：开始（新会话可以在家目录里任意文件夹开）/ 续接 / 分叉一次运行、停止；回答权限确认；新建文件夹；删掉会话（移到废纸篓 / codex archive）
 //   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化、子代理在做什么
 // 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
-// 写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）；MCP 工具发来的确认请求要带 MIXER_TOKEN。
+// 每个接口在 ROUTES 里写明谁能用（user / open，见 refuse）；写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）。
 import { execFile, execFileSync } from "node:child_process";
 import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, type Stats, statSync, watch } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -13,32 +13,35 @@ import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
 import * as codex from "./codex.ts";
 import * as dirs from "./dirs.ts";
+import { say } from "./log.ts";
 import * as models from "./models.ts";
 import * as repo from "./repo.ts";
 import * as runs from "./runs.ts";
 import * as skills from "./skills.ts";
 import * as sse from "./sse.ts";
-import { agent, fullResult, image, listProjects, listSessions, PROJECTS, row, session, sub, subs, thought, toolDetail, tree } from "./sessions.ts";
+import { agent, fullResult, image, listProjects, listSessions, PROJECTS, projectOf, row, session, sub, subs, thought, toolDetail, tree } from "./sessions.ts";
 import * as state from "./state.ts";
+import * as terminals from "./terminals.ts";
 import * as trash from "./trash.ts";
 import * as tunnel from "./tunnel.ts";
 import * as usage from "./usage.ts";
 import * as workspace from "./workspace.ts";
 
-const PORT = Number(process.env.MIXER_PORT ?? 4848);
+const { PORT } = access;
 const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 const DIST = join(ROOT, "web", "dist");
-const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 
 // 哪里漏了没接住的错误：记下来，服务接着跑（launchd 会拉起，但正在跑的、排着的、待确认的就都没了）
 process.on("uncaughtException", (e) => say(`没接住的错误：${e.stack ?? e}`));
 process.on("unhandledRejection", (e) => say(`没接住的错误（Promise）：${e instanceof Error ? e.stack : e}`));
+// 被停（launchd、Ctrl-C）：先停掉自己跑的隧道（cloudflared），再走一遍 exit
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => { tunnel.stop(); process.exit(0); });
 
-/** web/src 比 web/dist 新就重新打包 */
+/** web/src、shared 比 web/dist 新就重新打包 */
 function build() {
 	const newest = (d: string): number => Math.max(0, ...readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? newest(join(d, e.name)) : statSync(join(d, e.name)).mtimeMs)));
 	const out = join(DIST, "index.html");
-	if (existsSync(out) && statSync(out).mtimeMs > Math.max(newest(join(ROOT, "web", "src")), statSync(join(ROOT, "web", "index.html")).mtimeMs)) return;
+	if (existsSync(out) && statSync(out).mtimeMs > Math.max(newest(join(ROOT, "web", "src")), newest(join(ROOT, "shared")), statSync(join(ROOT, "web", "index.html")).mtimeMs)) return;
 	console.log("打包页面……");
 	execFileSync(join(ROOT, "node_modules", ".bin", "vite"), ["build", "--logLevel", "warn"], { cwd: ROOT, stdio: "inherit" });
 	prune();
@@ -47,9 +50,18 @@ function build() {
 /** 页面现在的版本：index.html 里入口脚本的路径（文件名带 hash）。开着的页面比一比，就知道有没有新的 */
 let version: string | null = null;
 const readVersion = () => {
-	try { version = /<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/.exec(readFileSync(join(DIST, "index.html"), "utf8"))?.[1] ?? null; } catch { version = null; }
-	return version;
+	try { return /<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/.exec(readFileSync(join(DIST, "index.html"), "utf8"))?.[1] ?? null; } catch { return null; }
 };
+/**
+ * 从磁盘重读版本，换了就告诉开着的页面：自己打完包、dist 的 index.html 变了（终端里 pnpm build）、有页面连上时都读。
+ * 只在这里改 version：谁先读到新的谁就推 build，不会有人读了却没推。读不到（正写到一半）不算
+ */
+function refreshVersion() {
+	const v = readVersion();
+	if (!v || v === version) return;
+	version = v;
+	sse.emit("build", { version });
+}
 
 /**
  * 打包不清空 dist（emptyOutDir: false）：已经开着的页面还要按需加载旧的那些块。
@@ -96,8 +108,11 @@ const PAGE = { "x-frame-options": "DENY", "content-security-policy": "frame-ance
 
 const brotli = promisify(brotliCompress);
 const gz = promisify(gzip);
-/** 已经在回了、正在压缩的响应：处理函数回完之后又出错，不再回第二遍 */
-const answering = new WeakSet<ServerResponse>();
+/** 对方收 br 用 br，不然 gzip；都不收是 null */
+const encoding = (req: IncomingMessage) => {
+	const a = String(req.headers["accept-encoding"] ?? "");
+	return /\bbr\b/.test(a) ? "br" : /\bgzip\b/.test(a) ? "gzip" : null;
+};
 /**
  * JSON；大于 8KB 就压缩（会话大的压之前有半 MB 多，走隧道、手机上省流量）：对方收 br 用 br（质量 5，和 gzip 一样快、小一成多），不然 gzip。
  * 在线程池里压，不挡别的请求和推送
@@ -105,19 +120,19 @@ const answering = new WeakSet<ServerResponse>();
 const json = (res: ServerResponse, status: number, v: unknown) => {
 	const buf = Buffer.from(JSON.stringify(v));
 	const head = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
-	const accept = String(res.req?.headers["accept-encoding"] ?? "");
-	const how = buf.length <= 8192 ? null : /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
+	const how = buf.length <= 8192 ? null : encoding(res.req);
 	if (!how) return void res.writeHead(status, head).end(buf);
-	answering.add(res);
+	// 压完之前处理函数已经出错回过了（headersSent）就不再回
 	(how === "br" ? brotli(buf, { params: { [constants.BROTLI_PARAM_QUALITY]: 5, [constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }) : gz(buf)).then(
 		(z) => { if (!res.headersSent && !res.destroyed) res.writeHead(status, { ...head, "content-encoding": how }).end(z); },
 		() => { if (!res.headersSent && !res.destroyed) res.writeHead(status, head).end(buf); },
 	);
 };
 // 先攒 Buffer 再一起解码：按块拼字符串，中文会在块的边界被切坏（带图片时请求体很大，一定会分块）。
-// 最多 20MB（10 张图片也够），再大回 413
+// 最多 20MB（10 张图片也够），再大回 413。解析成 JSON 对象，不是的回 400
 const LIMIT = 20 * 1024 * 1024;
-const body = (req: IncomingMessage) => new Promise<string>((ok, no) => {
+type Body = Record<string, any>; // biome-ignore lint: 请求体，各个接口自己挑字段
+const body = (req: IncomingMessage) => new Promise<Body>((ok, no) => {
 	if (Number(req.headers["content-length"] ?? 0) > LIMIT) return no(fail(413, "太大了：最多 20MB"));
 	const cs: Buffer[] = [];
 	let n = 0;
@@ -128,37 +143,37 @@ const body = (req: IncomingMessage) => new Promise<string>((ok, no) => {
 		cs.length = 0;
 		no(fail(413, "太大了：最多 20MB"));
 	});
-	req.on("end", () => { if (n <= LIMIT) ok(Buffer.concat(cs).toString("utf8")); });
+	req.on("end", () => {
+		if (n > LIMIT) return;
+		let v: unknown;
+		try { v = JSON.parse(Buffer.concat(cs).toString("utf8")); } catch { return no(fail(400, "请求体不是 JSON")); }
+		if (!v || typeof v !== "object" || Array.isArray(v)) return no(fail(400, "请求体要是 JSON 对象"));
+		ok(v as Body);
+	});
 	req.on("error", no);
 });
 
+/** 自己页面来的：同源（本机的是 http，pnpm dev 的 5173 也是，转过来 Host 不变；隧道来的是 https）。没有 Origin 的是命令行 */
 function ours(req: IncomingMessage) {
 	const o = req.headers.origin;
-	if (!o) return true;
-	if (o === `http://127.0.0.1:${PORT}` || o === `http://localhost:${PORT}` || o === "http://localhost:5173") return true;
-	return o === `https://${req.headers.host}`;
+	return !o || o === `${access.isLocal(req) ? "http" : "https"}://${req.headers.host}`;
 }
 
-// 项目 id → 路径（listProjects 要读文件，缓存 30 秒）
-let projCache: { at: number; list: ReturnType<typeof listProjects> } = { at: 0, list: [] };
-const projects = () => {
-	if (Date.now() - projCache.at > 30_000) projCache = { at: Date.now(), list: listProjects() };
-	return projCache.list;
-};
+// 项目 id → 路径（projectOf 先看上次列的，没有再列一遍）
 const projectPath = (id: string) => {
-	const p = projects().find((x) => x.id === id) ?? (projCache = { at: 0, list: [] }, projects().find((x) => x.id === id));
+	const p = projectOf(id);
 	if (!p?.path || !existsSync(p.path)) throw Object.assign(new Error("找不到这个项目的目录"), { status: 404 });
 	return p.path;
 };
 
 // 打包出来的文件（文件名带 hash，不会变）：第一次有人要时压好 br 和 gzip 存着。主包 700 多 KB，压完两百来 KB
-const PACK = new Set([".js", ".css", ".svg", ".json", ".html"]);
+const PACK = new Set([".js", ".css", ".svg", ".json"]);
 const packed = new Map<string, Promise<{ br: Buffer; gzip: Buffer }>>();
 const pack = (f: string) => {
 	let p = packed.get(f);
 	if (!p) {
 		const raw = readFileSync(f);
-		p = Promise.all([promisify(brotliCompress)(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }), promisify(gzip)(raw, { level: 9 })]).then(([br, gz]) => ({ br, gzip: gz }));
+		p = Promise.all([brotli(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }), gz(raw, { level: 9 })]).then(([br, gzip]) => ({ br, gzip }));
 		packed.set(f, p);
 	}
 	return p;
@@ -169,30 +184,32 @@ const { emit } = sse;
 runs.onEvent(emit);
 setInterval(() => emit("ping", {}), 25_000).unref();
 
-// 会话文件有变化：告诉页面。同一个文件 0.5 秒内的变化合成一次；是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去。
-// 在工作区里的，带上侧栏那一行（meta），侧栏就地换掉，不用整个工作区重拉；正看着这个会话的页面自己带 version 拉增量
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
-const changed = (project: string, id: string) => {
-	const key = `${project}/${id}`;
-	if (timers.has(key)) return;
-	timers.set(key, setTimeout(async () => {
-		timers.delete(key);
+/** 同一个 key 0.5 秒最多跑一次：第一次来时排上，0.5 秒后跑，这期间再来的不管。是节流不是防抖：Claude 跑起来一直在写，防抖会一直推不出去 */
+const pending = new Set<string>();
+const throttle = (key: string, f: () => unknown) => {
+	if (pending.has(key)) return;
+	pending.add(key);
+	setTimeout(() => {
+		pending.delete(key);
+		f();
+	}, 500);
+};
+
+// 会话文件有变化：告诉页面，同一个文件 0.5 秒内的变化合成一次。
+// 在工作区里的，带上侧栏那一行（meta：parent 也算好了，terminal 是在 mixer 外面开着），侧栏整行换掉，不用整个工作区重拉；
+// 正看着这个会话的页面自己带 version 拉增量
+const changed = (project: string, id: string) =>
+	throttle(`session ${project}/${id}`, async () => {
 		const meta = state.workspace()?.sessions[id] === project ? await row(project, id).catch(() => null) : null;
 		emit("session", meta ? { project, id, meta } : { project, id });
-	}, 500));
-};
+	});
 // 子代理的记录（<项目>/<会话>/subagents/agent-<id>.jsonl，开的时候先写 .meta.json）：推 agent，带上它现在在做什么（sub），
 // 网页把它放在开它的那个 Agent 工具调用下面。同样每个子代理 0.5 秒最多一次；记录是接着上次读的，不贵
-const subTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const subChanged = (project: string, session: string, agentId: string) => {
-	const key = `${project}/${session}/${agentId}`;
-	if (subTimers.has(key)) return;
-	subTimers.set(key, setTimeout(async () => {
-		subTimers.delete(key);
+const subChanged = (project: string, session: string, agentId: string) =>
+	throttle(`agent ${project}/${session}/${agentId}`, async () => {
 		const a = await sub(project, session, agentId).catch(() => null);
 		if (a) emit("agent", { project, session, ...a });
-	}, 500));
-};
+	});
 if (existsSync(PROJECTS)) {
 	watch(PROJECTS, { recursive: true }, (_, f) => {
 		const p = String(f ?? "").split(sep).join("/");
@@ -209,47 +226,93 @@ if (existsSync(codex.CODEX)) {
 		if (i) changed(i.project, i.id);
 	});
 }
+// 在 mixer 外面开着、关了（terminals.ts）：和会话文件变了一样推。项目先看工作区，再按 Claude 登记的 cwd 算，Codex 的问 codex.ts
+terminals.start((id, cwd) => {
+	const project = state.workspace()?.sessions[id] ?? (cwd ? dirs.projectId(cwd) : codex.find(id)?.project);
+	if (project) changed(project, id);
+});
 
 type Handler = (req: IncomingMessage, res: ServerResponse, m: string[], url: URL) => unknown;
 function fail(status: number, msg: string) { return Object.assign(new Error(msg), { status }); }
-const GET: [RegExp, Handler][] = [
-	[/^\/api\/auth\/status$/, async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
-	[/^\/api\/auth\/seen$/, (req, res) => { if (!access.isLocal(req)) throw fail(403, "只能在本机看"); json(res, 200, access.seenAccess()); }],
-	[/^\/api\/health$/, (_q, res) => json(res, 200, { app: "mixer", pid: process.pid })],
-	[/^\/api\/projects$/, (_q, res) => json(res, 200, (projCache = { at: 0, list: [] }, projects()))],
-	[/^\/api\/tree$/, async (_q, res) => json(res, 200, await tree())],
-	[/^\/api\/workspace$/, async (_q, res) => json(res, 200, await workspace.view())],
+
+/**
+ * 接口谁能用：
+ *   user：认出来的人（access.who：本机、Access 的 JWT、passkey 登录的 cookie）
+ *   open：谁都行，只有登录用的那几个；远程来的 POST 每个 IP 一分钟限次数（Funnel 是公网，挡一挡乱试的）
+ * 写的（POST）还要是 JSON、Origin 是自己的页面。不让过的给 [状态码, 回什么]
+ */
+type Policy = "user" | "open";
+const LOGIN = { error: "要先登录", login: true };
+async function refuse(req: IncomingMessage, policy: Policy): Promise<[number, object] | null> {
+	if (policy === "open") {
+		if (req.method === "POST" && access.limited(req)) return [429, { error: "试得太频繁了，过一分钟再来" }];
+	} else if (!(await access.who(req))) return [401, LOGIN];
+	if (req.method === "POST" && (!req.headers["content-type"]?.startsWith("application/json") || !ours(req))) return [403, { error: "只收自己页面的 JSON" }];
+	return null;
+}
+
+/** 会话里的图片（记录里的、排队的）：类型是记录里写的，不可信。和 /raw 一样只有那几种图片直接显示，别的（SVG、HTML……）当下载，都带 nosniff 和 sandbox 的 CSP */
+const INLINE_TYPES = new Set([...INLINE].map((e) => TYPES[e]));
+function sendImage(res: ServerResponse, img: { media: string; data: string } | null, maxAge: number) {
+	if (!img) return void res.writeHead(404).end();
+	const type = String(img.media ?? "").trim().toLowerCase();
+	const inline = INLINE_TYPES.has(type);
+	res.writeHead(200, {
+		"content-type": inline ? type : "application/octet-stream",
+		"cache-control": `private, max-age=${maxAge}`,
+		"x-content-type-options": "nosniff",
+		"content-security-policy": RAW_CSP,
+		...(inline ? {} : { "content-disposition": "attachment" }),
+	}).end(Buffer.from(img.data, "base64"));
+}
+
+const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][] = [
+	["GET", /^\/api\/auth\/status$/, "open", async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
+	// 推送（sse.ts）：先发 build（页面的版本），再发 hello（全部状态）。连上时也从磁盘重读一次版本：换了先推给已经开着的，这条连接直接拿新的
+	["GET", /^\/api\/events$/, "user", (_q, res) => {
+		refreshVersion();
+		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+		res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
+		res.on("close", () => sse.leave(res));
+		res.on("error", () => sse.leave(res));
+		sse.join(res, workspace.hello).catch((e) => console.error(e));
+	}],
+	["GET", /^\/api\/health$/, "user", (_q, res) => json(res, 200, { app: "mixer", pid: process.pid })],
+	["GET", /^\/api\/projects$/, "user", (_q, res) => json(res, 200, listProjects())],
+	["GET", /^\/api\/tree$/, "user", async (_q, res) => json(res, 200, await tree())],
+	["GET", /^\/api\/workspace$/, "user", async (_q, res) => json(res, 200, await workspace.view())],
 	// 能选的模型：Claude 的问命令行、Codex 的问 app-server（models.ts），第一项是默认
-	[/^\/api\/models\/claude$/, async (_q, res) => json(res, 200, await models.claude())],
-	[/^\/api\/models\/codex$/, async (_q, res) => json(res, 200, await models.codex())],
-	[/^\/api\/projects\/([\w.-]+)\/sessions$/, async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
+	["GET", /^\/api\/models\/claude$/, "user", async (_q, res) => json(res, 200, await models.claude())],
+	["GET", /^\/api\/models\/codex$/, "user", async (_q, res) => json(res, 200, await models.codex())],
+	["GET", /^\/api\/projects\/([\w.-]+)\/sessions$/, "user", async (_q, res, m) => json(res, 200, await listSessions(m[1]))],
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)$/, "user", async (_q, res, m, url) => json(res, 200, await session(m[1], m[2], url.searchParams.get("since")))],
 	// 会话开过的子代理：各自对应哪个 Agent 工具调用、现在在做什么
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents$/, async (_q, res, m) => json(res, 200, await subs(m[1], m[2]))],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, async (_q, res, m, url) => {
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents$/, "user", async (_q, res, m) => json(res, 200, await subs(m[1], m[2]))],
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/agents\/(a[0-9a-f]+)$/, "user", async (_q, res, m, url) => {
 		const a = await agent(m[1], m[2], m[3], url.searchParams.get("since"));
 		return a ? json(res, 200, a) : json(res, 404, { error: "没有这个子 agent 的记录" });
 	}],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/tool\/([\w-]+)$/, async (_q, res, m, url) => {
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/tool\/([\w-]+)$/, "user", async (_q, res, m, url) => {
 		const d = await toolDetail(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
 		return d ? json(res, 200, d) : json(res, 404, { error: "没有这个工具调用" });
 	}],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/result\/([\w-]+)$/, async (_q, res, m, url) => {
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/result\/([\w-]+)$/, "user", async (_q, res, m, url) => {
 		const t = await fullResult(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
 		return t === null ? json(res, 404, { error: "没有" }) : json(res, 200, { text: t });
 	}],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/thinking\/([\w-]+)$/, async (_q, res, m, url) => {
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/thinking\/([\w-]+)$/, "user", async (_q, res, m, url) => {
 		const t = await thought(m[1], m[2], m[3], url.searchParams.get("agent") ?? undefined);
 		return t === null ? json(res, 404, { error: "没有" }) : json(res, 200, { text: t });
 	}],
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/image\/([\w-]+)\/(\d+)$/, async (_q, res, m, url) => {
-		const img = await image(m[1], m[2], m[3], Number(m[4]), url.searchParams.get("agent") ?? undefined);
-		if (!img) return void res.writeHead(404).end();
-		res.writeHead(200, { "content-type": img.media, "cache-control": "private, max-age=86400" }).end(Buffer.from(img.data, "base64"));
+	// 你的消息还没写进记录（网页先画上的那条）：从运行带着的图里拿
+	["GET", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/image\/([\w-]+)\/(\d+)$/, "user", async (_q, res, m, url) => {
+		const agent = url.searchParams.get("agent") ?? undefined;
+		const img = await image(m[1], m[2], m[3], Number(m[4]), agent).catch(() => null);
+		sendImage(res, img ?? (agent ? null : runs.runImage(m[3], Number(m[4]))), 86400);
 	}],
-	[/^\/api\/repo\/([\w.-]+)\/files$/, (_q, res, m) => json(res, 200, { root: projectPath(m[1]), files: repo.files(projectPath(m[1])) })],
-	[/^\/api\/repo\/([\w.-]+)\/file$/, (_q, res, m, url) => json(res, 200, repo.file(projectPath(m[1]), url.searchParams.get("path") ?? ""))],
-	[/^\/api\/repo\/([\w.-]+)\/raw$/, (_q, res, m, url) => {
+	["GET", /^\/api\/repo\/([\w.-]+)\/files$/, "user", async (_q, res, m) => json(res, 200, { root: projectPath(m[1]), files: await repo.files(projectPath(m[1])) })],
+	["GET", /^\/api\/repo\/([\w.-]+)\/file$/, "user", (_q, res, m, url) => json(res, 200, repo.file(projectPath(m[1]), url.searchParams.get("path") ?? ""))],
+	["GET", /^\/api\/repo\/([\w.-]+)\/raw$/, "user", (_q, res, m, url) => {
 		const f = repo.inside(projectPath(m[1]), url.searchParams.get("path") ?? "");
 		let st: Stats | null = null;
 		try { st = statSync(f); } catch {}
@@ -265,55 +328,48 @@ const GET: [RegExp, Handler][] = [
 		});
 		createReadStream(f).on("error", () => res.destroy()).pipe(res);
 	}],
-	[/^\/api\/repo\/([\w.-]+)\/status$/, async (_q, res, m) => json(res, 200, await repo.status(projectPath(m[1])))],
-	[/^\/api\/repo\/([\w.-]+)\/diff$/, (_q, res, m, url) => json(res, 200, { diff: repo.diff(projectPath(m[1]), url.searchParams.get("path") ?? "") })],
-	[/^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, (_q, res, m) => json(res, 200, repo.commit(projectPath(m[1]), m[2]))],
-	[/^\/api\/runs$/, (_q, res) => json(res, 200, runs.list())],
-	[/^\/api\/runs\/([\w-]+)\/tail$/, (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
-	[/^\/api\/runs\/([\w-]+)$/, (_q, res, m) => { const r = runs.get(m[1]); return r ? json(res, 200, r) : json(res, 404, { error: "没有这次运行" }); }],
-	[/^\/api\/approvals$/, (_q, res) => json(res, 200, runs.pending())],
-	[/^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/output$/, (_q, res, m) => { const o = runs.taskOutput(m[1], m[2]); return o ? json(res, 200, o) : json(res, 404, { error: "没有这个后台任务的输出" }); }],
-	[/^\/api\/usage$/, (_q, res) => json(res, 200, usage.list())],
-	[/^\/api\/queue$/, (_q, res) => json(res, 200, runs.queued())],
-	[/^\/api\/queue\/([\w-]+)\/image\/(\d+)$/, (_q, res, m) => {
-		const img = runs.queuedImage(m[1], Number(m[2]));
-		if (!img) return void res.writeHead(404).end();
-		res.writeHead(200, { "content-type": img.media, "cache-control": "private, max-age=3600" }).end(Buffer.from(img.data, "base64"));
+	["GET", /^\/api\/repo\/([\w.-]+)\/status$/, "user", async (_q, res, m) => json(res, 200, await repo.status(projectPath(m[1])))],
+	["GET", /^\/api\/repo\/([\w.-]+)\/diff$/, "user", async (_q, res, m, url) => json(res, 200, { diff: await repo.diff(projectPath(m[1]), url.searchParams.get("path") ?? "") })],
+	["GET", /^\/api\/repo\/([\w.-]+)\/commit\/([0-9a-f]+)$/, "user", async (_q, res, m) => json(res, 200, await repo.commit(projectPath(m[1]), m[2]))],
+	["GET", /^\/api\/runs\/([\w-]+)\/tail$/, "user", (_q, res, m) => { const t = runs.tail(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: "没有这次运行" }); }],
+	["GET", /^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/output$/, "user", async (_q, res, m) => { const o = await runs.taskOutput(m[1], m[2]); return o ? json(res, 200, o) : json(res, 404, { error: "没有这个后台任务的输出" }); }],
+	["GET", /^\/api\/queue\/([\w-]+)\/image\/(\d+)$/, "user", (_q, res, m) => sendImage(res, runs.queuedImage(m[1], Number(m[2])), 3600)],
+	["GET", /^\/api\/dirs$/, "user", (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
+	// cwd：新会话的文件夹（还没开过会话的项目 projectPath 找不到），只认家目录里的
+	["GET", /^\/api\/skills\/([\w.-]+)$/, "user", (_q, res, m, url) => {
+		const cwd = url.searchParams.get("cwd");
+		json(res, 200, skills.list(m[1], cwd ? dirs.folder(cwd) : projectPath(m[1])));
 	}],
-	[/^\/api\/dirs$/, (_q, res, _m, url) => json(res, 200, dirs.list(url.searchParams.get("path") ?? ""))],
-	[/^\/api\/skills\/([\w.-]+)$/, (_q, res, m) => json(res, 200, skills.list(m[1], projectPath(m[1])))],
-];
-const POST: [RegExp, Handler][] = [
 	// 登录：配对码建 passkey、passkey 登录。登录成功种 cookie
-	[/^\/api\/auth\/register\/options$/, async (req, res) => json(res, 200, await access.registerOptions(req, JSON.parse(await body(req)).code))],
-	[/^\/api\/auth\/register$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/auth\/register\/options$/, "open", async (req, res) => json(res, 200, await access.registerOptions(req, (await body(req)).code))],
+	["POST", /^\/api\/auth\/register$/, "open", async (req, res) => {
+		const b = await body(req);
 		res.setHeader("set-cookie", await access.register(req, b.code, b.response));
 		json(res, 200, { ok: true });
 	}],
-	[/^\/api\/auth\/login\/options$/, async (req, res) => json(res, 200, await access.loginOptions(req))],
-	[/^\/api\/auth\/login$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/auth\/login\/options$/, "open", async (req, res) => json(res, 200, await access.loginOptions(req))],
+	["POST", /^\/api\/auth\/login$/, "open", async (req, res) => {
+		const b = await body(req);
 		res.setHeader("set-cookie", await access.login(req, b.id, b.response));
 		json(res, 200, { ok: true });
 	}],
-	[/^\/api\/auth\/logout$/, (_q, res) => { res.setHeader("set-cookie", access.logoutCookie); json(res, 200, { ok: true }); }],
 	// 新的配对码（加一台设备）：已经认出来的才能要，`pnpm mixer pair` 从本机来要
-	[/^\/api\/pair$/, (_q, res) => json(res, 200, access.pair())],
-	[/^\/api\/runs$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/pair$/, "user", (_q, res) => json(res, 200, access.pair())],
+	["POST", /^\/api\/runs$/, "user", async (req, res) => {
+		const b = await body(req);
 		// 新会话可以直接给文件夹（还没开过会话的也行）；其余的按项目找目录
-		const cwd = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : projectPath(b.project);
-		const r = await runs.start({ project: b.mode === "new" && b.cwd ? dirs.projectId(cwd) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, effort: typeof b.effort === "string" ? b.effort : null, agent: typeof b.agent === "string" ? b.agent : null });
+		const folder = b.mode === "new" && b.cwd ? dirs.folder(String(b.cwd)) : null;
+		const cwd = folder ?? projectPath(b.project);
+		const r = await runs.start({ project: folder ? dirs.projectId(folder) : b.project, cwd, session: b.session ?? null, mode: b.mode ?? "resume", at: b.at ?? null, prompt: String(b.prompt ?? ""), images: Array.isArray(b.images) ? b.images : [], permission: b.permission ?? "default", model: typeof b.model === "string" ? b.model : null, effort: typeof b.effort === "string" ? b.effort : null, agent: typeof b.agent === "string" ? b.agent : null, uuid: typeof b.uuid === "string" ? b.uuid : null });
 		json(res, 200, r);
 	}],
-	[/^\/api\/dirs$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/dirs$/, "user", async (req, res) => {
+		const b = await body(req);
 		json(res, 200, dirs.create(String(b.parent ?? ""), String(b.name ?? "").trim()));
 	}],
 	// 工作区：add（放进来；不给 session 就只放文件夹，sessions 是撤销移出文件夹时一起放回去的）/ remove（不给 session 就移掉整个文件夹）/ order（文件夹拖完的顺序）
-	[/^\/api\/workspace$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/workspace$/, "user", async (req, res) => {
+		const b = await body(req);
 		const id = (v: unknown) => (typeof v === "string" && /^[\w.-]+$/.test(v) ? v : null);
 		const project = id(b.project);
 		const session = id(b.session);
@@ -328,29 +384,29 @@ const POST: [RegExp, Handler][] = [
 		json(res, 200, { ok: true });
 	}],
 	// 删掉一个会话（trash.ts）：Claude 的移到废纸篓，Codex 的 codex archive。在跑、排队、待确认、终端里开着的回 409
-	[/^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, async (_q, res, m) => {
+	["POST", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, "user", async (_q, res, m) => {
 		await trash.remove(m[1], m[2]);
 		emit("workspace", null);
 		json(res, 200, { ok: true });
 	}],
-	[/^\/api\/seen$/, async (req, res) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/seen$/, "user", async (req, res) => {
+		const b = await body(req);
 		state.seen(String(b.session ?? ""));
 		emit("state", { project: b.project, session: b.session });
 		json(res, 200, { ok: true });
 	}],
-	[/^\/api\/runs\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
-	[/^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/stop$/, (_q, res, m) => json(res, 200, { stopped: runs.stopTask(m[1], m[2]) })],
-	[/^\/api\/queue\/([\w-]+)\/cancel$/, (_q, res, m) => json(res, 200, { ok: runs.unqueue(m[1]) })],
-	[/^\/api\/approvals\/([\w-]+)$/, async (req, res, m) => {
-		const b = JSON.parse(await body(req));
+	["POST", /^\/api\/runs\/([\w-]+)\/stop$/, "user", (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
+	["POST", /^\/api\/hosts\/([\w-]+)\/tasks\/([\w-]+)\/stop$/, "user", (_q, res, m) => json(res, 200, { stopped: runs.stopTask(m[1], m[2]) })],
+	["POST", /^\/api\/queue\/([\w-]+)\/cancel$/, "user", (_q, res, m) => json(res, 200, { ok: runs.unqueue(m[1]) })],
+	["POST", /^\/api\/approvals\/([\w-]+)$/, "user", async (req, res, m) => {
+		const b = await body(req);
 		json(res, 200, { ok: runs.answer(m[1], !!b.allow, b.message) });
 	}],
 ];
 
 /**
  * 改了 mixer 自己的代码：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）再换上，免得打断正在跑的、丢了排着的。
- *   服务端的代码（server/、mcp/、两边共用的 web/src/lib/tail.ts、visual.ts）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
+ *   服务端的代码（server/、两边共用的 shared/）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
  *   检查没过不重启，等下次改；终端里 pnpm start 的退出了没人拉，只提示一句。
  *   只改了页面：重新打包，刷新就是新的
  */
@@ -360,21 +416,9 @@ let swapping = false;
 const CODE = /\.(tsx?|css|html)$/;
 const touched = (kind: keyof typeof dirty) => (_: unknown, f: string | Buffer | null) => { if (CODE.test(String(f ?? ""))) dirty[kind] = Date.now(); };
 watch(join(ROOT, "server"), { recursive: true }, touched("server"));
-watch(join(ROOT, "mcp"), { recursive: true }, touched("server"));
+watch(join(ROOT, "shared"), { recursive: true }, touched("server"));
 watch(join(ROOT, "web", "index.html"), touched("web"));
-// 别处打的包（终端里 pnpm build）：dist 的 index.html 换了就告诉开着的页面
-let distTimer: ReturnType<typeof setTimeout> | null = null;
-if (existsSync(DIST))
-	watch(DIST, (_, f) => {
-		if (String(f ?? "") !== "index.html") return;
-		distTimer ??= setTimeout(() => {
-			distTimer = null;
-			const old = version;
-			if (readVersion() && version !== old) emit("build", { version });
-		}, 500);
-	});
-const SHARED = new Set(["lib/tail.ts", "lib/visual.ts"]);
-watch(join(ROOT, "web", "src"), { recursive: true }, (e, f) => touched(SHARED.has(String(f ?? "").split(sep).join("/")) ? "server" : "web")(e, f));
+watch(join(ROOT, "web", "src"), { recursive: true }, touched("web"));
 setInterval(() => {
 	const last = Math.max(dirty.server, dirty.web);
 	if (swapping || !last || Date.now() - last < 3000 || !runs.idle()) return;
@@ -401,7 +445,7 @@ setInterval(() => {
 		say(err ? `页面改了，打包失败：\n${stderr}` : "页面改了：已重新打包");
 		if (err) return;
 		// 开着的页面：有新版本了
-		if (readVersion()) emit("build", { version });
+		refreshVersion();
 		prune();
 	});
 }, 5000).unref();
@@ -417,45 +461,26 @@ try {
 	}
 	say(`打包失败，先用旧的页面：${e instanceof Error ? e.message : e}`);
 }
-readVersion();
+refreshVersion();
+// 别处打的包（终端里 pnpm build）：dist 的 index.html 换了就告诉开着的页面。打包之后才监视：新拉下来的仓库原来没有 dist，监视不上
+watch(DIST, (_, f) => { if (String(f ?? "") === "index.html") throttle("dist", refreshVersion); });
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;
 	try {
-		// MCP 工具来的确认请求：只认 token，一直挂着等人点
-		if (req.method === "POST" && path === "/api/approvals") {
-			if (req.headers["x-mixer-token"] !== runs.TOKEN) return json(res, 403, { error: "token 不对" });
-			const b = JSON.parse(await body(req));
-			// 问的那边断了（claude 退出了）：确认请求作废
-			const gone = new AbortController();
-			res.on("close", () => { if (!res.writableEnded) gone.abort(); });
-			return json(res, 200, await runs.ask(String(b.run), String(b.tool), b.input, gone.signal));
+		for (const [method, re, policy, h] of ROUTES) {
+			const m = method === req.method ? re.exec(path) : null;
+			if (!m) continue;
+			const no = await refuse(req, policy);
+			return no ? json(res, no[0], no[1]) : await h(req, res, m, url);
 		}
-		// 接口要先认出是谁；登录用的那几个除外（一分钟限次数）
-		if (path.startsWith("/api/auth/")) {
-			if (req.method === "POST" && access.limited(req)) return json(res, 429, { error: "试得太频繁了，过一分钟再来" });
-		} else if (path.startsWith("/api/") && !(await access.who(req))) return json(res, 401, { error: "要先登录", login: true });
-		if (path === "/api/events") {
-			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-			// 每次连上都从磁盘重读：别处打过包（终端里 pnpm build）时，记着的还是旧的，页面会一直提示刷新、刷了还提示
-			res.write(readVersion() ? sse.frame("build", { version }) : ": hi\n\n");
-			res.on("close", () => sse.leave(res));
-			res.on("error", () => sse.leave(res));
-			return void sse.join(res, workspace.hello).catch((e) => console.error(e));
-		}
-		const table = req.method === "POST" ? POST : req.method === "GET" ? GET : [];
-		if (req.method === "POST" && (!req.headers["content-type"]?.startsWith("application/json") || !ours(req))) return json(res, 403, { error: "只收自己页面的 JSON" });
-		for (const [re, h] of table) {
-			const m = re.exec(path);
-			if (m) return await h(req, res, m.map((x) => (x === undefined ? x : decodeURIComponent(x))), url);
-		}
-		if (path.startsWith("/api/")) return json(res, 404, { error: "没有这个接口" });
+		// 没有这个接口：没认出来的照样先说要登录
+		if (path.startsWith("/api/")) return (await access.who(req)) ? json(res, 404, { error: "没有这个接口" }) : json(res, 401, LOGIN);
 		// 页面
 		const f = join(DIST, path);
 		if (path !== "/" && f.startsWith(DIST + sep) && existsSync(f) && statSync(f).isFile()) {
 			const head = { "content-type": TYPES[extname(f)] ?? "application/octet-stream", "cache-control": path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache", vary: "accept-encoding", ...(extname(f) === ".html" ? PAGE : {}) };
-			const accept = String(req.headers["accept-encoding"] ?? "");
-			const how = !path.startsWith("/assets/") || !PACK.has(extname(f)) ? null : /\bbr\b/.test(accept) ? "br" : /\bgzip\b/.test(accept) ? "gzip" : null;
+			const how = path.startsWith("/assets/") && PACK.has(extname(f)) ? encoding(req) : null;
 			if (how) return void res.writeHead(200, { ...head, "content-encoding": how }).end((await pack(f))[how]);
 			return void res.writeHead(200, head).end(readFileSync(f));
 		}
@@ -464,7 +489,7 @@ const server = createServer(async (req, res) => {
 		// 文件刚好没了（会话被删、临时文件）：404，不算服务出错
 		const status = (e as { status?: number }).status ?? ((e as { code?: string }).code === "ENOENT" ? 404 : 500);
 		if (status === 500) console.error(e);
-		if (res.headersSent || answering.has(res)) return void res.destroy();
+		if (res.headersSent) return void res.destroy();
 		// 请求体太大：回完就断开，剩下的不读了
 		if (status === 413) {
 			res.setHeader("connection", "close");
@@ -483,7 +508,7 @@ server.on("error", (e) => {
 	process.exit(1);
 });
 server.listen(PORT, "127.0.0.1", () => {
-	console.log(`${new Date().toISOString()} mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
+	say(`mixer http://127.0.0.1:${PORT}/ pid ${process.pid}`);
 	tunnel.keep(PORT);
 	usage.start();
 	models.start();

@@ -1,6 +1,6 @@
 // 项目页：在这个项目里开新会话；下面看它的文件和改动。
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ProjectTree } from "@/lib/api";
+import type { ProjectTree } from "@shared/api";
 import { go, type Route } from "@/lib/route";
 import { Changes } from "./changes";
 import { Files } from "./files";
@@ -17,7 +17,7 @@ export function ProjectHome({ p, r }: { p: Pick<ProjectTree, "id" | "path">; r: 
 						<h1 className="text-lg font-semibold tracking-tight">{projectName(p)}</h1>
 						<p className="truncate font-mono text-xs text-muted-foreground">{p.path}</p>
 					</div>
-					<StartBox target={{ project: p.id }} lead="新会话：" />
+					<StartBox key={p.id} target={{ project: p.id }} lead="新会话：" />
 				</div>
 			</div>
 			<Tabs value={tab} onValueChange={(v) => go({ panel: v as "files" | "changes", file: null, view: null }, true)} className="flex min-h-0 flex-1 flex-col gap-0">

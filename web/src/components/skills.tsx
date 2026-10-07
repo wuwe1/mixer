@@ -1,11 +1,12 @@
-// 选 skill：输入框里打「/」或点「/」按钮（按钮在 composer.tsx），弹出这个项目能用的 skill，选了在消息开头插入「/名字 」。
-// 第一次打开时才加载（lazy.tsx）。每次打开都重新拉一遍：会话里刚建的 skill 也在。最近用过的排在前面（存在这台设备上）。
+// 选 skill：输入框里打「/」或点「+」里的 skill（输入框在 prompt.tsx），弹出这个项目能用的 skill，选了在消息开头插入「/名字 」。
+// 筛选按子串（lib/match）。第一次打开时才加载（lazy.tsx）。每次打开都重新拉一遍：会话里刚建的 skill 也在。最近用过的排在前面（存在这台设备上）。
 import { History } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
-import { api, enc } from "@/lib/api";
+import { api, enc } from "@shared/api";
+import { match } from "@/lib/match";
+import { Loading } from "./placeholder";
 
 type Skill = { name: string; desc: string | null };
 
@@ -17,20 +18,22 @@ function remember(name: string) {
 	try { localStorage.setItem(RECENT_KEY, JSON.stringify([name, ...recent().filter((n) => n !== name)].slice(0, 5))); } catch {}
 }
 
-export function SkillPicker({ project, open, onOpenChange, onPick }: { project: string; open: boolean; onOpenChange: (o: boolean) => void; onPick: (name: string) => void }) {
+/** cwd：新会话的文件夹（可能还没开过会话，服务端不认得这个项目） */
+export function SkillPicker({ project, cwd, open, onOpenChange, onPick }: { project: string; cwd?: string; open: boolean; onOpenChange: (o: boolean) => void; onPick: (name: string) => void }) {
 	const [skills, setSkills] = useState<Skill[] | null>(null);
 	useEffect(() => {
 		if (!open) return;
-		api<Skill[]>(`/api/skills/${enc(project)}`).then(setSkills, () => setSkills([]));
-	}, [open, project]);
+		api<Skill[]>(`/api/skills/${enc(project)}${cwd ? `?cwd=${enc(cwd)}` : ""}`).then(setSkills, () => setSkills([]));
+	}, [open, project, cwd]);
 	const pick = (name: string) => {
 		remember(name);
 		onOpenChange(false);
 		onPick(name);
 	};
 	const r = recent().filter((n) => skills?.some((s) => s.name === n));
+	// value 以名字开头（按名字开头的排前面）；「最近用过」里的那份末尾多一个零宽空格，和「全部」里的那份区分开（cmdk 按 value 认是哪一项）
 	const item = (s: Skill, key: string) => (
-		<CommandItem key={key} value={`${key} ${s.name} ${s.desc ?? ""}`} onSelect={() => pick(s.name)} className="flex-col items-start gap-0.5">
+		<CommandItem key={key} value={`${s.name} ${s.desc ?? ""}${key.startsWith("recent") ? "\u200b" : ""}`} onSelect={() => pick(s.name)} className="flex-col items-start gap-0.5">
 			<span className="flex items-center gap-1.5 font-mono text-md">
 				{key.startsWith("recent") && <History className="size-3.5 text-muted-foreground" />}/{s.name}
 			</span>
@@ -47,11 +50,11 @@ export function SkillPicker({ project, open, onOpenChange, onPick }: { project: 
 			>
 				<DialogTitle className="sr-only">选 skill</DialogTitle>
 				<DialogDescription className="sr-only">选了在消息开头插入 /名字</DialogDescription>
-				<Command>
+				<Command filter={match}>
 					<CommandInput placeholder="筛选 skill" />
 					<CommandList className="max-h-[60svh] touch-pan-y overscroll-contain sm:max-h-96">
 						{!skills ? (
-							<div className="flex justify-center py-6"><Spinner className="text-muted-foreground" /></div>
+							<Loading className="py-6" />
 						) : (
 							<>
 								<CommandEmpty className="py-5 text-center text-md text-muted-foreground">没有匹配的 skill</CommandEmpty>

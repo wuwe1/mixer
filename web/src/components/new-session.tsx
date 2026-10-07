@@ -1,5 +1,5 @@
 // 新会话：先选文件夹（从家目录开始，上面列着最近的项目；没开过会话的也行，可以当场新建），再写第一句话。会话一建好就跳过去。
-import { ChevronLeft, Folder, FolderGit2, FolderPlus, History, MessageSquare, Send } from "lucide-react";
+import { ChevronLeft, Folder, FolderGit2, FolderPlus, History, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
@@ -7,26 +7,12 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
-import { api, type Dirs, type Project, type Run } from "@/lib/api";
-import { askNotify, useLive } from "@/lib/live";
-import type { Agent } from "@/lib/model";
-import { AttachStrip, encode, type Shot, toShots } from "./attach";
-import { AddMenu, AgentModelSelect, type Choice, PermissionSelect } from "./composer";
-
-/** 上次开新会话用的 agent（这台设备上） */
-const AGENT_KEY = "mixer.agent";
-const lastAgent = (): Agent => { try { return localStorage.getItem(AGENT_KEY) === "codex" ? "codex" : "claude"; } catch { return "claude"; } };
+import { api, type Dirs, type Project } from "@shared/api";
+import { match } from "@/lib/match";
+import { Loading } from "./placeholder";
+import { PromptBox, usePrompt } from "./prompt";
 
 const tilde = (p: string, home: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
-
-/** 按名字的子串筛（开头对上的排前面），不用 cmdk 默认的模糊匹配：打 repos 不该匹配到别的 */
-export const match = (value: string, search: string) => {
-	const v = value.toLowerCase();
-	const q = search.toLowerCase().trim();
-	return v.startsWith(q) ? 1 : v.includes(q) ? 0.5 : 0;
-};
 
 function Crumbs({ d, open }: { d: Dirs; open: (p: string) => void }) {
 	const rel = d.path === d.home ? [] : d.path.slice(d.home.length + 1).split("/");
@@ -69,7 +55,7 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 			toast.error(e instanceof Error ? e.message : String(e));
 		}
 	};
-	if (!d) return <div className="flex h-80 items-center justify-center"><Spinner className="text-muted-foreground" /></div>;
+	if (!d) return <Loading className="h-80" />;
 	const name = q.trim();
 	const exact = d.entries.some((e) => e.name === name);
 	const recent = d.path === d.home && !name ? projects.filter((p) => p.path?.startsWith(`${d.home}/`)).slice(0, 5) : [];
@@ -121,67 +107,10 @@ function Picker({ start, projects, pick }: { start: string | null; projects: Pro
 	);
 }
 
-/** 写第一句话（可以带图：选图或粘贴）、选权限、模型（连带 agent：Claude Code / Codex），开始：在一个文件夹（cwd）或一个已有的项目（project）里开新会话。lead：放在提示语前面 */
+/** 写第一句话：在一个文件夹（cwd）或一个已有的项目（project）里开新会话，输入框是 prompt.tsx 的 PromptBox（模型菜单连带选 agent）。lead：放在提示语前面 */
 export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd: string } | { project: string }; autoFocus?: boolean; lead?: string; onStarted?: () => void }) {
-	const { follow } = useLive();
-	const [agent, setAgent] = useState<Agent>(lastAgent);
-	const pick = (c: Choice) => {
-		setAgent(c.agent);
-		setModel(c.model);
-		setEffort(c.effort);
-		try { localStorage.setItem(AGENT_KEY, c.agent); } catch {}
-	};
-	const [text, setText] = useState("");
-	const [permission, setPermission] = useState("auto");
-	const [model, setModel] = useState("");
-	const [effort, setEffort] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [shots, setShots] = useState<Shot[]>([]);
-	const empty = !text.trim() && !shots.length;
-	const send = async () => {
-		if (empty || busy) return;
-		setBusy(true);
-		try {
-			askNotify();
-			const images = await Promise.all(shots.map(encode));
-			const r = await api<Run>("/api/runs", { mode: "new", ...target, agent, prompt: text, images, permission, model: model || null, effort: effort || null });
-			follow(r);
-			setText("");
-			for (const s of shots) URL.revokeObjectURL(s.url);
-			setShots([]);
-			toast.success("已开始，建好后自动打开");
-			onStarted?.();
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			setBusy(false);
-		}
-	};
-	return (
-		<div className="flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xs focus-within:ring-3 focus-within:ring-ring/30">
-			<AttachStrip shots={shots} onChange={setShots} />
-			<Textarea
-				autoFocus={autoFocus}
-				value={text}
-				onChange={(e) => setText(e.target.value)}
-				onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}
-				onPaste={(e) => {
-					const s = toShots(e.clipboardData.files);
-					if (s.length) { e.preventDefault(); setShots((x) => [...x, ...s]); }
-				}}
-				placeholder={`${lead ?? ""}要 ${agent === "codex" ? "Codex" : "Claude"} 做什么……`}
-				className="max-h-[40svh] min-h-24 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
-			/>
-			<div className="flex items-center gap-1.5">
-				<PermissionSelect value={permission} onChange={setPermission} />
-				<AgentModelSelect value={{ agent, model, effort }} onChange={pick} />
-				<AddMenu onAdd={(s) => setShots((x) => [...x, ...s])} />
-				<Button size="icon" className="ml-auto rounded-lg" disabled={empty || busy} onClick={send} aria-label="开始">
-					{busy ? <Spinner /> : <Send className="size-4" />}
-				</Button>
-			</div>
-		</div>
-	);
+	const p = usePrompt({ new: target }, onStarted);
+	return <PromptBox p={p} autoFocus={autoFocus} placeholder={`${lead ?? ""}要 ${p.choice.agent === "codex" ? "Codex" : "Claude"} 做什么……`} send={{ label: "开始" }} />;
 }
 
 export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
@@ -210,7 +139,7 @@ export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange
 							</Button>
 							<span className="truncate font-mono text-xs text-muted-foreground">{cwd}</span>
 						</div>
-						<StartBox target={{ cwd }} autoFocus onStarted={() => onOpenChange(false)} />
+						<StartBox key={cwd} target={{ cwd }} autoFocus onStarted={() => onOpenChange(false)} />
 					</div>
 				) : (
 					<Picker start={last} projects={projects} pick={setCwd} />

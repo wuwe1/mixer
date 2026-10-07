@@ -8,7 +8,8 @@
 		"strict": true,
 		"noEmit": true,
 		"skipLibCheck": true,
-		"types": ["node"]
+		"types": ["node"],
+		"paths": { "@shared/*": ["../shared/*"] }
 	},
-	"include": [".", "../mcp"]
+	"include": [".", "../shared"]
 }

@@ -1,5 +1,5 @@
 // 提示：顶栏下面浮出一条（不挡顶栏，页面也不跳），几秒后收回去（不用 sonner）。同时只有一条，新的换掉旧的。
-// 用法和 sonner 一样：toast("已移出工作区", { action: { label: "撤销", onClick } })、toast.error("…")。
+// toast("已移出工作区", { action: { label: "撤销", onClick } })、toast.error("…")。
 // 出错的多留一会儿、字是红的；duration: Infinity 的一直留着（「有新版本 · 刷新」），点 × 收起
 import { X } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
@@ -22,8 +22,6 @@ function show(text: string, o: Opts = {}, error = false) {
 }
 
 export const toast = Object.assign((text: string, o?: Opts) => show(text, o), {
-	success: (text: string, o?: Opts) => show(text, o),
-	warning: (text: string, o?: Opts) => show(text, o),
 	error: (text: string, o?: Opts) => show(text, o, true),
 });
 

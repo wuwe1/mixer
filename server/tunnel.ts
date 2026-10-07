@@ -5,8 +5,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config, FILE } from "./access.ts";
-
-const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
+import { say } from "./log.ts";
 let child: ChildProcess | null = null;
 let running = "";
 let fails = 0;
@@ -17,7 +16,7 @@ function check(port: number) {
 	const want = t ? JSON.stringify(t) : "";
 	if (want === running && (child || Date.now() < wait)) return;
 	if (child) {
-		child.removeAllListeners("exit");
+		child.removeAllListeners("close");
 		child.kill();
 		child = null;
 	}
@@ -48,7 +47,8 @@ function check(port: number) {
 		}
 	});
 	c.on("error", (e) => say(`起不来 cloudflared：${e.message}（装了吗？brew install cloudflared）`));
-	c.on("exit", (code) => {
+	// 用 close 不用 exit：没装 cloudflared 时（ENOENT）只有 error 和 close，没有 exit，child 一直不清掉、装上了也不再起
+	c.on("close", (code) => {
 		if (child !== c) return;
 		child = null;
 		fails++;
@@ -61,7 +61,12 @@ function check(port: number) {
 export function keep(port: number) {
 	check(port);
 	setInterval(() => check(port), 5000).unref();
-	process.on("exit", () => child?.kill());
-	// 被停（launchd、Ctrl-C）也走一遍 exit，把 cloudflared 带走
-	for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => process.exit(0));
+	process.on("exit", stop);
+}
+
+/** 停掉 cloudflared（mixer 退出时） */
+export function stop() {
+	child?.removeAllListeners("close");
+	child?.kill();
+	child = null;
 }

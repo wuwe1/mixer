@@ -1,21 +1,22 @@
 // 文件：左边是目录树（可筛选），右边看文件（代码高亮带行号；Markdown 能切预览；能看它没提交的改动；图片直接显示）。
 // 按容器宽度排：放在窄的面板里、手机上，先看树，点了文件再看内容。
-import { ChevronLeft, ChevronRight, File, Folder, FolderOpen, Search } from "lucide-react";
+import { ChevronLeft, File, Folder, FolderOpen, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { api, enc, type RepoFile } from "@/lib/api";
+import { api, enc, type RepoFile } from "@shared/api";
+import { type FileDiff, parseDiff } from "@/lib/diff";
 import { go } from "@/lib/route";
 import { bytes } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Code, langOf } from "./code";
-import { Diff } from "./diff";
+import { Hunks, Note } from "./diff";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
-import { Placeholder } from "./placeholder";
+import { Chevron, Placeholder } from "./placeholder";
 
 type Dir = { name: string; path: string; dirs: Map<string, Dir>; files: string[] };
 
@@ -46,7 +47,7 @@ function TreeView({ dir, depth, open, toggle, current }: { dir: Dir; depth: numb
 				return (
 					<div key={d.path}>
 						<button type="button" onClick={() => toggle(d.path)} className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-md hover:bg-accent" style={{ paddingLeft: 8 + depth * 14 }}>
-							<ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", o && "rotate-90")} />
+							<Chevron open={o} />
 							{o ? <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" /> : <Folder className="size-3.5 shrink-0 text-muted-foreground" />}
 							<span className="truncate">{d.name}</span>
 						</button>
@@ -121,7 +122,8 @@ export function Files({ project, file, view }: { project: string; file: string |
 function Viewer({ project, path, view }: { project: string; path: string; view: "diff" | null }) {
 	const [f, setF] = useState<RepoFile | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-	const [diff, setDiff] = useState<string | null>(null);
+	// 改动：和「改动」里展开一个文件一样（changes.tsx 的 WorkFile），取不到写原因
+	const [diff, setDiff] = useState<FileDiff | string | null>(null);
 	const isMd = /\.md$/i.test(path);
 	const initial = view === "diff" ? "diff" : isMd ? "preview" : "source";
 	const [mode, setMode] = useState<"source" | "preview" | "diff">(initial);
@@ -133,7 +135,13 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 		api<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`).then(setF, (e: Error) => setErr(e.message));
 	}, [project, path, initial]);
 	useEffect(() => {
-		if (mode === "diff" && diff === null) api<{ diff: string }>(`/api/repo/${enc(project)}/diff?path=${enc(path)}`).then((r) => setDiff(r.diff), () => setDiff(""));
+		if (mode !== "diff" || diff !== null) return;
+		let live = true;
+		api<{ diff: string }>(`/api/repo/${enc(project)}/diff?path=${enc(path)}`).then(
+			(r) => live && setDiff(parseDiff(r.diff)[0] ?? "这个文件没有未提交的改动"),
+			(e: Error) => live && setDiff(e.message),
+		);
+		return () => { live = false; };
 	}, [mode, diff, project, path]);
 	const raw = `/api/repo/${enc(project)}/raw?path=${enc(path)}`;
 	return (
@@ -155,7 +163,7 @@ function Viewer({ project, path, view }: { project: string; path: string; view: 
 			{/* 原生滚动：ScrollArea 只有竖的滚动条，长行没法往右滑 */}
 			<div className="min-h-0 flex-1 overflow-auto overscroll-contain">
 				{mode === "diff" ? (
-					diff === null ? <Skeleton className="m-4 h-40" /> : diff ? <Diff text={diff} /> : <p className="p-4 text-sm text-muted-foreground">这个文件没有未提交的改动。</p>
+					diff === null ? <Skeleton className="m-4 h-40" /> : typeof diff === "string" ? <Note>{diff}</Note> : <div className="py-2"><Hunks file={diff} /></div>
 				) : (
 				<>
 				{err && <p className="p-4 text-sm text-destructive">{err}</p>}

@@ -1,14 +1,12 @@
 // 用量：侧栏最底下一行，所有账号（Claude、Codex）里最紧的那个窗口，和一条细条（pi 这种按花的钱算的不算）；点开是「用量」，每个账号的每个窗口、花的钱。
 // 电脑上是贴着侧栏的浮层，手机上从下面出来、整屏宽。条一律是灰的：用量只是中性的数，不上色
 import { Gauge } from "lucide-react";
-import { useState } from "react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { SidebarFooter, useSidebar } from "@/components/ui/sidebar";
+import { SidebarFooter } from "@/components/ui/sidebar";
 import { useLive } from "@/lib/live";
 import { clock, since } from "@/lib/time";
-import { type Account, current, money, type Spend, tightest, type Window } from "@/lib/usage";
+import { type Account, current, money, type Spend, tightest, type Window } from "@shared/usage";
 import { Placeholder } from "./placeholder";
+import { Popsheet } from "./popsheet";
 
 export const pct = (used: number) => Math.round(used * 100);
 export const resets = (ms: number) => `${clock(new Date(ms).toISOString())} 重置`;
@@ -82,42 +80,21 @@ function UsageList({ accounts }: { accounts: Account[] }) {
 /** 侧栏最底下：最紧的那个窗口（「Codex · 5 小时 82% · 10/6 19:40 重置」）和细条，旧了写明多久前更新。点开看全部 */
 export function UsageFooter() {
 	const { usage } = useLive();
-	const { isMobile } = useSidebar();
-	const [open, setOpen] = useState(false);
 	const t = tightest(usage);
 	const text = t
 		? `${t.account.label} · ${t.window.label} ${pct(t.window.used)}%${t.window.resetsAt ? ` · ${resets(t.window.resetsAt)}` : ""}${stale(t.account.at) ? ` · ${updated(t.account.at)}` : ""}`
 		: usage.length ? "用量 · 已重置，等下次更新" : "用量";
 	const line = (
-		<button type="button" onClick={() => setOpen(true)} className="flex w-full flex-col gap-1.5 rounded-md px-1.5 py-2 text-left text-2xs text-muted-foreground outline-hidden hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring md:py-1.5" aria-label="用量">
+		<button type="button" className="flex w-full flex-col gap-1.5 rounded-md px-1.5 py-2 text-left text-2xs text-muted-foreground outline-hidden hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring md:py-1.5" aria-label="用量">
 			<span className="truncate tabular-nums">{text}</span>
 			{t && <Bar used={t.window.used} />}
 		</button>
 	);
 	return (
 		<SidebarFooter className="px-1.5 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-			{isMobile ? (
-				<>
-					{line}
-					<Sheet open={open} onOpenChange={setOpen}>
-						<SheetContent side="bottom" className="max-h-[85svh] gap-0 pb-[max(1rem,env(safe-area-inset-bottom))]">
-							<SheetHeader>
-								<SheetTitle>用量</SheetTitle>
-							</SheetHeader>
-							<div className="overflow-y-auto px-4">
-								<UsageList accounts={usage} />
-							</div>
-						</SheetContent>
-					</Sheet>
-				</>
-			) : (
-				<Popover open={open} onOpenChange={setOpen}>
-					<PopoverTrigger asChild>{line}</PopoverTrigger>
-					<PopoverContent side="right" align="end" className="max-h-[80svh] overflow-y-auto p-3">
-						<UsageList accounts={usage} />
-					</PopoverContent>
-				</Popover>
-			)}
+			<Popsheet trigger={line} title="用量" side="right" align="end" className="max-h-[80svh]">
+				<UsageList accounts={usage} />
+			</Popsheet>
 		</SidebarFooter>
 	);
 }

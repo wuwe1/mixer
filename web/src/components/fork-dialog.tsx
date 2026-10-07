@@ -1,86 +1,43 @@
-// 从中间分叉：每条回复、每组工具调用的分叉图标 → 从这里分叉；每条你的消息的铅笔 → 编辑并分叉。
+// 从中间分叉：每条回复、每组工具调用的分叉图标 → 从这里分叉；每条你的消息的铅笔 → 编辑并分叉（先填上那条的字和图）。
 // 开一个新会话，带着到那一处为止的上下文，原会话不动；改写的是第一条消息就是在同一个项目里开新会话。
+// 输入框是 prompt.tsx 的 PromptBox：草稿按分叉点存，关了再开还在。
 import { GitFork } from "lucide-react";
-import { useEffect, useState } from "react";
-import { toast } from "@/lib/toast";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
-import { api, type Queued, type Run } from "@/lib/api";
-import { askNotify, useLive } from "@/lib/live";
-import { type Agent as Kind, lastCtx, modelFor } from "@/lib/model";
+import { useState } from "react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { Kind } from "@/lib/model";
 import { forkPoint, type User, type Walk } from "@/lib/thread";
-import { ModelSelect, PermissionSelect } from "./composer";
+import { type Of, PromptBox, usePrompt } from "./prompt";
 
 export type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
 
-/** 发起一次运行（继续、分叉、新会话）；在跑的会话继续就排队。分叉的建好了自动打开 */
-export async function start(body: Record<string, unknown>, follow: (r: Run) => void) {
-	askNotify();
-	const r = await api<Run | { queued: Queued }>("/api/runs", body);
-	if ("queued" in r) return r;
-	if (body.mode === "fork") {
-		toast.success("正在分叉，建好后自动打开");
-		follow(r);
-	}
-	return r;
-}
-
 export function ForkDialog({ project, session, w, chosen, chosenEffort, target, agent, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; target: ForkTarget | null; agent: Kind; onClose: () => void }) {
-	const { follow } = useLive();
-	const [text, setText] = useState("");
-	const [permission, setPermission] = useState("auto");
-	const [model, setModel] = useState("");
-	const [effort, setEffort] = useState("");
-	// 请求在路上：按钮禁用，网慢时点两下不会开出两个分叉
-	const [busy, setBusy] = useState(false);
-	useEffect(() => {
-		if (!target) return;
-		setText(target.kind === "edit" ? target.n.text : "");
-		setModel(modelFor(agent, w.path, chosen) ?? "");
-		setEffort(chosenEffort ?? "");
-	}, [target]);
-	const send = async () => {
-		if (!target || !text.trim() || busy) return;
-		setBusy(true);
-		try {
-			const at = target.kind === "at" ? target.at : forkPoint(w.path, target.n);
-			// 改写第一条消息：前面没有上下文，就是在同一个项目里开新会话
-			const m = { model: model || null, effort: effort || null };
-			await start(at ? { project, session, mode: "fork", at, prompt: text, permission, ...m } : { project, mode: "new", agent, prompt: text, permission, ...m }, follow);
-			onClose();
-		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
-		} finally {
-			setBusy(false);
-		}
-	};
+	// 关的时候有动画：那一会儿还画着刚才那个
+	const [shown, setShown] = useState(target);
+	if (target && target !== shown) setShown(target);
+	const t = target ?? shown;
+	const of = { project, session, agent, path: w.path, chosen, chosenEffort };
 	return (
 		<Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
 			<DialogContent className="sm:max-w-xl">
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">
 						<GitFork className="size-4" />
-						{target?.kind === "edit" ? "编辑并分叉" : "从这里分叉"}
+						{t?.kind === "edit" ? "编辑并分叉" : "从这里分叉"}
 					</DialogTitle>
 					<DialogDescription>
-						{target?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${target?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
-						{agent === "codex" && target?.kind === "at" && " Codex 按轮分叉：带上的是这一轮整轮。"}
+						{t?.kind === "edit" ? "带上这条之前的对话开新会话，这条换成下面的内容。" : `带上到${t?.what ?? "这里"}为止的对话开新会话，发出下面的内容。`}原会话不变。
+						{agent === "codex" && t?.kind === "at" && " Codex 按轮分叉：带上的是这一轮整轮。"}
 					</DialogDescription>
 				</DialogHeader>
-				<Textarea value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} className="min-h-32" autoFocus />
-				<DialogFooter className="items-center sm:justify-between">
-					<div className="flex items-center gap-1.5">
-						<PermissionSelect value={permission} onChange={setPermission} />
-						<ModelSelect model={model} effort={effort} onChange={(m, e) => { setModel(m); setEffort(e); }} current={lastCtx(w.path)?.model} agent={agent} />
-					</div>
-					<div className="flex gap-2">
-						<Button variant="outline" onClick={onClose}>取消</Button>
-						<Button onClick={send} disabled={!text.trim() || busy}>{busy && <Spinner />}分叉</Button>
-					</div>
-				</DialogFooter>
+				{t && <ForkBox key={t.kind === "edit" ? t.n.uuid : t.at} of={of} t={t} onSent={onClose} />}
 			</DialogContent>
 		</Dialog>
 	);
+}
+
+/** 分叉点打开时就算好：之后路还在长，编辑的那条换了对象也不影响 */
+function ForkBox({ of, t, onSent }: { of: Of; t: ForkTarget; onSent: () => void }) {
+	const [at] = useState(() => (t.kind === "at" ? t.at : forkPoint(of.path, t.n)));
+	const p = usePrompt(t.kind === "edit" ? { fork: of, at, edit: t.n } : { fork: of, at }, onSent);
+	return <PromptBox p={p} autoFocus placeholder="分叉后发出的消息…" send={{ label: "分叉", icon: <GitFork className="size-4" /> }} />;
 }

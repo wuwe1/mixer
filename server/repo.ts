@@ -1,16 +1,12 @@
 // 读一个项目的仓库：文件列表（git 管的 + 没被忽略的新文件）、文件内容、git 状态、改动、最近的提交。只读。
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 // quotePath=false：中文文件名原样给，不转成 "\346\226…"。stderr 收着不打出来（「not a git repository」这种会刷满日志）
 const GIT = (root: string, args: string[]) => ["-C", root, "-c", "core.quotePath=false", ...args];
-const git = (root: string, args: string[]) => execFileSync("git", GIT(root, args), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-const isGit = (root: string) => {
-	try { return git(root, ["rev-parse", "--is-inside-work-tree"]).trim() === "true"; } catch { return false; }
-};
-/** 不卡住服务的 git：状态在运行时每半秒拉一次，同步跑会把别的请求都挡住 */
+/** 不卡住服务的 git：同步跑会把别的请求、推送都挡住（文件列表大的仓库要好一会儿） */
 const run = promisify(execFile);
 const gitAsync = async (root: string, args: string[]) => (await run("git", GIT(root, args), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })).stdout;
 const tryGitAsync = (root: string, args: string[]) => gitAsync(root, args).catch(() => "");
@@ -26,8 +22,10 @@ export function inside(root: string, rel: string): string {
 	return f;
 }
 
-export function files(root: string): string[] {
-	if (isGit(root)) return git(root, ["ls-files", "-co", "--exclude-standard"]).split("\n").filter(Boolean).sort();
+const isGit = async (root: string) => (await tryGitAsync(root, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+
+export async function files(root: string): Promise<string[]> {
+	if (await isGit(root)) return (await gitAsync(root, ["ls-files", "-co", "--exclude-standard"])).split("\n").filter(Boolean).sort();
 	// 不是 git 仓库：自己走一遍，跳过常见的大目录
 	const out: string[] = [];
 	const skip = new Set(["node_modules", ".git", "dist", ".venv", "__pycache__"]);
@@ -58,7 +56,6 @@ export function file(root: string, rel: string) {
 // 还没有提交的仓库没有 HEAD，跟空树比
 const EMPTY = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const base = async (root: string) => ((await tryGitAsync(root, ["rev-parse", "--verify", "-q", "HEAD"])) ? "HEAD" : EMPTY);
-const baseSync = (root: string) => { try { return git(root, ["rev-parse", "--verify", "-q", "HEAD"]) ? "HEAD" : EMPTY; } catch { return EMPTY; } };
 
 /** git 状态：同一个仓库同时来的请求等同一次，结果留 1.5 秒（好几个页面一起拉也只跑一遍） */
 type Status = Awaited<ReturnType<typeof readStatus>>;
@@ -73,7 +70,7 @@ export function status(root: string): Promise<Status> {
 }
 
 async function readStatus(root: string) {
-	if ((await tryGitAsync(root, ["rev-parse", "--is-inside-work-tree"])).trim() !== "true") return { git: false as const };
+	if (!(await isGit(root))) return { git: false as const };
 	const [out, b] = await Promise.all([gitAsync(root, ["status", "--porcelain=v1", "-b", "--untracked-files=all"]), base(root)]);
 	const lines = out.split("\n").filter(Boolean);
 	// 「## main...origin/main [ahead 1, behind 2]」「## No commits yet on main」「## HEAD (no branch)」
@@ -115,23 +112,25 @@ async function readStatus(root: string) {
 }
 
 /** 一个文件没提交的改动（统一 diff）。没进 git 的新文件和 /dev/null 比，这样也有头、能认出二进制 */
-export function diff(root: string, rel: string) {
+export async function diff(root: string, rel: string) {
 	const f = inside(root, rel);
-	const tracked = git(root, ["ls-files", "--", rel]).trim() !== "";
-	if (tracked) return git(root, ["diff", baseSync(root), "--", rel]);
+	const tracked = (await gitAsync(root, ["ls-files", "--", rel])).trim() !== "";
+	if (tracked) return gitAsync(root, ["diff", await base(root), "--", rel]);
 	if (statSync(f).size > 2 * 1024 * 1024) return "";
 	try {
-		return git(root, ["diff", "--no-index", "--", "/dev/null", rel]);
+		return await gitAsync(root, ["diff", "--no-index", "--", "/dev/null", rel]);
 	} catch (e) {
-		// 有差别时 git diff --no-index 退出码是 1
-		return String((e as { stdout?: string }).stdout ?? "");
+		// 有差别时 git diff --no-index 退出码是 1：输出在错误的 stdout 上
+		const out = (e as { code?: unknown; stdout?: string }).stdout;
+		if ((e as { code?: unknown }).code === 1 && typeof out === "string") return out;
+		throw e;
 	}
 }
 
-export function commit(root: string, hash: string) {
-	if (!/^[0-9a-f]{4,40}$/.test(hash)) throw new Error("不合法的提交");
-	const [full, author, when, ...body] = git(root, ["show", "-s", "--format=%H%x00%an%x00%aI%x00%B", hash]).split("\0");
+export async function commit(root: string, hash: string) {
+	if (!/^[0-9a-f]{4,40}$/.test(hash)) throw Object.assign(new Error("不合法的提交"), { status: 400 });
 	// 合并提交只和第一个父提交比，不出 combined diff
-	const diff = git(root, ["show", "--format=", "--patch", "--diff-merges=first-parent", hash]);
+	const [head, diff] = await Promise.all([gitAsync(root, ["show", "-s", "--format=%H%x00%an%x00%aI%x00%B", hash]), gitAsync(root, ["show", "--format=", "--patch", "--diff-merges=first-parent", hash])]);
+	const [full, author, when, ...body] = head.split("\0");
 	return { hash: full, author, when, body: body.join("\0").trim(), diff };
 }

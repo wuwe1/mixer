@@ -1,7 +1,7 @@
 // visual.ts：```ui 图解的解析（含正在写的半截）、逐个组件的校验、给 Claude 的说明
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { check, checkNode, docs, KINDS, parse, prompt } from "../web/src/lib/visual.ts";
+import { check, checkNode, docs, KINDS, parse, prompt } from "../shared/visual.ts";
 
 test("完整的 JSON 照常读，done", () => {
 	assert.deepEqual(parse(' { "type": "Text", "text": "a" }\n'), { value: { type: "Text", text: "a" }, done: true });

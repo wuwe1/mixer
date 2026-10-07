@@ -1,6 +1,6 @@
 // trash.ts：删掉会话（Claude 的挪进废纸篓、Codex 的 codex archive），删不得的 409；sessions.ts 的 expires（cleanupPeriodDays）
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -31,6 +31,7 @@ const trash = await import("../server/trash.ts");
 const { listSessions, parse, row } = await import("../server/sessions.ts");
 const state = await import("../server/state.ts");
 const codex = await import("../server/codex.ts");
+const terminals = await import("../server/terminals.ts");
 
 const line = (r: object) => `${JSON.stringify(r)}\n`;
 const old = (f: string) => utimesSync(f, new Date(Date.now() - 3600_000), new Date(Date.now() - 3600_000));
@@ -71,13 +72,17 @@ test("Claude：jsonl 和旁边的文件夹挪进废纸篓，写下原来的位�
 	assert.ok(existsSync(join(tmp, ".Trash", "mixer 删除的会话 改一下 登录 注册 (aaaaaaaa) 2", `${id2}.jsonl`)));
 });
 
-test("90 秒内有不是 mixer 的写入（终端里可能开着）：409，什么都不动", async () => {
+test("终端里开着（~/.claude/sessions 登记着、进程活着）：409，什么都不动；关了马上能删，刚写过也不挡", async () => {
 	const id = "bbbbbbbb-0000-4000-8000-000000000001";
 	const file = claude(id, "开着的", true);
-	await rejects(trash.remove(PROJECT, id), 409, /90 秒/);
+	// 这个测试进程当成开着它的 claude：启动时间照 ps 的
+	const procStart = (await terminals.starts([process.pid]))?.get(process.pid);
+	const reg = join(terminals.REGISTRY, `${process.pid}.json`);
+	mkdirSync(terminals.REGISTRY, { recursive: true });
+	writeFileSync(reg, JSON.stringify({ pid: process.pid, sessionId: id, cwd: "/tmp/demo", procStart, status: "idle", kind: "interactive", entrypoint: "cli" }));
+	await rejects(trash.remove(PROJECT, id), 409, /终端里开着/);
 	assert.ok(existsSync(file));
-	// mixer 自己刚跑完的放行
-	state.finished(PROJECT, id, false);
+	rmSync(reg);
 	await trash.remove(PROJECT, id);
 	assert.equal(existsSync(file), false);
 });
@@ -108,14 +113,22 @@ test("Codex：codex archive <id>，find 不再认它；codex 失败回 500 带�
 	process.env.MIXER_CODEX = ok;
 });
 
-test("Codex 也守着 90 秒：不调 codex", async () => {
+test("Codex：有别的进程拿着线程锁（终端里开着）不调 codex；刚写过不挡", async () => {
 	const ID = "eeeeeeee-0000-4000-8000-000000000001";
 	const rel = `2026/01/01/rollout-2026-01-01T00-00-00-${ID}.jsonl`;
 	writeFileSync(join(tmp, ".codex", "sessions", rel), readFileSync(join(import.meta.dirname, "fixtures", "codex", "old.jsonl"), "utf8").replaceAll("11111111-1111-4111-8111-111111111111", ID));
 	assert.ok(codex.fromPath(rel));
+	mkdirSync(terminals.LOCKS, { recursive: true });
+	const fd = openSync(join(terminals.LOCKS, `${ID}.lock`), "w");
 	const before = readFileSync(ARGS, "utf8");
-	await rejects(trash.remove("-tmp-demo", ID), 409, /90 秒/);
-	assert.equal(readFileSync(ARGS, "utf8"), before);
+	try {
+		await rejects(trash.remove("-tmp-demo", ID), 409, /终端里开着/);
+		assert.equal(readFileSync(ARGS, "utf8"), before);
+	} finally {
+		closeSync(fd);
+	}
+	await trash.remove("-tmp-demo", ID);
+	assert.equal(readFileSync(ARGS, "utf8"), `${before}archive ${ID}\n`);
 });
 
 test("expires：最后修改 + cleanupPeriodDays（默认 30，settings.json 改了重读）；Codex 是 null", async () => {

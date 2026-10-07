@@ -1,10 +1,11 @@
 // 会话记录 → 对话：节点树、从根走到一片叶子的那条路、路上连着的工具调用收成一组、分叉点；
 // 还有正在跑的那次运行里还没写进记录的那几段，变成和记录里一样的节点接在末尾。都是纯函数，不碰 React。
-import type { Node, Run } from "./api";
-import { summarize } from "./tail";
+import type { Node } from "@shared/api";
+import { summarize } from "@shared/tail";
 import type { Stream } from "./use-stream";
 
-export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node> };
+/** ids：记录里有的消息的 uuid，连运行中插进来的那几条发的时候的 uuid（source）：网页发的那条到没到按它认 */
+export type Tree = { kids: Map<string | null, Node[]>; best: Map<string, Node>; byId: Map<string, Node>; ids: Set<string> };
 export type Walk = ReturnType<typeof walk>;
 export type User = Extract<Node, { k: "user" }>;
 
@@ -28,21 +29,33 @@ export function tree(nodes: Node[]): Tree {
 		}
 		best.set(n.uuid, b);
 	}
-	return { kids, best, byId };
+	return { kids, best, byId, ids: idsOf(nodes) };
 }
 
-/** 从根走到 leaf 的那条路；路上每个改写过的地方的各个版本；latest 是整棵树最新的叶子 */
-export function walk(t: Tree, leaf: string | null) {
+/** 记录里有的 uuid（连 source） */
+export const idsOf = (nodes: Node[]) => new Set(nodes.flatMap((n) => (n.k === "user" && n.source ? [n.uuid, n.source] : [n.uuid])));
+
+
+/**
+ * 从根走到 leaf（地址里的）的那条路；路上每个改写过的地方的各个版本（to：切到第几版时地址里的 leaf，回到默认那条路上的是 null）。
+ * latest 是默认走到的：home（服务端给的，命令行续接时接着的那条），没有就是整棵树最新的叶子
+ */
+export function walk(t: Tree, leaf: string | null, home: string | null = null) {
 	const roots = t.kids.get(null) ?? [];
-	const latest = roots.map((r) => t.best.get(r.uuid) ?? r).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+	const newest = roots.map((r) => t.best.get(r.uuid) ?? r).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+	const latest = (home ? t.byId.get(home) : undefined) ?? newest;
+	const up = (from: Node | undefined) => {
+		const out: Node[] = [];
+		for (let n = from; n; n = n.parent ? t.byId.get(n.parent) : undefined) out.push(n);
+		return out.reverse();
+	};
 	const end = (leaf ? t.byId.get(leaf) : undefined) ?? latest;
-	const path: Node[] = [];
-	for (let n: Node | undefined = end; n; n = n.parent ? t.byId.get(n.parent) : undefined) path.push(n);
-	path.reverse();
-	const versions = new Map<string, { options: Node[]; index: number }>();
+	const path = up(end);
+	const main = end === latest ? new Set(path) : new Set(up(latest));
+	const versions = new Map<string, { options: Node[]; index: number; to: (string | null)[] }>();
 	for (const n of path) {
 		const siblings = t.kids.get(n.parent && t.byId.has(n.parent) ? n.parent : null) ?? [];
-		if (siblings.length > 1) versions.set(n.uuid, { options: siblings, index: siblings.indexOf(n) });
+		if (siblings.length > 1) versions.set(n.uuid, { options: siblings, index: siblings.indexOf(n), to: siblings.map((s) => (main.has(s) ? null : (t.best.get(s.uuid) ?? s).uuid)) });
 	}
 	return { path, versions, end, latest, atLatest: !end || end === latest };
 }
@@ -65,27 +78,26 @@ export function merge<T extends { nodes: Node[]; delta: boolean }>(old: T | null
 export const keysOf = (nodes: Node[]) => new Set(nodes.flatMap((n) => ("key" in n && n.key ? [n.key] : [])));
 
 export type Block = { kind: "one"; n: Node } | { kind: "steps"; nodes: Node[] };
-export function blocks(path: Node[]): Block[] {
-	const out: Block[] = [];
-	for (const n of path) {
-		if (n.k === "tool" || n.k === "thinking") {
+/**
+ * 连着的工具调用、思考收成一组，别的一条一块。接在 base 后面（正在写的那几段接在记录后面）：base 不改，
+ * 只换最后一块，前面的块原样留着（消息组件是 memo 的，每来一个字不用全部重画）
+ */
+export function blocks(nodes: Node[], base: Block[] = []): Block[] {
+	if (!nodes.length) return base;
+	const out = base.slice();
+	/** 这次新建的那一组：直接往里加 */
+	let open: Node[] | null = null;
+	for (const n of nodes) {
+		if (n.k !== "tool" && n.k !== "thinking") {
+			out.push({ kind: "one", n });
+			open = null;
+		} else if (open) open.push(n);
+		else {
 			const last = out[out.length - 1];
-			if (last?.kind === "steps") last.nodes.push(n);
-			else out.push({ kind: "steps", nodes: [n] });
-		} else out.push({ kind: "one", n });
-	}
-	return out;
-}
-
-/** 接上正在写的那几段：只换最后一块，前面的块原样留着（消息组件是 memo 的，每来一个字不用全部重画） */
-export function append(bs: Block[], live: Node[]): Block[] {
-	if (!live.length) return bs;
-	const out = bs.slice();
-	for (const n of live) {
-		const last = out[out.length - 1];
-		if (n.k !== "tool" && n.k !== "thinking") out.push({ kind: "one", n });
-		else if (last?.kind === "steps") out[out.length - 1] = { kind: "steps", nodes: [...last.nodes, n] };
-		else out.push({ kind: "steps", nodes: [n] });
+			open = last?.kind === "steps" ? [...last.nodes, n] : [n];
+			if (last?.kind === "steps") out[out.length - 1] = { kind: "steps", nodes: open };
+			else out.push({ kind: "steps", nodes: open });
+		}
 	}
 	return out;
 }
@@ -115,12 +127,14 @@ function liveSummary(json: string) {
 
 /**
  * 流里还没写进记录的那几段，变成和记录里一样的节点，接在对话末尾。
- * 你发的那条也一样：记录里出现之前先按原文顶上，不然流比文件快，会先看到思考、后看到你的消息
+ * 你发的那条也一样：记录里出现之前先按原文顶上（不然流比文件快，会先看到思考、后看到你的消息），uuid 就是记录里那条的，写进去之后 React 的 key 不变。
+ * Codex 的 item id 开始跑了才知道，之前先用网页发的时候给的。ids：记录里有的（tree 的 ids）
  */
-export function liveNodes(stream: Stream, path: Node[], keys: Set<string>): Node[] {
+export function liveNodes(stream: Stream, ids: Set<string>, keys: Set<string>): Node[] {
 	const ts = new Date().toISOString();
-	const r = stream.run;
-	const mine: Node[] = !r || !r.prompt.trim() || sentNode(r, path) ? [] : [{ k: "user", uuid: liveUser(r) as string, parent: null, ts: r.started, text: r.prompt, images: 0 }];
+	const r = stream.of;
+	const uuid = r && (r.uuid ?? r.merged[0]);
+	const mine: Node[] = !r || !uuid || (!r.prompt.trim() && !r.images) || ids.has(uuid) ? [] : [{ k: "user", uuid, parent: null, ts: r.started, text: r.prompt, images: r.images, live: true }];
 	const blocks = stream.blocks.filter((b) => !keys.has(b.key));
 	return [
 		...mine,
@@ -133,11 +147,5 @@ export function liveNodes(stream: Stream, path: Node[], keys: Set<string>): Node
 		}),
 	];
 }
-export const isLive = (n: Node) => n.uuid.startsWith("live:");
-export const liveUser = (r: Run | null) => (r ? `live:user:${r.id}` : null);
-/** 这次运行你发的那条已经写进记录了：运行开始之后（给一分钟时钟误差）记录里有同样的一句 */
-export function sentNode(r: Run | null, path: Node[]) {
-	const asked = r?.prompt.trim();
-	if (!r || !asked) return undefined;
-	return path.find((n): n is User => n.k === "user" && n.text.trim() === asked && Date.parse(n.ts) >= Date.parse(r.started) - 60_000);
-}
+/** 还没写进记录的（流里的那几段、你刚发的那条） */
+export const isLive = (n: Node) => n.uuid.startsWith("live:") || (n.k === "user" && !!n.live);

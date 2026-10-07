@@ -2,10 +2,10 @@
 //   Claude：<会话>.jsonl 和旁边的 <会话>/（子代理、工具结果）挪进废纸篓里的一个文件夹「mixer 删除的会话 <标题> (<id 前 8 位>)」，
 //     里面写一份「原来的位置.txt」。从 Claude Code 的历史里也就没了（claude --resume 看不到），挪回去就又有了。同一个磁盘，rename 就行
 //   Codex：codex archive <id>（挪去 ~/.codex/archived_sessions，codex unarchive 能恢复）。不用 codex delete
-// 在 mixer 里在跑、排着队、待确认，或者 90 秒内有不是 mixer 的写入（终端里可能开着）的不许删：409。
+// 在 mixer 里在跑、排着队、待确认，或者在 mixer 外面开着（终端、IDE、桌面版：terminals.ts，当场查）的不许删：409。
 // 删完移出工作区、忘掉 mixer 记的它的状态和缓存。从它分叉出来的会话是完整的一份，留着，只是没了原会话
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -14,17 +14,18 @@ import { bin } from "./codex-run.ts";
 import * as runs from "./runs.ts";
 import * as sessions from "./sessions.ts";
 import * as state from "./state.ts";
+import * as terminals from "./terminals.ts";
 
 const no = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
 export async function remove(project: string, id: string) {
-	const cx = codex.find(id);
-	const file = cx ? cx.file : sessions.sessionFile(project, id);
-	if (!existsSync(file)) throw no(404, "没有这个会话");
+	const at = sessions.locate(project, id);
+	if (!at) throw no(404, "没有这个会话");
+	const { file, cx } = at;
+	if (await terminals.held(id)) throw no(409, "这个会话在终端里开着：关掉再删");
+	// mixer 里的放在 await 之后看：查终端的时候可能刚开始跑
 	const why = runs.busy(id);
 	if (why) throw no(409, why);
-	const mtime = statSync(file).mtimeMs;
-	if (Date.now() - mtime < 90_000 && !state.ourLastWrite(id, mtime)) throw no(409, "这个会话可能还在终端里开着（90 秒内有写入）：过一会儿再删");
 	if (cx) {
 		await archive(id);
 		codex.forget(id);

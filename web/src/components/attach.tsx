@@ -1,7 +1,7 @@
 // 消息里带图片：选图（或粘贴），点缩略图打开批注，画箭头、随手画线。发送时把批注画进图里，缩到长边 2000px 以内再发。
 // 批注按原图的像素坐标存，显示、导出都从同一张 canvas 来，手机上看到什么发出去就是什么。
 import { MoveUpRight, Pencil, Undo2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ClipboardEvent, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -16,6 +16,40 @@ const MAX = 2000;
 
 export function toShots(files: Iterable<File>): Shot[] {
 	return [...files].filter((f) => f.type.startsWith("image/")).map((f) => ({ id: crypto.randomUUID(), url: URL.createObjectURL(f), media: f.type, shapes: [] }));
+}
+
+/** 已经在服务端的图（编辑并分叉：原来那条消息带的），拿下来当成刚选的。拿不到的、不是图的跳过 */
+export async function fromUrls(srcs: string[]): Promise<Shot[]> {
+	const got = await Promise.all(
+		srcs.map(async (src): Promise<Shot | null> => {
+			const r = await fetch(src).catch(() => null);
+			const b = r?.ok ? await r.blob().catch(() => null) : null;
+			return b?.type.startsWith("image/") ? { id: crypto.randomUUID(), url: URL.createObjectURL(b), media: b.type, shapes: [] } : null;
+		}),
+	);
+	return got.filter((s): s is Shot => !!s);
+}
+
+/**
+ * 输入框里的图：选图、粘贴加进来；发出去之后 drop 掉发出去的那几张（按 id：请求在路上时新加的、改了批注的都对得上）。
+ * onPaste：剪贴板里有图就拦下来加进去，没有就照常粘文字。输入框没了（关了分叉的对话框）放掉剩下的
+ */
+export function useShots() {
+	const [shots, setShots] = useState<Shot[]>([]);
+	const cur = useRef(shots);
+	useEffect(() => { cur.current = shots; }, [shots]);
+	useEffect(() => () => { for (const s of cur.current) URL.revokeObjectURL(s.url); }, []);
+	const add = (s: Shot[]) => setShots((x) => [...x, ...s]);
+	const onPaste = (e: ClipboardEvent) => {
+		const s = toShots(e.clipboardData.files);
+		if (s.length) { e.preventDefault(); add(s); }
+	};
+	const drop = (sent: Shot[]) => {
+		for (const s of sent) URL.revokeObjectURL(s.url);
+		const ids = new Set(sent.map((s) => s.id));
+		setShots((x) => x.filter((s) => !ids.has(s.id)));
+	};
+	return { shots, setShots, add, onPaste, drop };
 }
 
 const load = (url: string) =>

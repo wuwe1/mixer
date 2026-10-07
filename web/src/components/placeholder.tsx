@@ -1,18 +1,21 @@
-// 面板里还没选东西、没有内容时的空状态：和首页一样用 Empty，一个图标、一句话（可以加标题、下面放按钮）。
+// 一律用这里的：空状态（Placeholder，Empty：一个图标、一句话，可以加标题、下面放按钮）、加载中（Loading，居中的 Spinner）、展开收起的 ›（Chevron）。
 // 画的时候出错了也用它（Boundary）：不白屏，写明错在哪，给一个刷新。
-import { type LucideIcon, TriangleAlert } from "lucide-react";
+import { ChevronRight, type LucideIcon, TriangleAlert } from "lucide-react";
 import { Component, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-export function Placeholder({ icon: I, title, text, children }: { icon: LucideIcon; title?: string; text: string; children?: ReactNode }) {
+export function Placeholder({ icon: I, title, text, className, children }: { icon?: LucideIcon; title?: string; text: string; className?: string; children?: ReactNode }) {
 	return (
-		<Empty className="m-auto">
+		<Empty className={cn("m-auto", className)}>
 			<EmptyHeader>
-				<EmptyMedia variant="icon">
-					<I />
-				</EmptyMedia>
+				{I && (
+					<EmptyMedia variant="icon">
+						<I />
+					</EmptyMedia>
+				)}
 				{title && <EmptyTitle>{title}</EmptyTitle>}
 				<EmptyDescription>{text}</EmptyDescription>
 			</EmptyHeader>
@@ -20,6 +23,16 @@ export function Placeholder({ icon: I, title, text, children }: { icon: LucideIc
 		</Empty>
 	);
 }
+
+/** 加载中：撑满外面那一层、居中一个 Spinner。className 给那一层（定高的写 h-80 之类） */
+export const Loading = ({ className }: { className?: string }) => (
+	<div className={cn("flex min-h-0 flex-1", className)}>
+		<Spinner className="m-auto text-muted-foreground" />
+	</div>
+);
+
+/** 展开收起：左边一个 ›，展开时转 90° */
+export const Chevron = ({ open, className }: { open: boolean; className?: string }) => <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90", className)} />;
 
 /** 里面画的时候抛了错：换成「出错了」和刷新。className 给出错时外面那一层（整页的要撑满） */
 export class Boundary extends Component<{ children: ReactNode; className?: string }, { error: Error | null }> {

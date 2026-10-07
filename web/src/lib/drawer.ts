@@ -2,6 +2,7 @@
 // 拖的时候直接改样式跟着手指（不经过 React，每帧不重画）；松手、点按钮开关时从看到的位置动画到 0 或 1；
 // 动画途中再按住，停在看到的位置接着拖。系统开了「减少动态效果」就不播动画、直接到位
 import { useEffect } from "react";
+import { standalone } from "./route";
 
 const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
 const clamp = (x: number) => Math.min(1, Math.max(0, x));
@@ -77,7 +78,8 @@ export const sidebar = make("left");
 export const panel = make("right");
 
 const EDGE = 24;
-const standalone = () => (navigator as { standalone?: boolean }).standalone || matchMedia("(display-mode: standalone)").matches;
+/** 松手时速度超过它（px/ms）就算甩：按甩的方向开或关 */
+const FLING = 0.5;
 
 /**
  * iOS 从屏幕最左边往右滑是「返回上一页」（有前进的页时最右边往左是「前进」），Safari 里和加到主屏幕的 app 里都有。
@@ -86,7 +88,7 @@ const standalone = () => (navigator as { standalone?: boolean }).standalone || m
  * 拦了 touchstart 浏览器就不再发 click，手指没动的点按自己补一个。Safari 里拦不住（系统先抢），留给系统。页面最外层调一次
  */
 export function guardEdges() {
-	if (!standalone()) return;
+	if (!standalone) return;
 	let tap: { el: Element; x: number; y: number } | null = null;
 	document.addEventListener("touchstart", (e) => {
 		tap = null;
@@ -106,19 +108,30 @@ export function guardEdges() {
 	document.addEventListener("touchcancel", () => { tap = null; }, { passive: true });
 }
 
+/** 选区两头的把手画在字外面一点，离端点这么近都算按在把手上 */
+const HANDLE = 44;
+
+/** 手指按在选中文字两头的把手附近（要拖着改范围）。输入框里的选区拿不到位置：有选中的字就算 */
+function onHandle(target: Element, x: number, y: number) {
+	const field = target.closest("textarea, input") as HTMLTextAreaElement | HTMLInputElement | null;
+	if (field) return field.selectionStart !== field.selectionEnd;
+	const s = getSelection();
+	if (!s || s.isCollapsed || !s.rangeCount) return false;
+	const r = s.getRangeAt(0).getClientRects();
+	if (!r.length) return false;
+	const near = (px: number, line: DOMRect) => Math.abs(x - px) < HANDLE && y > line.top - HANDLE && y < line.bottom + HANDLE;
+	return near(r[0].left, r[0]) || near(r[r.length - 1].right, r[r.length - 1]);
+}
+
 /**
  * 横着滑开关抽屉：左边的往右滑打开、往左滑关上；右边的反过来。
  * Safari 里离那条边 EDGE 以内起手的不管，留给系统的「返回」；主屏幕 app 里边上已经拦掉了（guardEdges），从边上滑也能开。
  * 手指一动就定方向：横着的（而且是要开 / 关的方向）就拦下这次滑动，底下的内容不跟着上下滚；竖着的就放手，照常滚。
- * 开着别的对话框、菜单时不管（另一边的抽屉开着也是 role="dialog"）；按在能往那个方向滚的代码、表格上，是在滚它
+ * 开着别的对话框、菜单时不管（另一边的抽屉开着也是 role="dialog"）；按在能往那个方向滚的代码、表格上，是在滚它；
+ * 在选字时也不管：按在选区两头的把手上是在改范围（onHandle），按下之后选区变了（长按选字再拖）也是
  */
-/** 松手时速度超过它（px/ms）就算甩：按甩的方向开或关 */
-const FLING = 0.5;
-
-export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolean; open: boolean; setOpen: (open: boolean) => void; onStart?: () => void }) {
+export function useSwipe(d: Drawer, { open, setOpen, onStart }: { open: boolean; setOpen: (open: boolean) => void; onStart?: () => void }) {
 	useEffect(() => {
-		if (!on) return;
-		const app = standalone();
 		// 往哪边滑是打开：左边的抽屉往右（+1），右边的往左（-1）
 		const opening = d.side === "left" ? 1 : -1;
 		// from：按下时抽屉开到哪（动画途中按住的，停在看到的位置）；pts：最近的手指位置，松手时算速度
@@ -139,9 +152,10 @@ export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolea
 			if (document.querySelector(`[role="dialog"]:not([data-drawer="${d.side}"]), [role="menu"], [role="alertdialog"]`)) return;
 			const t = e.touches[0];
 			const edge = d.side === "left" ? t.clientX < EDGE : t.clientX > innerWidth - EDGE;
-			let track = open || app || !edge;
+			let track = open || standalone || !edge;
 			const sign = open ? -opening : opening;
 			if (track) for (let el = e.target as Element | null; el; el = el.parentElement) if (scrolls(el, sign)) track = false;
+			if (track && onHandle(e.target as Element, t.clientX, t.clientY)) track = false;
 			g = { x: t.clientX, y: t.clientY, dir: null, track, from: track ? d.grab() : 0, w: d.width(), pts: [[e.timeStamp, t.clientX]] };
 		};
 		const move = (e: TouchEvent) => {
@@ -185,6 +199,12 @@ export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolea
 				if (next !== open) setOpen(next);
 			} else if (track) settle();
 		};
+		// 按着的时候选区变了、选出了字：长按选字，或者在拖把手。抽屉还没跟着动就放手
+		const select = () => {
+			if (!g?.track || g.dir || getSelection()?.isCollapsed !== false) return;
+			g.track = false;
+			settle();
+		};
 		const cancel = () => {
 			if (g?.track) settle();
 			g = null;
@@ -193,11 +213,13 @@ export function useSwipe(d: Drawer, { on, open, setOpen, onStart }: { on: boolea
 		document.addEventListener("touchmove", move, { passive: false });
 		document.addEventListener("touchend", up, { passive: true });
 		document.addEventListener("touchcancel", cancel, { passive: true });
+		document.addEventListener("selectionchange", select);
 		return () => {
+			document.removeEventListener("selectionchange", select);
 			document.removeEventListener("touchstart", down);
 			document.removeEventListener("touchmove", move);
 			document.removeEventListener("touchend", up);
 			document.removeEventListener("touchcancel", cancel);
 		};
-	}, [d, on, open, setOpen, onStart]);
+	}, [d, open, setOpen, onStart]);
 }

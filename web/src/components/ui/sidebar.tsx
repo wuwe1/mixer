@@ -14,11 +14,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PanelLeftIcon } from "lucide-react"
-import { createPortal } from "react-dom"
+import { Drawer } from "@/components/drawer"
 import * as drawer from "@/lib/drawer"
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state"
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
@@ -73,9 +71,6 @@ function SidebarProvider({
       } else {
         _setOpen(openState)
       }
-
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
     },
     [setOpenProp, open]
   )
@@ -141,43 +136,6 @@ function SidebarProvider({
   )
 }
 
-/**
- * 手机上的侧栏：从左边拉出来的抽屉，一直挂在页面上，位置由 lib/drawer 管（拖的时候跟手，见 lib/drawer 的 useSwipe）。
- * 不用 Sheet：它关着时会卸掉，拖的时候没东西可动；强行挂着又会把整页的滚动、点击锁住
- */
-function MobileDrawer({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
-  const panel = React.useRef<HTMLDivElement>(null)
-  const overlay = React.useRef<HTMLDivElement>(null)
-  React.useLayoutEffect(() => (panel.current && overlay.current ? drawer.sidebar.attach(panel.current, overlay.current) : undefined), [])
-  React.useEffect(() => drawer.sidebar.to(open ? 1 : 0), [open])
-  React.useEffect(() => {
-    if (!open) return
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onOpenChange(false) }
-    document.addEventListener("keydown", esc)
-    return () => document.removeEventListener("keydown", esc)
-  }, [open, onOpenChange])
-  return createPortal(
-    <>
-      <div ref={overlay} aria-hidden className="fixed inset-0 z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs" onClick={() => onOpenChange(false)} />
-      <div
-        ref={panel}
-        role={open ? "dialog" : undefined}
-        aria-modal={open || undefined}
-        aria-label="侧栏"
-        data-sidebar="sidebar"
-        data-slot="sidebar"
-        data-mobile="true"
-        data-drawer="left"
-        className="fixed inset-y-0 left-0 z-50 flex w-(--sidebar-width) flex-col border-r bg-sidebar text-sm text-sidebar-foreground shadow-lg"
-        style={{ "--sidebar-width": SIDEBAR_WIDTH_MOBILE } as React.CSSProperties}
-      >
-        {children}
-      </div>
-    </>,
-    document.body
-  )
-}
-
 function Sidebar({
   side = "left",
   variant = "sidebar",
@@ -210,9 +168,20 @@ function Sidebar({
 
   if (isMobile) {
     return (
-      <MobileDrawer open={openMobile} onOpenChange={setOpenMobile}>
+      // 手机上：从左边拉出来的抽屉（components/drawer.tsx），往右滑打开、往左滑关上
+      <Drawer
+        d={drawer.sidebar}
+        open={openMobile}
+        onOpenChange={setOpenMobile}
+        label="侧栏"
+        data-sidebar="sidebar"
+        data-slot="sidebar"
+        data-mobile="true"
+        className="inset-y-0 left-0 w-(--sidebar-width) border-r bg-sidebar text-sm text-sidebar-foreground"
+        style={{ "--sidebar-width": SIDEBAR_WIDTH_MOBILE } as React.CSSProperties}
+      >
         {children}
-      </MobileDrawer>
+      </Drawer>
     )
   }
 

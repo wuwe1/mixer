@@ -2,9 +2,11 @@
 // 网格线是细实线；字用文字的颜色，不用系列色；两组以上有图例；指上去出数值；能切成表格看数。系列色是 --series-1…8，按顺序用。
 // 按容器的宽来画（不是画好了再缩放）：手机上字不会缩小。
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { Spec } from "@/lib/visual";
+import type { Spec } from "@shared/visual";
 import { cn } from "@/lib/utils";
+import { TableFrame } from "../table";
 import { measure } from "./graph";
+import { Frame } from "./index";
 
 const H = 260;
 const TICK = 11;
@@ -34,13 +36,14 @@ export function ChartView({ spec }: { spec: Spec<"Chart"> }) {
 	const [hover, setHover] = useState<{ x: number; at: number; series?: number } | null>(null);
 	const [table, setTable] = useState(false);
 	const box = useRef<SVGSVGElement>(null);
-	// 量的是 figure 里面的宽（减掉 p-3 的两边）；用回调 ref：还在写、一开始没画出来的，画出来时也量得到
+	// 量的是 Frame 里面那一层的宽；用回调 ref：还在写、一开始没画出来的，画出来时也量得到
 	const [W, setW] = useState(640);
 	const seen = useRef<ResizeObserver | null>(null);
 	const wrap = useCallback((el: HTMLElement | null) => {
 		seen.current?.disconnect();
 		if (!el) return;
-		seen.current = new ResizeObserver(() => setW(Math.max(260, Math.round(el.clientWidth - 24))));
+		// contentRect 不含 padding
+		seen.current = new ResizeObserver(([e]) => setW(Math.max(260, Math.round(e.contentRect.width))));
 		seen.current.observe(el);
 	}, []);
 	const series = useMemo(() => spec.series.slice(0, spec.kind === "scatter" ? 3 : 8), [spec.series, spec.kind]);
@@ -94,9 +97,9 @@ export function ChartView({ spec }: { spec: Spec<"Chart"> }) {
 	const bw = (gw - (n - 1) * 2) / n;
 
 	return (
-		<figure ref={wrap} className="min-w-0 rounded-lg border bg-card p-3">
+		<Frame ref={wrap}>
 			<div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-				{spec.title && <figcaption className="mr-auto text-md font-medium">{spec.title}</figcaption>}
+				{spec.title && <div className="mr-auto text-md font-medium">{spec.title}</div>}
 				{n > 1 && series.map((s, i) => (
 					<span key={i} className="flex items-center gap-1.5 text-xs">
 						<span className={cn("shrink-0", spec.kind === "line" ? "h-0.5 w-3 rounded-full" : spec.kind === "scatter" ? "size-2 rounded-full" : "size-2 rounded-sm")} style={{ background: color(i) }} />
@@ -157,32 +160,33 @@ export function ChartView({ spec }: { spec: Spec<"Chart"> }) {
 				</div>
 			)}
 			{spec.series.length > series.length && <div className="mt-1 text-2xs text-muted-foreground">只画了前 {series.length} 组</div>}
-		</figure>
+		</Frame>
 	);
 }
 
-/** 同样的数，排成表：横轴一列，每组一列 */
+/** 同样的数，排成表：横轴一列，每组一列。和回复里的表一样放进 TableFrame（手机上放不下时排成卡片或横着滚） */
 function DataTable({ spec, series }: { spec: Spec<"Chart">; series: Spec<"Chart">["series"] }) {
 	const xs = [...new Set(series.flatMap((s) => s.points.map((p) => p[0])))];
 	if (xs.every((x) => typeof x === "number")) xs.sort((a, b) => Number(a) - Number(b));
+	const head = spec.x ?? "x";
 	return (
-		<div className="max-h-72 overflow-auto rounded-md border">
-			<table className="w-full text-xs">
-				<thead className="sticky top-0 bg-muted text-left">
+		<TableFrame>
+			<table>
+				<thead>
 					<tr>
-						<th className="px-2 py-1 font-medium">{spec.x ?? "x"}</th>
-						{series.map((s, i) => <th key={i} className="px-2 py-1 text-right font-medium">{s.name}</th>)}
+						<th>{head}</th>
+						{series.map((s, i) => <th key={i}>{s.name}</th>)}
 					</tr>
 				</thead>
 				<tbody>
 					{xs.map((x) => (
-						<tr key={String(x)} className="border-t">
-							<td className="px-2 py-1">{x}</td>
-							{series.map((s, i) => <td key={i} className="px-2 py-1 text-right tabular-nums">{s.points.find((p) => p[0] === x)?.[1] ?? ""}</td>)}
+						<tr key={String(x)}>
+							<td data-label={head}>{x}</td>
+							{series.map((s, i) => <td key={i} data-label={s.name} className="text-right tabular-nums">{s.points.find((p) => p[0] === x)?.[1] ?? ""}</td>)}
 						</tr>
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }

@@ -1,23 +1,23 @@
-// 对话：把节点树走成一条路（默认走到最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
+// 对话：把节点树走成一条路（默认走到命令行续接时接着的那条，记录里没写就是最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
 // 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、等你确认的请求。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx。
 import { ChevronLeft, ChevronRight, Clock, Square, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Spinner } from "@/components/ui/spinner";
 import { type Spawn, spawner } from "@/lib/agents";
-import { type Agent, api, enc, type Node, type Run, type Sub } from "@/lib/api";
+import { type Agent, api, enc, type Node, type Sub } from "@shared/api";
 import { useEvent } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
-import { type Agent as Kind, pretty } from "@/lib/model";
+import { type Kind, pretty } from "@/lib/model";
 import { go } from "@/lib/route";
-import { append, type Block, blocks, headOf, isLive, keysOf, liveNodes, liveUser, merge, pointOf, sentNode, type Tree, type User, type Walk } from "@/lib/thread";
+import { type Block, blocks, headOf, isLive, liveNodes, pointOf, type Tree, type User, type Walk } from "@/lib/thread";
+import { useIncremental } from "@/lib/use-incremental";
 import type { Stream } from "@/lib/use-stream";
 import { ApprovalCard } from "./approvals";
 import { ForkDialog, type ForkTarget } from "./fork-dialog";
-import { Images } from "./lightbox";
-import { AssistantMessage, EventLine, Steps, stable, UserMessage } from "./message";
+import { AssistantMessage, Bubble, EventLine, Steps, stable, UserMessage } from "./message";
+import { Loading } from "./placeholder";
 import { StatusIcon } from "./side";
 
 /** 跳到这条（目录里点的）；at 让同一条点两次也算 */
@@ -94,42 +94,42 @@ function useWindow(bs: Block[], scroller: RefObject<HTMLDivElement | null>, reve
  * 每一块的 React key：正在写的那几段换成记录里的时，key 不变，不重新挂载（点开的不收起，往上翻着看的位置不跳）。
  *   回复、思考、工具：「消息 id : 第几段」（stable）
  *   一组工具调用：跟着前面那一块认。组里第一段可能会变：不给看的空思考，后面来了别的段就不显示了
- *   你发的那条：记录里出现之前是 live:user:<运行>，出现之后记录里那条沿用这个 key
+ *   你发的那条：uuid，写进记录前后一样（发的时候就定了）
  */
-function useIds(bs: Block[], run: Run | null, path: Node[]) {
-	/** 记录里那条的 uuid → 它写进去之前用的 key */
-	const alias = useRef(new Map<string, string>());
-	/** 画过「还没写进记录」的那条的运行 */
-	const drawn = useRef<string | null>(null);
-	const live = liveUser(run);
-	if (run && live && bs.some((b) => b.kind === "one" && b.n.uuid === live)) drawn.current = run.id;
-	else if (run && live && drawn.current === run.id) {
-		const got = sentNode(run, path);
-		if (got) alias.current.set(got.uuid, live);
-	}
+function idsOf(bs: Block[]) {
 	const ids: string[] = [];
 	for (const b of bs) {
 		const prev = ids[ids.length - 1];
-		ids.push(b.kind === "steps" ? `steps:${prev ?? ""}` : b.n.k === "user" ? (alias.current.get(b.n.uuid) ?? b.n.uuid) : stable(b.n));
+		ids.push(b.kind === "steps" ? `steps:${prev ?? ""}` : stable(b.n));
 	}
 	return ids;
 }
 
-/** kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样）；spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts） */
-export function Conversation({ project, session, w, t, onFile, chosen, chosenEffort, stream, status, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
-	const { approvals, runs } = useLive();
+/** 在跑，末尾却什么都没在动：留一个 ping 点，知道它还活着。和工具组收着时露出的那一步对齐：同样缩进、同样大小 */
+function AliveDot() {
+	return (
+		<div className="-mt-3 flex py-1 pl-5.5">
+			<StatusIcon s="running" className="size-3.5" />
+		</div>
+	);
+}
+
+/**
+ * kind：Claude Code 还是 Codex 的会话（分叉时模型、说法不一样）；spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；
+ * keys：记录里有的段（流里的哪几段已经写进去了，和 useStream 用的同一份）
+ */
+export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, stream, status, busy, scroller, reveal, kind = "claude", spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; kind?: Kind; spawned?: Map<string, Spawn> | null }) {
+	const { approvals } = useLive();
 	/** 开着看的子代理 */
 	const [agent, setAgent] = useState<string | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
 	// 看的是最新处：正在写的接在末尾
-	const keys = useMemo(() => keysOf(w.path), [w.path]);
-	const live = w.atLatest ? liveNodes(stream, w.path, keys) : [];
+	const live = w.atLatest ? liveNodes(stream, t.ids, keys) : [];
 	const written = useMemo(() => blocks(w.path), [w.path]);
-	const bs = append(written, live);
+	const bs = blocks(live, written);
 	const first = useWindow(bs, scroller, reveal);
-	const ids = useIds(bs, stream.run, w.path);
-	// 还在跑（mixer 里、或者终端里开着）：最后一组里还没结果的工具、正在写的那一步，带上 ping 点和耗时
-	const busy = status === "running" || status === "waiting" || status === "terminal";
+	const ids = idsOf(bs);
+	// 还在跑（busy：mixer 里在跑、待确认，或者终端里开着在跑）：最后一组里还没结果的工具、正在写的那一步，带上 ping 点和耗时
 	const tail = bs[bs.length - 1];
 	const last = busy && w.atLatest && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
 	const liveAt = (n: Node) => stream.blocks.find((b) => `live:${b.key}` === n.uuid)?.at ?? Date.now();
@@ -137,26 +137,28 @@ export function Conversation({ project, session, w, t, onFile, chosen, chosenEff
 	// 在跑，末尾却什么都没在动（等 Claude 开口、工具结果回来之后）：留一个 ping 点，知道它还活着
 	const writing = live.length > 0 && live[live.length - 1].k === "assistant";
 	const idle = !!stream.run && w.atLatest && !now && !writing && status !== "waiting";
-	// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线
-	const switched = new Map<string, string>();
-	let prev: string | null = null;
-	for (const b of bs) {
-		const ns = b.kind === "one" ? [b.n] : b.nodes;
-		const m = ns.map((n) => ("ctx" in n ? n.ctx?.model : undefined)).find(Boolean);
-		if (!m) continue;
-		if (prev && m !== prev) switched.set((b.kind === "one" ? b.n : b.nodes[0]).uuid, m);
-		prev = m;
-	}
-	// 每条回复用了多久：从这一轮开头（你的消息，或者后台任务的通知把 Claude 叫起来）算起
-	const spent = new Map<string, number>();
-	let turn: number | null = null;
-	for (const b of bs) {
-		for (const n of b.kind === "one" ? [b.n] : b.nodes) {
-			if (n.k === "user" || (n.k === "event" && n.kind === "task")) turn = Date.parse(n.ts);
-			else if (n.k === "assistant" && turn !== null && !isLive(n)) spent.set(n.uuid, Date.parse(n.ts) - turn);
+	// 只看写进记录的（正在写的没有模型、不算用时），不用每来一个字就重算一遍
+	const { switched, spent } = useMemo(() => {
+		// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线
+		const switched = new Map<string, string>();
+		let prev: string | null = null;
+		for (const b of written) {
+			const ns = b.kind === "one" ? [b.n] : b.nodes;
+			const m = ns.map((n) => ("ctx" in n ? n.ctx?.model : undefined)).find(Boolean);
+			if (!m) continue;
+			if (prev && m !== prev) switched.set(headOf(b).uuid, m);
+			prev = m;
 		}
-	}
-	const mine = approvals.filter((a) => runs.some((r) => r.id === a.run && r.session === session));
+		// 每条回复用了多久：从这一轮开头（你的消息，或者后台任务的通知把 Claude 叫起来）算起
+		const spent = new Map<string, number>();
+		let turn: number | null = null;
+		for (const n of w.path) {
+			if (n.k === "user" || (n.k === "event" && n.kind === "task")) turn = Date.parse(n.ts);
+			else if (n.k === "assistant" && turn !== null) spent.set(n.uuid, Date.parse(n.ts) - turn);
+		}
+		return { switched, spent };
+	}, [written, w.path]);
+	const mine = approvals.filter((a) => a.session === session);
 
 	const closeAgent = useCallback(() => setAgent(null), []);
 	const agentRunning = !!agent && !!spawned && [...spawned.values()].some((s) => s.agentId === agent && s.running);
@@ -172,7 +174,7 @@ export function Conversation({ project, session, w, t, onFile, chosen, chosenEff
 				const v = w.versions.get(head.uuid);
 				return (
 					<div key={ids[first + i]} className="flex flex-col gap-2">
-						{v && <VersionSwitch v={v} best={t.best} />}
+						{v && <VersionSwitch v={v} />}
 						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
 						{b.kind === "steps" ? (
 							<Steps nodes={b.nodes} project={project} session={session} onAgent={setAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} spawns={spawned && b.nodes.some(spawner) ? spawned : undefined} />
@@ -186,14 +188,9 @@ export function Conversation({ project, session, w, t, onFile, chosen, chosenEff
 					</div>
 				);
 			})}
-			{/* 和工具组收着时露出的那一步对齐：同样缩进、同样大小 */}
-			{idle && (
-				<div className="-mt-3 flex py-1 pl-5.5">
-					<StatusIcon s="running" className="size-3.5" />
-				</div>
-			)}
+			{idle && <AliveDot />}
 			<QueuedMessages session={session} />
-			{mine.map((a) => <ApprovalCard key={a.id} a={a} run={runs.find((r) => r.id === a.run)} className="border-waiting/50" />)}
+			{mine.map((a) => <ApprovalCard key={a.id} a={a} />)}
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
@@ -207,53 +204,23 @@ export function Conversation({ project, session, w, t, onFile, chosen, chosenEff
  * 上一次还没回来就等它回来再拉一次；还在跑的，正在执行的那一步带 ping 点和耗时。停在底部时跟着往下滚，一打开就在最新处
  */
 function AgentSheet({ project, session, id, running, onClose, onFile }: { project: string; session: string; id: string | null; running: boolean; onClose: () => void; onFile: (path: string, diff: boolean) => void }) {
-	const [a, setA] = useState<Agent | null>(null);
-	const cur = useRef<Agent | null>(null);
-	const pulling = useRef<{ id: string; again: boolean } | null>(null);
 	const box = useRef<HTMLDivElement>(null);
 	const near = useRef(true);
-	const load = useCallback((agentId: string) => {
-		if (pulling.current?.id === agentId) return void (pulling.current.again = true);
-		pulling.current = { id: agentId, again: false };
-		const done = () => {
-			const p = pulling.current;
-			if (p?.id !== agentId) return;
-			pulling.current = null;
-			if (p.again) load(agentId);
-		};
-		const since = cur.current?.id === agentId ? `?since=${enc(cur.current.version)}` : "";
-		api<Agent>(`/api/sessions/${enc(project)}/${enc(session)}/agents/${agentId}${since}`).then(
-			(d) => {
-				if (pulling.current?.id === agentId) {
-					cur.current = merge(cur.current?.id === agentId ? cur.current : null, d);
-					setA(cur.current);
-				}
-				done();
-			},
-			(e: Error) => {
-				// 第一次就没拿到（还没有记录）：说一声、关上；跟着拉的时候出错，等下次
-				if (pulling.current?.id === agentId && cur.current?.id !== agentId) {
-					toast.error(e.message);
-					onClose();
-				}
-				done();
-			},
-		);
-	}, [project, session, onClose]);
-	useEffect(() => {
-		pulling.current = null;
-		if (!id) return;
-		cur.current = null;
-		setA(null);
-		near.current = true;
-		load(id);
-	}, [id, load]);
-	useEvent("agent", useCallback((e: Sub & { project: string; session: string }) => { if (id && e.project === project && e.session === session && e.agentId === id) load(id); }, [id, project, session, load]));
-	useEvent("reconnect", useCallback(() => { if (id) load(id); }, [id, load]));
+	// 关上了不拉（看过的留着，再打开同一个先画它）。第一次就没拿到（还没有记录）：说一声、关上；跟着拉的时候出错，等下次
+	const { data: a, load } = useIncremental<Agent>(id ? `/api/sessions/${enc(project)}/${enc(session)}/agents/${enc(id)}` : null, {
+		onError: (e, first) => {
+			if (!first) return;
+			toast.error(e.message);
+			onClose();
+		},
+	});
+	useEffect(() => { if (id) near.current = true; }, [id]);
+	useEvent("agent", useCallback((e: Sub & { project: string; session: string }) => { if (id && e.project === project && e.session === session && e.agentId === id) load(); }, [id, project, session, load]));
+	useEvent("hello", load);
 	useLayoutEffect(() => {
 		const el = box.current;
-		if (el && a && near.current) el.scrollTop = el.scrollHeight;
-	}, [a]);
+		if (el && a && id && near.current) el.scrollTop = el.scrollHeight;
+	}, [a, id]);
 	const bs = useMemo(() => (a ? blocks(a.nodes) : []), [a]);
 	const tail = bs[bs.length - 1];
 	const last = running && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
@@ -281,16 +248,10 @@ function AgentSheet({ project, session, id, running, onClose, onFile }: { projec
 									<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-md whitespace-pre-wrap">{b.n.text}</div>
 								) : null,
 							)}
-							{running && !now && (
-								<div className="-mt-3 flex py-1 pl-5.5">
-									<StatusIcon s="running" className="size-3.5" />
-								</div>
-							)}
+							{running && !now && <AliveDot />}
 						</div>
 					) : (
-						<div className="flex h-full">
-							<Spinner className="m-auto text-muted-foreground" />
-						</div>
+						<Loading className="h-full" />
 					)}
 				</div>
 			</SheetContent>
@@ -298,11 +259,8 @@ function AgentSheet({ project, session, id, running, onClose, onFile }: { projec
 	);
 }
 
-function VersionSwitch({ v, best }: { v: { options: Node[]; index: number }; best: Map<string, Node> }) {
-	const to = (i: number) => {
-		const n = v.options[(i + v.options.length) % v.options.length];
-		go({ leaf: (best.get(n.uuid) ?? n).uuid }, true);
-	};
+function VersionSwitch({ v }: { v: { options: Node[]; index: number; to: (string | null)[] } }) {
+	const to = (i: number) => go({ leaf: v.to[(i + v.options.length) % v.options.length] }, true);
 	return (
 		<div className="flex items-center gap-1 self-end text-xs text-muted-foreground" title="这条消息编辑过，每个版本之后的对话不同">
 			<Button variant="ghost" size="icon-xs" onClick={() => to(v.index - 1)} aria-label="上一个版本">
@@ -325,11 +283,8 @@ function QueuedMessages({ session }: { session: string }) {
 	return (
 		<div className="flex flex-col items-end gap-2">
 			{mine.map((q) => (
-				<div key={q.id} className="flex max-w-[88%] flex-col items-end gap-1.5">
-					<div className="rounded-2xl rounded-br-md border border-dashed bg-secondary/50 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-secondary-foreground">
-						{q.prompt}
-						{q.images > 0 && <Images className={q.prompt.trim() ? "mt-2" : undefined} srcs={Array.from({ length: q.images }, (_, i) => `/api/queue/${q.id}/image/${i}`)} />}
-					</div>
+				<div key={q.id} className="flex w-full flex-col items-end gap-1.5">
+					<Bubble queued text={q.prompt} srcs={Array.from({ length: q.images }, (_, i) => `/api/queue/${q.id}/image/${i}`)} />
 					<div className="flex items-center gap-1 px-1 text-2xs text-muted-foreground">
 						<Clock className="size-3" />
 						<span>排队中</span>

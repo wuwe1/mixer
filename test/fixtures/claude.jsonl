@@ -17,4 +17,5 @@
 {"type":"user","uuid":"u9","parentUuid":"c1","timestamp":"2026-01-01T00:00:15.000Z","sessionId":"s1","cwd":"/tmp/demo","message":{"role":"user","content":"压缩前的摘要"},"isCompactSummary":true}
 {"type":"user","uuid":"u10","parentUuid":"u9","timestamp":"2026-01-01T00:00:16.000Z","sessionId":"s1","cwd":"/tmp/demo","message":{"role":"user","content":"继续"}}
 {"type":"assistant","uuid":"a5","parentUuid":"u10","timestamp":"2026-01-01T00:00:17.000Z","message":{"id":"msg_3","role":"assistant","model":"claude-test-1","content":[{"type":"text","text":"好的"}],"usage":{"input_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":5}}}
-{"type":"attachment","uuid":"q1","parentUuid":"a5","timestamp":"2026-01-01T00:00:18.000Z","attachment":{"type":"queued_command","prompt":"运行中插进来的话"}}
+{"type":"attachment","uuid":"q1","parentUuid":"a5","timestamp":"2026-01-01T00:00:18.000Z","attachment":{"type":"queued_command","prompt":"运行中插进来的话","source_uuid":"s-q1"}}
+{"type":"user","uuid":"i1","parentUuid":"q1","timestamp":"2026-01-01T00:00:19.000Z","sessionId":"s1","cwd":"/tmp/demo","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}

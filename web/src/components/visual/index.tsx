@@ -1,9 +1,9 @@
-// 画 ```ui 代码块（格式、给 Claude 的说明都在 lib/visual.ts）。整段读成 JSON（正在写的半截也读），再一个组件一个组件地校验、画：
+// 画 ```ui 代码块（格式、给 Claude 的说明都在 shared/visual.ts）。整段读成 JSON（正在写的半截也读），再一个组件一个组件地校验、画：
 // 坏了的那一个换成一块「画不出来」并写明哪里不对，别的照画；还没写完的是「正在画」。
 // 第一次遇到 ```ui 才加载（lazy.tsx 的 Visual）：dagre、katex 不进主包。
-import { createContext, type ReactNode, useContext, useMemo, useState, Component } from "react";
+import { Component, createContext, type ReactNode, type Ref, useContext, useMemo, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { checkNode, type Kind, parse, type Spec } from "@/lib/visual";
+import { checkNode, type Kind, parse, type Spec } from "@shared/visual";
 import { ChartView } from "./chart";
 import { CalloutView, CodeView, CompareView, LayersView, MathView, QuizView, StatView, StepsView, TableView, TextView, TimelineView } from "./content";
 import { GraphView, SequenceView, TreeView } from "./graph";
@@ -25,9 +25,8 @@ export function Visual({ source }: { source: string }) {
 	const list = Array.isArray(value) ? value : value == null ? [] : [value];
 	return (
 		<Done.Provider value={done}>
-			<div className="not-prose my-4 flex flex-col gap-3 text-sm">
-				{list.map((v, i) => <Node key={i} v={v} />)}
-				{!list.length && <Pending kind={null} />}
+			<div className="not-prose my-4 text-sm">
+				{list.length ? <Kids list={list} /> : <Pending kind={null} />}
 			</div>
 		</Done.Provider>
 	);
@@ -96,12 +95,12 @@ class Catch extends Component<{ children: ReactNode; v: unknown; kind: string },
 	}
 }
 
-/** 带标题的白底一块：图、表、演示都放在这里面 */
-export function Frame({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
+/** 带标题的白底一块：图、表、演示都放在这里面。ref 给里面那一层（量能画多宽：图表按它画） */
+export function Frame({ title, children, ref }: { title?: string; children: ReactNode; ref?: Ref<HTMLDivElement> }) {
 	return (
-		<figure className={`min-w-0 rounded-lg border bg-card text-card-foreground ${className ?? ""}`}>
+		<figure className="min-w-0 rounded-lg border bg-card text-card-foreground">
 			{title && <figcaption className="border-b px-3 py-2 text-md font-medium">{title}</figcaption>}
-			<div className="p-3">{children}</div>
+			<div ref={ref} className="p-3">{children}</div>
 		</figure>
 	);
 }

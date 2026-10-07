@@ -5,12 +5,12 @@ import { toast } from "@/lib/toast";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Spinner } from "@/components/ui/spinner";
-import { api, type ProjectTree, type SessionMeta } from "@/lib/api";
+import { api, type ProjectTree, type SessionMeta } from "@shared/api";
 import { useLive } from "@/lib/live";
+import { match } from "@/lib/match";
 import { openSession } from "@/lib/route";
 import { since } from "@/lib/time";
-import { match } from "./new-session";
+import { Loading } from "./placeholder";
 import { families, projectName, sessionTitle, StatusIcon } from "./side";
 
 export function Browse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
@@ -35,7 +35,7 @@ export function Browse({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 					<DialogDescription>点一个会话打开它，同时放进工作区</DialogDescription>
 				</DialogHeader>
 				{!tree ? (
-					<div className="flex h-80 items-center justify-center"><Spinner className="text-muted-foreground" /></div>
+					<Loading className="h-80" />
 				) : (
 					<Command className="rounded-lg! border bg-transparent p-0" filter={match}>
 						<CommandInput placeholder="搜索会话或文件夹" />
@@ -43,19 +43,16 @@ export function Browse({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 							<CommandEmpty className="py-5 text-md text-muted-foreground">没有匹配的会话</CommandEmpty>
 							{tree.map((p) => (
 								<CommandGroup key={p.id} heading={projectName(p)}>
-									{families(p.sessions).flatMap((f) => [f.head, ...f.kids]).map((s) => {
-										const kid = !!s.parent && p.sessions.some((x) => x.id === s.parent);
-										return (
-											<CommandItem key={s.id} value={`${projectName(p)} ${sessionTitle(s)} ${s.first ?? ""} ${s.last ?? ""} ${s.id}`} onSelect={() => pick(p, s)} className={kid ? "pl-6" : undefined}>
-												{kid ? <GitFork className="text-muted-foreground" /> : <MessageSquare className="text-muted-foreground" />}
-												<span className="min-w-0 flex-1 truncate text-md">{sessionTitle(s)}</span>
-												{s.agent === "codex" && <span className="shrink-0 text-2xs text-muted-foreground">Codex</span>}
-												{inWorkspace(s.id) && <Check className="text-muted-foreground" aria-label="已在工作区" />}
-												<span className="shrink-0 text-2xs text-muted-foreground tabular-nums">{since(s.mtime)}</span>
-												<StatusIcon s={status(s)} />
-											</CommandItem>
-										);
-									})}
+									{families(p.sessions).flatMap((f) => [[f.head, false] as const, ...f.kids.map((k) => [k, true] as const)]).map(([s, kid]) => (
+										<CommandItem key={s.id} value={`${projectName(p)} ${sessionTitle(s)} ${s.first ?? ""} ${s.last ?? ""} ${s.id}`} onSelect={() => pick(p, s)} className={kid ? "pl-6" : undefined}>
+											{kid ? <GitFork className="text-muted-foreground" /> : <MessageSquare className="text-muted-foreground" />}
+											<span className="min-w-0 flex-1 truncate text-md">{sessionTitle(s)}</span>
+											{s.agent === "codex" && <span className="shrink-0 text-2xs text-muted-foreground">Codex</span>}
+											{inWorkspace(s.id) && <Check className="text-muted-foreground" aria-label="已在工作区" />}
+											<span className="shrink-0 text-2xs text-muted-foreground tabular-nums">{since(s.mtime)}</span>
+											<StatusIcon s={status(s)} />
+										</CommandItem>
+									))}
 								</CommandGroup>
 							))}
 						</CommandList>

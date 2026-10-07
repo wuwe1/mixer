@@ -30,7 +30,7 @@ export function Images({ srcs, className, imgClassName }: { srcs: string[]; clas
 						className="fixed inset-0 z-50 flex items-center justify-center px-4 pt-[calc(4rem+env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] outline-none sm:px-16"
 					>
 						<Dialog.Title className="sr-only">图片</Dialog.Title>
-						{i !== null && <img src={srcs[i]} alt="" className="max-h-full max-w-full rounded-md object-contain shadow-2xl" />}
+						{i !== null && <img src={srcs[i]} alt="" onClick={stop} className="max-h-full max-w-full rounded-md object-contain shadow-2xl" />}
 						<div className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-3 flex items-center gap-2" onClick={stop}>
 							{n > 1 && i !== null && <span className="px-2 text-sm text-white/70 tabular-nums">{i + 1} / {n}</span>}
 							{i !== null && (

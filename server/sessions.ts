@@ -5,102 +5,26 @@
 // 给页面的是「显示节点」：用户的话、Claude 的话、思考、工具调用（结果挂在调用上）、几种事件。
 // 不显示的记录（附带的系统信息、元数据）被跳过，显示节点的 parent 指向最近的显示祖先。
 // 这样一来：并行的工具调用（结果挂在各自的调用下）不会被当成分叉；只有真正的分支（比如改了问题重发）才是一个节点有多个子节点。
-import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, type Stats, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import type { Node, Project, SessionMeta, Sub } from "../shared/api.ts";
+import { summarize } from "../shared/tail.ts";
 import * as codex from "./codex.ts";
-import { lines, serial } from "./jsonl.ts";
-import { summarize } from "../web/src/lib/tail.ts";
-import { chosenEffort, chosenModel, ourLastWrite, unread, windows } from "./state.ts";
+import { BRIEF_RESULT, BRIEF_THOUGHT, type Cursor, cut, epoch, lines, lru, resume, serial } from "./jsonl.ts";
+import { chosenEffort, chosenModel, forkOf, unread, windows } from "./state.ts";
+import * as terminals from "./terminals.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
 
-/**
- * 记录只会往后追加：记下读到哪个字节，文件变了只读新写的部分。
- * 没变（大小、修改时间都一样）就是 "same"；变短了或者换了个文件（inode 不同）就得从头读
- */
-type Cursor = { ino: number; size: number; mtime: number; offset: number };
-const resume = (c: Cursor | undefined, st: Stats) =>
-	!c || c.ino !== st.ino || st.size < c.offset ? "fresh" : c.size === st.size && c.mtime === st.mtimeMs ? "same" : "more";
-
 type Raw = Record<string, any>; // biome-ignore lint: 内部格式，没有类型
 
-/** 这条回复发出时上下文里有多少 token（输入 + 缓存读 + 缓存写），和用的模型：窗口多大按模型查 */
-type Ctx = { used: number; model: string };
-/** 「消息 id : 第几段」：和运行输出流里的同一段对得上，网页靠它把正在写的换成记录里的 */
-type Key = { key?: string };
-
-export type Node =
-	| { k: "user"; uuid: string; parent: string | null; ts: string; text: string; images: number; queued?: boolean }
-	| ({ k: "assistant"; uuid: string; parent: string | null; ts: string; text: string; ctx?: Ctx } & Key)
-	/** 思考也收在组里、点开才看：text 只是开头，cut 时完整的点开再拿（thought） */
-	| ({ k: "thinking"; uuid: string; parent: string | null; ts: string; text: string; cut: boolean; ctx?: Ctx } & Key)
-	| {
-			k: "tool";
-			ctx?: Ctx;
-			key?: string;
-			uuid: string;
-			parent: string | null;
-			ts: string;
-			id: string;
-			name: string;
-			summary: string;
-			input: string;
-			result: { text: string; error: boolean; cut: boolean; images: number } | null;
-			/** 结果所在那条 user 记录：从这一步分叉要用它（用工具调用那条，结果就丢了） */
-			resultUuid: string | null;
-			agent: string | null;
-	  }
-	| {
-			k: "event";
-			uuid: string;
-			parent: string | null;
-			ts: string;
-			/** summary 离开时的小结；compact 上下文压缩；info 系统提示（比如用量到了）；task 后台任务（子代理、后台命令）的通知；agent 子代理发回来的回报 */
-			kind: "summary" | "compact" | "info" | "task" | "agent";
-			text: string;
-			/** 点开才看的：压缩前的摘要、任务的结果 */
-			detail?: string;
-			/** 任务的状态：completed / failed / killed …… */
-			status?: string;
-			/** 对应的子代理（有它的记录才给），能打开看它的对话 */
-			agent?: string;
-	  };
-
-export type SessionMeta = {
-	id: string;
-	/** Codex 的会话（codex.ts）；没有就是 Claude Code 的 */
-	agent?: "codex";
-	title: string | null;
-	first: string | null;
-	last: string | null;
-	/** 这个文件自己的第一句（分叉出来的会话，前面的记录是从原会话复制来的，时间早于文件建立） */
-	fresh: string | null;
-	prompts: number;
-	size: number;
-	mtime: string;
-	active: boolean;
-	/** 第一条记录的 uuid。分叉（--fork-session）出来的会话把原会话的记录原样复制过去，第一条 uuid 相同，靠它认出谁从谁分出来 */
-	root: string | null;
-	born: number;
-	/** 从哪个会话分叉出来的（同一个项目里 root 相同、比它早建的那个） */
-	parent: string | null;
-	unread: "done" | "error" | null;
-	/** Claude Code 什么时候会把它删掉（最后修改 + cleanupPeriodDays，它启动时清理）；Codex 不清理，是 null */
-	expires: string | null;
-};
-
-const CUT = 4000;
-const cut = (s: string, n = CUT) => (s.length > n ? { text: s.slice(0, n), cut: true } : { text: s, cut: false });
 /**
  * 节点里的工具参数只是个预览：长字符串截短，结构留着（文件路径还认得出来）。
  * 工具调用平时收着，完整的参数、结果点开时再拿（toolDetail）：大会话一下少发三分之二
  */
 const PATHS = new Set(["file_path", "notebook_path", "path"]);
 const brief = (input: unknown) => cut(JSON.stringify(input, (k, v) => (typeof v === "string" && !PATHS.has(k) && v.length > 80 ? `${v.slice(0, 80)}…` : v), 2), 400).text;
-const BRIEF_RESULT = 120;
-const BRIEF_THOUGHT = 120;
 
 /** 项目目录名 → 真实路径：从会话记录的 cwd 里取（目录名是把路径里的符号换成 - 的，反推不唯一）。路径不会变，找到了就一直用 */
 const paths = new Map<string, string>();
@@ -122,7 +46,10 @@ function projectPath(dir: string): string | null {
 	return null;
 }
 
-export function listProjects() {
+/** 上次列出来的项目：按 id 找路径的（projectOf）先看它 */
+let known: Project[] = [];
+/** 所有项目（Claude、Codex 的合在一起），新的在前。每次都重新列，记下来给 projectOf */
+export function listProjects(): Project[] {
 	const claude = !existsSync(PROJECTS) ? [] : readdirSync(PROJECTS, { withFileTypes: true })
 		.filter((d) => d.isDirectory())
 		.map((d) => {
@@ -144,7 +71,13 @@ export function listProjects() {
 			if (mtime > p.mtime) p.mtime = mtime;
 		}
 	}
-	return [...by.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
+	known = [...by.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
+	return known;
+}
+/** 项目 id → 项目：上次列的里没有（新建的文件夹）、还不知道路径的再列一遍 */
+export function projectOf(id: string): Project | null {
+	const hit = known.find((p) => p.id === id);
+	return hit?.path ? hit : (listProjects().find((p) => p.id === id) ?? null);
 }
 
 /** Claude Code 启动时删掉多少天没动的会话：~/.claude/settings.json 的 cleanupPeriodDays（默认 30），文件改了再读 */
@@ -164,16 +97,31 @@ function cleanupDays() {
 	return cleanup.days;
 }
 
-type Scan = Cursor & { title: string | null; first: string | null; last: string | null; prompts: number; root: string | null; fresh: string | null };
+/** 扫过的一个会话文件（接着上次读到的地方往下扫） */
+type Scan = Cursor & {
+	/** ai-title；custom：/rename、/branch 起的名字（custom-title），有就用它。都是后写的算 */
+	title: string | null;
+	custom: string | null;
+	first: string | null;
+	last: string | null;
+	prompts: number;
+	/** 第一条 user 记录的 uuid：猜终端里 --fork-session 的一家用（guess） */
+	root: string | null;
+	/** 终端里 /branch 出来的：复制过来的每条记录带 forkedFrom.sessionId（直接的原会话）；own 是第一句不带它的（分叉后自己问的） */
+	from: string | null;
+	own: string | null;
+	/** 人说的每一句：uuid、开头。分叉复制过来的记录 uuid 不变，不在原会话里的就是分叉后自己问的 */
+	asked: [string, string][];
+};
 const metaCache = new Map<string, Scan>();
+type Seen = { id: string; s: Scan; size: number; mtime: Date; born: number };
 
-/** 扫文件拿标题、第一句和最后一句、提问次数（接着上次读到的地方往下扫） */
 const scanMeta = (file: string) => serial(`meta:${file}`, () => scan(file));
-async function scan(file: string): Promise<SessionMeta> {
+async function scan(file: string): Promise<Seen> {
 	const st = statSync(file);
 	let s = metaCache.get(file);
 	const how = resume(s, st);
-	if (how === "fresh" || !s) s = { ino: st.ino, size: 0, mtime: 0, offset: 0, title: null, first: null, last: null, prompts: 0, root: null, fresh: null };
+	if (how === "fresh" || !s) s = { ino: st.ino, size: 0, mtime: 0, offset: 0, title: null, custom: null, first: null, last: null, prompts: 0, root: null, from: null, own: null, asked: [] };
 	if (how !== "same") {
 		for await (const { line, end } of lines(file, s.offset)) {
 			s.offset = end;
@@ -182,71 +130,124 @@ async function scan(file: string): Promise<SessionMeta> {
 				try { s.title = JSON.parse(line).aiTitle ?? s.title; } catch {}
 				continue;
 			}
+			if (line.startsWith('{"type":"custom-title"')) {
+				try { s.custom = JSON.parse(line).customTitle || s.custom; } catch {}
+				continue;
+			}
 			if (!line.includes('"type":"user"') || line.includes('"tool_result"')) continue;
 			let d: Raw;
 			try { d = JSON.parse(line); } catch { continue; }
 			if (d.uuid) s.root ??= d.uuid;
+			const from = typeof d.forkedFrom?.sessionId === "string" ? d.forkedFrom.sessionId : null;
+			s.from ??= from;
 			const t = promptText(d);
 			if (t === null) continue;
+			const head = t.slice(0, 200);
 			s.prompts++;
-			s.first ??= t.slice(0, 200);
-			s.last = t.slice(0, 200);
-			if (!s.fresh && Date.parse(d.timestamp) >= st.birthtimeMs - 2000) s.fresh = t.slice(0, 200);
+			s.first ??= head;
+			s.last = head;
+			if (d.uuid) s.asked.push([d.uuid, head]);
+			if (!from) s.own ??= head;
 		}
 		// 读的时候文件可能又长了：记的是开读前的大小，下次还会接着读
 		s.size = st.size;
 		s.mtime = st.mtimeMs;
 		metaCache.set(file, s);
 	}
+	const id = basename(file, ".jsonl");
+	// 整个项目扫过的，就地改这一家（root 可能刚有）
+	roots.get(basename(dirname(file)))?.set(id, { root: s.root, born: st.birthtimeMs, from: s.from });
+	return { id, s, size: st.size, mtime: st.mtime, born: st.birthtimeMs };
+}
+
+/** 记录里读出来的会话信息；terminal（在 mixer 外面开着）、unread（跑完没看）随时在变，给出去时由 live 加上 */
+type Scanned = Omit<SessionMeta, "terminal" | "unread">;
+const live = (m: Scanned): SessionMeta => ({ ...m, terminal: terminals.of(m.id), unread: unread(m.id) });
+
+/** 一个 Claude 会话的信息：标题、几句话、从哪分叉、什么时候会被清理 */
+async function metaOf(project: string, x: Seen): Promise<Scanned> {
+	const { s } = x;
+	const { parent, fresh } = await lineage(project, x.id, s);
 	return {
-		id: basename(file, ".jsonl"),
-		title: s.title,
+		id: x.id,
+		title: s.custom ?? s.title,
+		custom: !!s.custom,
 		first: s.first,
 		last: s.last,
-		fresh: s.fresh,
+		fresh,
 		prompts: s.prompts,
-		size: st.size,
-		mtime: st.mtime.toISOString(),
-		active: Date.now() - st.mtimeMs < 90_000,
-		root: s.root,
-		born: st.birthtimeMs,
-		parent: null,
-		unread: null,
-		expires: new Date(st.mtimeMs + cleanupDays() * 86_400_000).toISOString(),
+		size: x.size,
+		mtime: x.mtime.toISOString(),
+		parent,
+		expires: new Date(x.mtime.getTime() + cleanupDays() * 86_400_000).toISOString(),
 	};
 }
 
-export async function listSessions(project: string): Promise<SessionMeta[]> {
-	const dir = join(PROJECTS, safe(project));
-	const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".jsonl")) : [];
-	const metas = (await Promise.all(files.map((f) => scanMeta(join(dir, f))))).map((m) => ({
-		...m,
-		active: Date.now() - Date.parse(m.mtime) < 90_000 && !ourLastWrite(m.id, Date.parse(m.mtime)),
-		unread: unread(m.id),
-	}));
-	// 分叉：root 相同的一家，最早建的是原会话，其余都挂在它下面
-	const families = new Map<string, SessionMeta[]>();
-	for (const m of metas) if (m.root) families.set(m.root, [...(families.get(m.root) ?? []), m]);
-	for (const fam of families.values()) {
-		if (fam.length < 2) continue;
-		fam.sort((a, b) => a.born - b.born);
-		for (const m of fam.slice(1)) m.parent = fam[0].id;
-	}
-	const others: SessionMeta[] = (await codex.list(project)).map((m) => ({ ...m, unread: unread(m.id) }));
-	return [...metas, ...others].sort((a, b) => b.mtime.localeCompare(a.mtime));
+/**
+ * 从哪个会话分叉出来的（直接的原会话）、分叉后自己问的第一句。确切的两种：
+ *   mixer 里分叉的：state 当场记下的（forkOf）
+ *   终端里 /branch 的：复制过来的记录带 forkedFrom（终端里再 --fork-session 它，复制出来的也带着，那就成了原会话的原会话：认了）
+ * 剩下终端里 claude --resume --fork-session 的（还有 mixer 记 forkOf 之前分叉的）什么标记都没有，只能猜：guess
+ */
+async function lineage(project: string, id: string, s: Scan): Promise<{ parent: string | null; fresh: string | null }> {
+	const mine = forkOf(id)?.session;
+	if (!mine && s.from) return { parent: s.from, fresh: s.own };
+	const parent = mine ?? guess(project, id);
+	return { parent, fresh: parent ? await freshOf(project, s, parent) : null };
+}
+
+/** 分叉后自己问的第一句：分叉的文件里原会话的记录 uuid 原样留着，第一句不在原会话里的。原会话的文件没了就不知道 */
+async function freshOf(project: string, s: Scan, parent: string): Promise<string | null> {
+	let file: string;
+	try { file = sessionFile(project, parent); } catch { return null; }
+	if (!existsSync(file)) return null;
+	const had = new Set((await scanMeta(file)).s.asked.map(([u]) => u));
+	return s.asked.find(([u]) => !had.has(u))?.[1] ?? null;
 }
 
 /**
- * 侧栏里一个会话的那一行（会话文件变了，随通知推过去，侧栏不用整个工作区重拉）。
- * parent 不算：一个会话从哪分出来，建好就定了（原会话总是一家里最早建的），侧栏留着原来的
+ * 每个项目记着 会话 → 第一条 user 记录的 uuid（root）、建立时间、/branch 的来处：扫整个项目（family）时整个重建（顺带去掉别处删掉的），
+ * 之后扫到一个会话（scan）、删掉一个（forget）就地改。listSessions 每次都重建；侧栏推一行（row）时这个项目还没扫过（mixer 刚起来）才扫一次
  */
+const roots = new Map<string, Map<string, { root: string | null; born: number; from: string | null }>>();
+/**
+ * 猜的（只用在没有确切来处的会话上）：--fork-session 把原会话的记录原样复制过去，root 相同的是一家；
+ * 一家里没有确切来处的按建立时间排（一样的按 id，次次一样），最早的、文件还在的当原会话，别的都挂在它下面。
+ * 靠不住的地方：文件拷过（建立时间变了）、分叉的分叉也挂到最早的那个上（侧栏反正挂到最上面的祖先）
+ */
+function guess(project: string, id: string): string | null {
+	const all = roots.get(project);
+	const me = all?.get(id);
+	if (!all || !me?.root) return null;
+	const fam = [...all].filter(([k, v]) => v.root === me.root && (k === id || (!v.from && !forkOf(k)))).sort(([a, x], [b, y]) => x.born - y.born || a.localeCompare(b));
+	const head = fam.find(([k]) => k === id || existsSync(sessionFile(project, k)))?.[0];
+	return head && head !== id ? head : null;
+}
+
+/** 扫整个项目的 Claude 会话（接着上次读的），重建这个项目的 roots */
+async function family(project: string) {
+	const dir = join(PROJECTS, safe(project));
+	const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".jsonl")) : [];
+	const seen = await Promise.all(files.map((f) => scanMeta(join(dir, f))));
+	roots.set(project, new Map(seen.map((x) => [x.id, { root: x.s.root, born: x.born, from: x.s.from }])));
+	return seen;
+}
+
+export async function listSessions(project: string): Promise<SessionMeta[]> {
+	const metas = await Promise.all((await family(project)).map(async (x) => live(await metaOf(project, x))));
+	const others = (await codex.list(project)).map(live);
+	return [...metas, ...others].sort((a, b) => b.mtime.localeCompare(a.mtime));
+}
+
+/** 侧栏里一个会话的那一行（会话文件变了，随通知推过去，侧栏不用整个工作区重拉） */
 export async function row(project: string, id: string): Promise<SessionMeta | null> {
-	const cx = codex.find(id);
-	if (cx) return { ...(await codex.metaOf(cx)), unread: unread(id) };
-	const file = sessionFile(project, id);
-	if (!existsSync(file)) return null;
-	const m = await scanMeta(file);
-	return { ...m, active: Date.now() - Date.parse(m.mtime) < 90_000 && !ourLastWrite(m.id, Date.parse(m.mtime)), unread: unread(m.id) };
+	const at = locate(project, id);
+	return at && metaAt(project, at);
+}
+async function metaAt(project: string, at: Located) {
+	if (at.cx) return live(await codex.metaOf(at.cx));
+	if (!roots.has(project)) await family(project);
+	return live(await metaOf(project, await scanMeta(at.file)));
 }
 
 /** 会话删掉了（trash.ts）：读过的记录、扫过的信息、它的子代理都丢掉 */
@@ -254,10 +255,12 @@ export function forget(project: string, id: string) {
 	const file = sessionFile(project, id);
 	const dir = `${file.slice(0, -".jsonl".length)}/`;
 	metaCache.delete(file);
+	roots.get(project)?.delete(id);
 	for (const f of cache.keys()) if (f === file || f.startsWith(dir)) cache.delete(f);
+	for (const f of edits.keys()) if (f.startsWith(dir)) edits.delete(f);
 }
 
-/** 所有项目和它们的会话（侧栏用） */
+/** 所有项目和它们的会话（「浏览会话」用） */
 export async function tree() {
 	return Promise.all(listProjects().map(async (p) => ({ ...p, sessions: await listSessions(p.id) })));
 }
@@ -274,6 +277,8 @@ function userText(d: Raw): string | null {
 
 /** 系统借 user 消息塞进来的东西（后台任务通知、命令输出、提醒），不算人说的话 */
 const SYSTEM = /^\s*<(task-notification|command-name|command-message|local-command|system-reminder|bash-input|bash-stdout)/;
+/** 停止之后命令行补的一句（「[Request interrupted by user]」，停在工具调用上是「… for tool use]」）：显示成一条事件 */
+const INTERRUPTED = /^\s*\[Request interrupted by user[^\]]*\]\s*$/;
 
 /**
  * 调用 skill（/名字 参数）：记录里先是一条 <command-name>，下一条 isMeta 的是 skill 的正文（Base directory for this skill: …）。
@@ -295,7 +300,7 @@ function skillCall(d: Raw, commands: Map<string, string>): string | null {
 function promptText(d: Raw): string | null {
 	if (d.isCompactSummary) return null;
 	const t = userText(d);
-	return t === null || SYSTEM.test(t) ? null : t;
+	return t === null || SYSTEM.test(t) || INTERRUPTED.test(t) ? null : t;
 }
 
 const tag = (t: string, name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(t)?.[1]?.trim();
@@ -317,8 +322,37 @@ const resultText = (c: unknown): string => {
 	return "";
 };
 
-/** 工具调用的一行摘要：命令、文件路径、搜索词…… */
 type Tool = Extract<Node, { k: "tool" }>;
+
+const ident = (v: unknown) => (typeof v === "string" && /^[\w-]+$/.test(v) ? v : undefined);
+/**
+ * 工具结果结构化的那份（记录里的 toolUseResult，出错的只是一句字符串）里认得的几样，不从结果的文字里认：
+ *   子代理：Agent 的 agentId，status 是 async_launched 的开了就回来、在后台跑；Skill 以 forked 跑的也有 agentId，background 是在后台
+ *   后台任务：后台命令的 backgroundTaskId、Monitor 的 taskId
+ *   改了的文件：Write / Edit / MultiEdit 的 filePath（带 structuredPatch）、NotebookEdit 的 notebook_path（带 updated_file）、
+ *     命令的 bashEditDiff（这条命令改了工作区里的哪些文件；shared 是同一个工作区里别的进程也在改，分不清是谁改的，不算）。相对路径按 cwd 补全
+ */
+export function facts(name: string, r: unknown, cwd?: string): Partial<Pick<Tool, "agent" | "async" | "task" | "files">> {
+	if (!r || typeof r !== "object" || Array.isArray(r)) return {};
+	const x = r as Raw;
+	const out: Partial<Pick<Tool, "agent" | "async" | "task" | "files">> = {};
+	const agent = ident(x.agentId);
+	if (agent) {
+		out.agent = agent;
+		if (x.status === "async_launched" || (x.status === "forked" && x.background === true)) out.async = { agentId: agent };
+	}
+	const task = ident(x.backgroundTaskId) ?? (name === "Monitor" ? ident(x.taskId) : undefined);
+	if (task) out.task = task;
+	const files: unknown[] = [];
+	if (typeof x.filePath === "string" && "structuredPatch" in x) files.push(x.filePath);
+	if (typeof x.notebook_path === "string" && "updated_file" in x) files.push(x.notebook_path);
+	const bash = x.bashEditDiff;
+	if (bash && typeof bash === "object" && !bash.shared) files.push(...(Array.isArray(bash.changedFiles) ? bash.changedFiles : Array.isArray(bash.files) ? bash.files.map((f: Raw) => f?.filePath) : []));
+	const abs = files.flatMap((f) => (typeof f === "string" && f ? [isAbsolute(f) || !cwd ? f : join(cwd, f)] : []));
+	if (abs.length) out.files = [...new Set(abs)];
+	return out;
+}
+
 /**
  * 一个会话读到哪了、拼成的节点，文件长了接着往下读。
  * 节点新建、后来又改了（工具有了结果、压缩有了摘要）记一个递增的 rev：网页带着上次拿到的「epoch:rev」来，只给它之后变了的节点。
@@ -341,29 +375,24 @@ type Parsed = Cursor & {
 	commands: Map<string, string>;
 	shown: Set<string>;
 	tools: Map<string, Tool>;
-	/** 同一条消息的每一段各是一条 assistant 记录：按文件顺序数，第几条就是第几段（空的思考也算一段） */
+	/** 同一条消息的每一段各是一条 assistant 记录：记录带 apiBlockIndex 就照它，老的没有才按文件顺序数（空的思考也算一段） */
 	blockNo: Map<string, number>;
 	compact: Extract<Node, { k: "event" }> | null;
 	/** parentUuid 指向的记录还没读到（偶尔先写回复、后写它挂着的附带记录）：先当根，那条读到了再找 */
 	waiting: Map<string, Node[]>;
+	/** 最后一条 last-prompt 的 leafUuid（explicit：终端里回退、分叉时写的，之后还没写过别的记录）；last：最后写的一条主线记录 */
+	leaf: { uuid: string; explicit: boolean } | null;
+	last: string | null;
+	/** assistant 记录、工具结果记录 → 属于哪条消息（message.id）：并行的几个工具调用是同一条消息，leafOf 认「接着往下」时当一体 */
+	mids: Map<string, string>;
+	/** 工具改过的文件（toolUseResult 里的）：整个会话一份 */
+	touched: Set<string>;
 };
 /**
  * 读过的会话留在内存里（文件长了接着读），按最近用过的排；加起来超过 200MB（按文件大小算，图片的 base64 也在里面）
  * 就丢掉最久没用的，下次打开从头读。正在用的那个不丢
  */
-const cache = new Map<string, Parsed>();
-const BUDGET = 200 * 1024 * 1024;
-function keep(file: string, p: Parsed) {
-	cache.delete(file);
-	cache.set(file, p);
-	let total = 0;
-	for (const x of cache.values()) total += x.size;
-	for (const [f, x] of cache) {
-		if (total <= BUDGET || f === file) break;
-		cache.delete(f);
-		total -= x.size;
-	}
-}
+const cache = lru<Parsed>(200 * 1024 * 1024);
 
 /** 读一个会话（或子 agent）的记录，变成显示节点 */
 export const parse = (file: string) => serial(`parse:${file}`, () => read(file));
@@ -373,13 +402,13 @@ async function read(file: string): Promise<Parsed> {
 	const hit = cache.get(file);
 	const todo = resume(hit, st);
 	if (todo === "same" && hit) {
-		keep(file, hit);
+		cache.keep(file, hit);
 		return hit;
 	}
 	const s: Parsed =
 		todo === "more" && hit
 			? hit
-			: { ino: st.ino, size: 0, mtime: 0, offset: 0, epoch: randomUUID().slice(0, 8), rev: 0, revs: new Map(), nodes: [], images: new Map(), results: new Map(), inputs: new Map(), thoughts: new Map(), parents: new Map(), commands: new Map(), shown: new Set(), tools: new Map(), blockNo: new Map(), compact: null, waiting: new Map() };
+			: { ino: st.ino, size: 0, mtime: 0, offset: 0, epoch: epoch(), rev: 0, revs: new Map(), nodes: [], images: new Map(), results: new Map(), inputs: new Map(), thoughts: new Map(), parents: new Map(), commands: new Map(), shown: new Set(), tools: new Map(), blockNo: new Map(), compact: null, waiting: new Map(), leaf: null, last: null, mids: new Map(), touched: new Set() };
 	cache.set(file, s);
 	const touch = (n: Node) => s.revs.set(n.uuid, ++s.rev);
 	// parent：沿 parentUuid 往上找最近的显示节点；半路断在还没读到的记录上就先等着
@@ -411,18 +440,31 @@ async function read(file: string): Promise<Parsed> {
 		if (!line.startsWith("{")) continue;
 		let d: Raw;
 		try { d = JSON.parse(line); } catch { continue; }
+		// 命令行续接时接着哪条（没有 uuid 的元数据记录）
+		if (d.type === "last-prompt" && typeof d.leafUuid === "string" && d.leafUuid) s.leaf = { uuid: d.leafUuid, explicit: d.explicit === true };
 		// 同一条记录有时会被原样再追加一次（同一个 uuid）：只认第一次
 		if (!d.uuid || s.parents.has(d.uuid)) continue;
 		s.parents.set(d.uuid, d.parentUuid ?? null);
+		if (!d.isSidechain && (d.type === "user" || d.type === "assistant" || d.type === "system" || d.type === "attachment")) {
+			s.last = d.uuid;
+			if (s.leaf) s.leaf.explicit = false;
+			// 压缩之后命令行不再认之前的 leafUuid
+			if (d.subtype === "compact_boundary") s.leaf = null;
+		}
 		const c = d.message?.content;
 		let n: Node | null = null;
+		/** 挂在哪条记录下面（不给就照 parentUuid） */
+		let from: string | null | undefined;
 		if (d.type === "user") {
 			const said = userText(d);
 			if (said?.includes("<command-name>")) s.commands.set(d.uuid, said);
 			const t = promptText(d);
 			const skill = t === null ? skillCall(d, s.commands) : null;
-			if (skill !== null) n = { k: "user", ...base(d), text: skill, images: 0 };
-			else if (t !== null) {
+			// skill：节点用 <command-name> 那条的 uuid（写进 stdin 时带的 uuid 落在它上面），挂在它的上一条下面
+			if (skill !== null) {
+				n = { k: "user", ...base(d), uuid: d.parentUuid, text: skill, images: 0 };
+				from = s.parents.get(d.parentUuid) ?? null;
+			} else if (t !== null) {
 				const imgs = Array.isArray(c) ? c.filter((b) => b?.type === "image" && b.source?.type === "base64") : [];
 				if (imgs.length) s.images.set(d.uuid, imgs.map((b) => ({ media: b.source.media_type, data: b.source.data })));
 				n = { k: "user", ...base(d), text: t, images: imgs.length };
@@ -432,7 +474,8 @@ async function read(file: string): Promise<Parsed> {
 					s.compact.detail = userText({ ...d, isMeta: false }) ?? undefined;
 					touch(s.compact);
 				}
-			} else if (SYSTEM.test(said ?? "")) {
+			} else if (INTERRUPTED.test(said ?? "")) n = { k: "event", ...base(d), kind: "info", text: "被打断了" };
+			else if (SYSTEM.test(said ?? "")) {
 				// 后台任务的通知：一条事件；命令输出、提醒不显示
 				if (said?.includes("<task-notification>")) n = task(d, said);
 			} else if (Array.isArray(c)) {
@@ -449,8 +492,11 @@ async function read(file: string): Promise<Parsed> {
 						const { text: t2, cut: cutted } = cut(text, BRIEF_RESULT);
 						tool.result = { text: t2, error: !!b.is_error, cut: cutted, images: imgs.length };
 						tool.resultUuid = d.uuid;
-						const m = /agentId: (a[0-9a-f]+)/.exec(text);
-						if (m) tool.agent = m[1];
+						const mid = tool.key?.split(":")[0];
+						if (mid) s.mids.set(d.uuid, mid);
+						// 一条记录一个工具结果，toolUseResult 是它结构化的那份（出错的是一句字符串）
+						Object.assign(tool, facts(tool.name, d.toolUseResult, d.cwd));
+						for (const f of tool.files ?? []) s.touched.add(f);
 						touch(tool);
 					}
 				}
@@ -465,6 +511,7 @@ async function read(file: string): Promise<Parsed> {
 				n = { k: "thinking", ...base(d), ...t };
 			} else if (b?.type === "tool_use") {
 				s.inputs.set(b.id, JSON.stringify(b.input ?? {}, null, 2));
+				const file = b.input?.file_path ?? b.input?.notebook_path;
 				const tool: Tool = {
 					k: "tool",
 					...base(d),
@@ -475,12 +522,15 @@ async function read(file: string): Promise<Parsed> {
 					result: null,
 					resultUuid: null,
 					agent: null,
+					...(typeof file === "string" && file ? { file } : {}),
 				};
 				s.tools.set(b.id, tool);
 				n = tool;
 			}
+			// 第几段：记录带着 apiBlockIndex 就照它（有的段没写进记录，按顺序数会错一位），老记录才数
 			const mid = String(d.message?.id ?? "");
-			const no = s.blockNo.get(mid) ?? 0;
+			if (mid) s.mids.set(d.uuid, mid);
+			const no = typeof d.apiBlockIndex === "number" ? d.apiBlockIndex : (s.blockNo.get(mid) ?? 0);
 			s.blockNo.set(mid, no + 1);
 			if (n && mid) n.key = `${mid}:${no}`;
 			const u = d.message?.usage;
@@ -498,11 +548,11 @@ async function read(file: string): Promise<Parsed> {
 			const t = String(d.attachment.prompt);
 			if (d.attachment.commandMode === "task-notification" || t.trimStart().startsWith("<task-notification>")) n = task(d, t);
 			else if (t.trimStart().startsWith("<agent-message")) n = report(d, t);
-			else n = { k: "user", ...base(d), text: t, images: 0, queued: true };
+			else n = { k: "user", ...base(d), text: t, images: 0, queued: true, ...(typeof d.attachment.source_uuid === "string" ? { source: d.attachment.source_uuid } : {}) };
 		}
 		if (n) {
 			// 压缩那条的 parentUuid 是空的（logicalParentUuid 指的是压缩之后的记录，靠不住）：压缩发生在当时那条分支的末尾，接在它前面最后一个显示节点上
-			attach(n, (d.parentUuid ?? (d.subtype === "compact_boundary" ? s.nodes[s.nodes.length - 1]?.uuid : null) ?? null) as string | null);
+			attach(n, from === undefined ? ((d.parentUuid ?? (d.subtype === "compact_boundary" ? s.nodes[s.nodes.length - 1]?.uuid : null) ?? null) as string | null) : from);
 			s.shown.add(n.uuid);
 			s.nodes.push(n);
 			touch(n);
@@ -519,7 +569,7 @@ async function read(file: string): Promise<Parsed> {
 	// 读的时候文件可能又长了：记的是开读前的大小，下次还会接着读
 	s.size = st.size;
 	s.mtime = st.mtimeMs;
-	keep(file, s);
+	cache.keep(file, s);
 	return s;
 }
 
@@ -533,20 +583,133 @@ export const sessionFile = (project: string, id: string) => join(PROJECTS, safe(
 export const agentFile = (project: string, id: string, agent: string) => join(PROJECTS, safe(project), safe(id), "subagents", `agent-${safe(agent)}.jsonl`);
 
 /**
+ * 会话在哪、是谁的。Claude 的文件在就是 Claude 的：Claude 的 id 也长得像 Codex 的，先问 codex.find 的话每次都对不上、去扫 ~/.codex。
+ * 不在再问 codex.find（cx 是它的信息）；都没有是 null
+ */
+type Located = { file: string; cx: codex.Info | null };
+export function locate(project: string, id: string): Located | null {
+	const file = sessionFile(project, id);
+	if (existsSync(file)) return { file, cx: null };
+	const cx = codex.find(id);
+	return cx ? { file: cx.file, cx } : null;
+}
+const parsedAt = (at: Located) => (at.cx ? codex.parse(at.file) : parse(at.file));
+/** 读好的会话（Claude、Codex 的都是）或子代理的记录：节点、点开看的详情都在里面。没有这个会话就是 ENOENT（404） */
+function source(project: string, id: string, agentId?: string) {
+	if (agentId) return parse(agentFile(project, id, agentId));
+	const at = locate(project, id);
+	return at ? parsedAt(at) : parse(sessionFile(project, id));
+}
+
+/**
  * 一个会话。since 是上次拿到的 version（「epoch:rev」）：对得上就只给之后新建、改过的节点（delta），
- * 跑的时候每 0.5 秒拉一次，不用每次把几 MB 的整个会话再发一遍
+ * 跑的时候每 0.5 秒拉一次，不用每次把几 MB 的整个会话再发一遍。
+ * windows：Claude 的是 mixer 跑完时记下的（state.json），Codex 的记录里有
  */
 export async function session(project: string, id: string, since?: string | null) {
-	const cx = codex.find(id);
-	if (cx) return { ...(await codex.session(cx, since)), effort: chosenEffort(id) };
-	const file = sessionFile(project, id);
-	const [p, metas] = await Promise.all([parse(file), listSessions(project)]);
-	const meta = metas.find((m) => m.id === id) ?? (await scanMeta(file));
-	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id), effort: chosenEffort(id) };
+	const at = locate(project, id);
+	if (!at) throw Object.assign(new Error("没有这个会话"), { status: 404 });
+	const [p, meta] = await Promise.all([parsedAt(at), metaAt(project, at)]);
+	const leaf = "parents" in p ? leafOf(p) : null;
+	const touched = "parents" in p ? await touchedOf(at.file, p) : [...p.touched];
+	return { meta, ...changes(p, since), windows: "windows" in p ? p.windows : windows(), model: chosenModel(id), effort: chosenEffort(id), leaf, touched };
+}
+
+/**
+ * 会话记录现在写到哪了（和 session() 给的 version 一样）：读一遍（接着上次读的）再看。没有这个会话是 null。
+ * Codex 的给了 turn：等记录里这一轮收尾了（ended）再看，最多等 wait 毫秒
+ */
+export async function version(project: string, id: string, turn?: string | null, wait = 5000): Promise<string | null> {
+	for (const until = Date.now() + wait; ; ) {
+		const at = locate(project, id);
+		if (!at) return null;
+		const p = await parsedAt(at);
+		if (!turn || !("ended" in p) || p.ended.has(turn) || Date.now() >= until) return `${p.epoch}:${p.rev}`;
+		await new Promise((ok) => setTimeout(ok, 200));
+	}
+}
+
+/**
+ * 命令行续接时接着哪条，照它读记录的办法：最后一条 last-prompt 的 leafUuid。
+ *   终端里回退、分叉刚写的（explicit，之后还没写过别的记录）：就是它，哪怕它下面还挂着回退前的
+ *   不然：之后写的最后一条是它的后代（接着往下跑了；它是并行工具调用里的一个时，从同一条消息的别的调用往下的也算）就从那条起，
+ *     再走到下面最新的显示节点（偶尔先写回复、后写它挂着的附带记录，leafUuid 指的是那条附带记录）
+ * 换成显示节点。没有（还没写过、压缩之后还没写）是 null，网页走最新的叶子
+ */
+function leafOf(p: Parsed): string | null {
+	const l = p.leaf;
+	if (!l || !p.parents.has(l.uuid)) return null;
+	const up = function* (from: string) {
+		let x: string | null | undefined = from;
+		for (let hops = 0; x && hops < 1_000_000; hops++, x = p.parents.get(x)) yield x;
+	};
+	const batch = p.mids.get(l.uuid);
+	let to = l.uuid;
+	if (!l.explicit && p.last && p.last !== l.uuid) for (const x of up(p.last)) if (x === l.uuid || (batch && p.mids.get(x) === batch)) { to = p.last; break; }
+	let at: string | null = null;
+	for (const x of up(to)) if (p.shown.has(x)) { at = x; break; }
+	return at && !l.explicit ? newest(p.nodes, at) : at;
+}
+
+/** from 和它下面的显示节点里最新的那个（一样新的取文件里靠后的） */
+function newest(nodes: Node[], from: string): string {
+	const kids = new Map<string, string[]>();
+	for (const n of nodes) if (n.parent) (kids.get(n.parent) ?? kids.set(n.parent, []).get(n.parent))?.push(n.uuid);
+	const under = new Set([from]);
+	for (const todo = [from]; todo.length; ) {
+		for (const k of kids.get(todo.pop() as string) ?? []) {
+			if (under.has(k)) continue;
+			under.add(k);
+			todo.push(k);
+		}
+	}
+	let best: Node | null = null;
+	for (const n of nodes) if (under.has(n.uuid) && (!best || n.ts >= best.ts)) best = n;
+	return best?.uuid ?? from;
+}
+
+/**
+ * 子代理改过的文件：只解析带 toolUseResult 的行，接着上次读到的地方往下扫（不用把子代理的记录整个拼一遍）。
+ * 在自己的 worktree 里干活的（meta 的 worktreePath）：那里面的改动在另一份检出里，不算这个会话的
+ */
+const edits = new Map<string, Cursor & { files: Set<string> }>();
+const editsOf = (file: string) =>
+	serial(`edits:${file}`, async () => {
+		const st = statSync(file);
+		let e = edits.get(file);
+		const how = resume(e, st);
+		if (how === "fresh" || !e) e = { ino: st.ino, size: 0, mtime: 0, offset: 0, files: new Set() };
+		if (how !== "same") {
+			const wt = info(file).worktreePath;
+			const away = typeof wt === "string" && wt ? `${wt.replace(/\/+$/, "")}/` : null;
+			for await (const { line, end } of lines(file, e.offset)) {
+				e.offset = end;
+				if (!line.includes('"toolUseResult":{')) continue;
+				try {
+					const d = JSON.parse(line);
+					for (const f of facts("", d.toolUseResult, d.cwd).files ?? []) if (!away || !f.startsWith(away)) e.files.add(f);
+				} catch {}
+			}
+			e.size = st.size;
+			e.mtime = st.mtimeMs;
+			edits.set(file, e);
+		}
+		return e.files;
+	});
+
+/** 这个会话改过的文件（所有分支），连它开过的子代理改的 */
+async function touchedOf(file: string, p: Parsed): Promise<string[]> {
+	const dir = join(file.replace(/\.jsonl$/, ""), "subagents");
+	let names: string[] = [];
+	try { names = readdirSync(dir).filter((f) => f.endsWith(".jsonl")); } catch {}
+	const all = new Set(p.touched);
+	const subs = await Promise.all(names.map((f) => editsOf(join(dir, f)).catch(() => new Set<string>())));
+	for (const s of subs) for (const f of s) all.add(f);
+	return [...all];
 }
 
 /** since 是「epoch:rev」：epoch 对得上就只给 rev 之后新建、改过的节点（delta），对不上给全部 */
-function changes(p: Parsed, since?: string | null) {
+function changes(p: Pick<Parsed, "epoch" | "rev" | "revs" | "nodes">, since?: string | null) {
 	const [epoch, rev] = (since ?? "").split(":");
 	const after = epoch === p.epoch ? Number(rev) : Number.NaN;
 	const delta = Number.isInteger(after) && after <= p.rev;
@@ -576,7 +739,6 @@ export function activity(nodes: Node[]): string | null {
 	return null;
 }
 
-export type Sub = { agentId: string; toolUseId: string | null; agentType: string | null; description: string | null; latest: string | null; mtime: number };
 /** 10 分钟没动的子代理不可能还在跑：不读它的记录，latest 给 null（列表打开时不用把一个会话的子代理全读一遍） */
 const RECENT = 10 * 60_000;
 
@@ -604,9 +766,7 @@ export async function subs(project: string, id: string): Promise<Sub[]> {
 
 /** 点开一个工具调用：完整参数，结果先给前 4000 字（再要完整的走 fullResult） */
 export async function toolDetail(project: string, id: string, toolUseId: string, agentId?: string) {
-	const cx = codex.find(id);
-	if (cx) return codex.toolDetail(cx, toolUseId);
-	const p = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
+	const p = await source(project, id, agentId);
 	const input = p.inputs.get(toolUseId);
 	if (input === undefined) return null;
 	const r = p.results.get(toolUseId);
@@ -614,25 +774,10 @@ export async function toolDetail(project: string, id: string, toolUseId: string,
 	return { input: cut(input, 20_000).text, result: res?.text ?? null, cut: res?.cut ?? false };
 }
 
-export async function fullResult(project: string, id: string, toolUseId: string, agentId?: string) {
-	const cx = codex.find(id);
-	if (cx) return codex.fullResult(cx, toolUseId);
-	const { results } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
-	return results.get(toolUseId) ?? null;
-}
+export const fullResult = async (project: string, id: string, toolUseId: string, agentId?: string) => (await source(project, id, agentId)).results.get(toolUseId) ?? null;
 
 /** 点开一段思考：全文（节点里只有开头） */
-export async function thought(project: string, id: string, uuid: string, agentId?: string) {
-	const cx = codex.find(id);
-	if (cx) return codex.thought(cx, uuid);
-	const { thoughts } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
-	return thoughts.get(uuid) ?? null;
-}
+export const thought = async (project: string, id: string, uuid: string, agentId?: string) => (await source(project, id, agentId)).thoughts.get(uuid) ?? null;
 
 /** 人发的图片（按消息的 uuid）或工具结果里的图片（按工具调用的 id） */
-export async function image(project: string, id: string, uuid: string, i: number, agentId?: string) {
-	const cx = codex.find(id);
-	if (cx) return codex.image(cx, uuid, i);
-	const { images } = await parse(agentId ? agentFile(project, id, agentId) : sessionFile(project, id));
-	return images.get(uuid)?.[i] ?? null;
-}
+export const image = async (project: string, id: string, uuid: string, i: number, agentId?: string) => (await source(project, id, agentId)).images.get(uuid)?.[i] ?? null;

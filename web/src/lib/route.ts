@@ -23,7 +23,8 @@ function read(): Route {
 // 主屏幕 App 打开时回到上次看的地方：iOS 添加到主屏幕记的是当时那个地址，不一定认 manifest 的 start_url。
 // 只管冷启动（navigate），刷新（reload，比如有新版本）留在原处
 const LAST = "mixer:route";
-const standalone = matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+/** 从主屏幕打开的（没有地址栏） */
+export const standalone = matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
 const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
 if (standalone && nav?.type === "navigate") {
 	const last = localStorage.getItem(LAST);
@@ -57,8 +58,10 @@ export function go(r: Partial<Route>, replace = false) {
 	for (const l of listeners) l();
 }
 
-/** 打开一个会话：清掉上一个会话的版本选择，面板保持 */
-export const openSession = (project: string, session: string) => go({ project, session, leaf: null });
+/** 打开一个会话：面板保持（上一个会话的版本选择 go 会清掉） */
+export const openSession = (project: string, session: string) => go({ project, session });
+/** 打开项目页：会话页的面板、文件都不带过去 */
+export const openProject = (project: string) => go({ project, session: null, panel: null, file: null, view: null });
 
 export function useRoute(): Route {
 	const [r, setR] = useState(read);

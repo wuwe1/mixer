@@ -2,18 +2,18 @@
 // 顶上一行是分支和远端（领先 ↑ / 落后 ↓）；下面是：未提交的改动（在会话里分成「这个会话改的」和「其他」）、未推送的提交、最近的提交。
 // 文件那行就是它 diff 的标题（展开时贴在顶上）：状态字母、路径（文件名突出）、加减了几行。提交展开是说明和它改的文件。
 // 第一次打开时，主要那一节改得不多（≤ 5 个文件、每个 ≤ 200 行）就直接把 diff 摊开，不用一个个点。
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileText, GitBranch } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, FileText, GitBranch } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, type Change, type Commit, enc, type Status } from "@/lib/api";
+import { api, type Change, type Commit, enc, type Status } from "@shared/api";
 import { type FileDiff, parseDiff } from "@/lib/diff";
 import { useEvent } from "@/lib/events";
 import { go } from "@/lib/route";
 import { clock, since } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { Hunks } from "./diff";
-import { Placeholder } from "./placeholder";
+import { Hunks, Note } from "./diff";
+import { Chevron, Placeholder } from "./placeholder";
 
 const KIND: Record<string, { letter: string; label: string; cls: string }> = {
 	M: { letter: "M", label: "修改", cls: "text-modified" },
@@ -24,8 +24,6 @@ const KIND: Record<string, { letter: string; label: string; cls: string }> = {
 };
 // porcelain 的两位：前一位是暂存区比 HEAD，后一位是工作区比暂存区。合起来看和 HEAD 比是什么
 const kindOf = (code: string) => KIND[code[1] === "D" ? "D" : code[0] !== " " ? code[0] : code[1]] ?? KIND.M;
-
-const Chevron = ({ open }: { open: boolean }) => <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />;
 
 function Stat({ add, del }: { add?: number; del?: number }) {
 	return (
@@ -82,8 +80,6 @@ function FileRow({ code, path, add, del, open, onToggle, indent, children }: { c
 		</div>
 	);
 }
-
-const Note = ({ children }: { children: ReactNode }) => <p className="px-3 py-2 text-xs text-muted-foreground">{children}</p>;
 
 /** 未提交的一个文件：展开时取它的 diff；状态里它这一条变了（状态、加减行数）再取一次，取到之前先显示旧的 */
 function WorkFile({ project, c, open, onToggle }: { project: string; c: Change; open: boolean; onToggle: () => void }) {

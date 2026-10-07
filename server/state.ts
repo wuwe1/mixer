@@ -2,14 +2,18 @@
 // 跑完的时间晚于打开的时间，就是「跑完了，还没看」。还有工作区：侧栏里放了哪些文件夹（按人拖的顺序）、哪些会话。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Account } from "../web/src/lib/usage.ts";
+import type { Account } from "../shared/usage.ts";
 import { DATA } from "./access.ts";
 
 const FILE = join(DATA, "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; limits?: Record<string, unknown> | null; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>> };
-let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {} };
-try { state = { ...state, ...JSON.parse(readFileSync(FILE, "utf8")) }; } catch {}
+type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>>; forks: Record<string, Fork> };
+let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {}, forks: {} };
+// 老的 state.json 里的 sizes（以前按 mixer 放手时的文件大小猜「终端中打开」）不要了
+try {
+	const { sizes: _old, ...saved } = JSON.parse(readFileSync(FILE, "utf8"));
+	state = { ...state, ...saved };
+} catch {}
 
 function save() {
 	mkdirSync(dirname(FILE), { recursive: true });
@@ -27,6 +31,17 @@ export function seen(session: string) {
 	save();
 }
 
+/** 在 mixer 里分叉出来的会话从哪来：原会话、分叉点（null 是从最新处）。分叉时 mixer 自己定的新会话 id，当场记下 */
+export type Fork = { session: string; at: string | null };
+export function fork(child: string, from: Fork) {
+	const old = state.forks[child];
+	if (old?.session === from.session && old.at === from.at) return;
+	state.forks[child] = { session: from.session, at: from.at };
+	save();
+}
+/** 不是在 mixer 里分叉出来的：null */
+export const forkOf = (id: string): Fork | null => state.forks[id] ?? null;
+
 /** 跑完了还没看：done / error；看过了或没在 mixer 里跑过：null */
 export function unread(session: string): "done" | "error" | null {
 	const f = state.finished[session];
@@ -35,12 +50,6 @@ export function unread(session: string): "done" | "error" | null {
 	if (s && s >= f.at) return null;
 	return f.error ? "error" : "done";
 }
-
-/** 会话最近那次写入是不是 mixer 自己的运行（跑完的时间不早于文件修改时间几秒）：是的话就不算「终端里开着」，重启之后也认得 */
-export const ourLastWrite = (session: string, mtimeMs: number) => {
-	const f = state.finished[session];
-	return !!f && Date.parse(f.at) >= mtimeMs - 5000;
-};
 
 /** 各模型的上下文窗口多大：会话记录里只有模型名，mixer 里每跑完一次从结果里记下来 */
 export function learnWindow(model: string, size: number) {
@@ -97,12 +106,6 @@ export function setUsage(a: Account) {
 	state.usage[a.id] = a;
 	save();
 }
-/** 旧版本记的 limits（只有 Claude 的两个窗口）：usage.ts 起来时拿走一次换成新的样子，之后就没有了 */
-export function takeLimits() {
-	const l = state.limits;
-	delete state.limits;
-	return l ?? null;
-}
 
 /**
  * 工作区：groups 是文件夹，顺序就是侧栏里的顺序（人拖的，新加的放最上面）；sessions 是放进来的会话 → 它的文件夹。
@@ -139,7 +142,7 @@ export function removeFromWorkspace(project: string, session?: string | null) {
 	setWorkspace(w);
 	return true;
 }
-/** 会话删掉了：移出工作区，跑完没看、看过、选过的模型都忘掉。返回工作区变了没有 */
+/** 会话删掉了：移出工作区，跑完没看、看过、选过的模型、从哪分叉的都忘掉。返回工作区变了没有 */
 export function forget(session: string) {
 	const w = state.workspace;
 	const inside = !!w && session in w.sessions;
@@ -148,6 +151,7 @@ export function forget(session: string) {
 	delete state.seen[session];
 	delete state.models[session];
 	delete state.efforts[session];
+	delete state.forks[session];
 	save();
 	return inside;
 }

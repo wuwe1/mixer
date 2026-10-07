@@ -3,12 +3,7 @@
 // 重新打包之后旧的那几块就没了：main.tsx 里拿不到时刷新
 import { type ComponentType, lazy, type ReactNode, Suspense, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
-
-const Loading = () => (
-	<div className="flex min-h-0 flex-1">
-		<Spinner className="m-auto text-muted-foreground" />
-	</div>
-);
+import { Loading } from "./placeholder";
 
 function later<P extends object>(load: () => Promise<ComponentType<P>>, fallback: ReactNode) {
 	const C = lazy(() => load().then((c) => ({ default: c })));

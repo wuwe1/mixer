@@ -3,18 +3,20 @@
 //   Cloudflare Access：验 Access 加在请求上的 JWT（cf-access-jwt-assertion）：签名（团队的公钥）、iss、aud、过期、邮箱
 //   passkey：Tailscale Funnel 这种前面没人拦的，靠 mixer 自己登录。Mac 上 `pnpm mixer pair` 出一个一次性的配对码（二维码），
 //     手机扫码打开、建一个 passkey；之后用 passkey 登录，拿到签名的 cookie（30 天）
-// access.json 一项都没配：远程的一律不认（401），第一次有远程请求时提示去 `pnpm mixer setup …`。看到的 Access JWT 记下来给 setup cloudflare 当默认值。
+// access.json 一项都没配：远程的一律不认（401），第一次有远程请求时提示去 `pnpm mixer setup …`。
 // 配置改了不用重启：每次按文件修改时间看要不要重读（`pnpm mixer setup …` 直接改文件）
 import { createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
+import { say } from "./log.ts";
 
 /** mixer 自己的数据（access.json、state.json）放哪：MIXER_DATA，默认仓库里的 data/（测试、另起一个实例时指到临时目录） */
 export const DATA = process.env.MIXER_DATA || join(dirname(new URL(import.meta.url).pathname), "..", "data");
 export const FILE = join(DATA, "access.json");
-const PORT = Number(process.env.MIXER_PORT ?? 4848);
+/** 服务的端口：MIXER_PORT，默认 4848 */
+export const PORT = Number(process.env.MIXER_PORT ?? 4848);
 
 export type Passkey = { id: string; key: string; counter: number; transports?: string[]; name: string; at: string };
 export type Config = {
@@ -87,7 +89,7 @@ async function keyFor(team: string, kid: string) {
 				delete c.retry;
 			} catch (e) {
 				c.retry = Date.now() + 60_000;
-				console.log(`${new Date().toISOString()} 拿不到 ${team} 的公钥（${e instanceof Error ? e.message : e}），一分钟后再试`);
+				say(`拿不到 ${team} 的公钥（${e instanceof Error ? e.message : e}），一分钟后再试`);
 			} finally {
 				delete c.fetching;
 			}
@@ -119,18 +121,6 @@ async function accessEmail(req: IncomingMessage, cf: NonNullable<Config["cloudfl
 		return null;
 	}
 }
-/** 没配置时看到的 Access 请求（不验签，也不放行）：`pnpm mixer setup cloudflare` 拿来当默认值 */
-let sawAccess: { team: string; aud: string; email: string } | null = null;
-function noteAccess(req: IncomingMessage) {
-	const tok = req.headers["cf-access-jwt-assertion"];
-	if (typeof tok !== "string") return;
-	try {
-		const c = b64json(tok.split(".")[1]) as { iss?: string; aud?: string | string[]; email?: string };
-		sawAccess = { team: String(c.iss ?? "").replace(/^https:\/\//, ""), aud: String(Array.isArray(c.aud) ? c.aud[0] : c.aud ?? ""), email: String(c.email ?? "") };
-	} catch {}
-}
-export const seenAccess = () => sawAccess;
-
 // —— 登录 cookie：<base64url {c: passkey id, e: 过期秒}>.<签名> ——
 const COOKIE = "mixer_session";
 const DAYS = 30;
@@ -155,7 +145,6 @@ const cookie = (k: Passkey) => {
 	const v = Buffer.from(JSON.stringify({ c: k.id, e: Math.floor(Date.now() / 1000) + DAYS * 86400 })).toString("base64url");
 	return `${COOKIE}=${v}.${sign(v)}; Path=/; Max-Age=${DAYS * 86400}; HttpOnly; Secure; SameSite=Strict`;
 };
-export const logoutCookie = `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
 
 /**
  * 这个请求是谁：local / access:<邮箱> / passkey:<设备>；null 是不认识，接口一律 401（没配置时远程的都是 null）。
@@ -166,10 +155,9 @@ export async function who(req: IncomingMessage): Promise<string | null> {
 	if (isLocal(req)) return "local";
 	const c = config();
 	if (!configured(c)) {
-		noteAccess(req);
 		if (!warned) {
 			warned = true;
-			console.log(`${new Date().toISOString()} 有远程来的请求，但远程访问还没配置：一律拒绝。跑 pnpm mixer setup cloudflare 或 pnpm mixer setup funnel 配上`);
+			say(`有远程来的请求，但远程访问还没配置：一律拒绝。跑 pnpm mixer setup cloudflare 或 pnpm mixer setup funnel 配上`);
 		}
 		return null;
 	}
@@ -243,7 +231,7 @@ export async function register(req: IncomingMessage, code: unknown, response: un
 	const cr = v.registrationInfo.credential;
 	const k: Passkey = { id: cr.id, key: Buffer.from(cr.publicKey).toString("base64url"), counter: cr.counter, transports: cr.transports, name: deviceName(req), at: new Date().toISOString() };
 	update((c) => { c.passkeys = [...c.passkeys.filter((x) => x.id !== k.id), k]; });
-	console.log(`${new Date().toISOString()} 新的 passkey：${k.name}`);
+	say(`新的 passkey：${k.name}`);
 	return cookie(k);
 }
 

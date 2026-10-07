@@ -3,15 +3,15 @@
 import { ChevronRight, GitFork, MessageSquare, PanelRight, Pin, PinOff, SquarePen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { FloatingApprovals } from "@/components/approvals";
 import { NewSession, ProjectHome } from "@/components/lazy";
+import { Placeholder } from "@/components/placeholder";
 import { lastPanel, openPanel, panelOf, SessionView } from "@/components/session";
 import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
 import { useLive } from "@/lib/live";
-import { go, openSession, useRoute, useWide } from "@/lib/route";
+import { go, openProject, openSession, useRoute, useWide } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 
@@ -38,7 +38,7 @@ export function App() {
 					<div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
 						{p && r.session && (
 							<>
-								<button type="button" onClick={() => go({ session: null, leaf: null, panel: null, file: null, view: null })} className="hidden shrink-0 text-muted-foreground hover:text-foreground sm:inline">
+								<button type="button" onClick={() => openProject(p.id)} className="hidden shrink-0 text-muted-foreground hover:text-foreground sm:inline">
 									{projectName(p)}
 								</button>
 								<ChevronRight className="hidden size-3.5 shrink-0 text-muted-foreground sm:block" />
@@ -88,19 +88,12 @@ export function App() {
 					) : r.project ? (
 						<ProjectHome key={r.project} p={p ?? { id: r.project, path: null }} r={r} />
 					) : (
-						<Empty className="m-auto">
-							<EmptyHeader>
-								<EmptyMedia variant="icon">
-									<MessageSquare />
-								</EmptyMedia>
-								<EmptyTitle>选择一个会话，或新建会话</EmptyTitle>
-								<EmptyDescription>左边是你的工作区：放进来的文件夹和会话，右边的标记是它现在的状态。已有的会话从「浏览会话」里挑。</EmptyDescription>
-							</EmptyHeader>
+						<Placeholder icon={MessageSquare} title="选择一个会话，或新建会话" text="左边是你的工作区：放进来的文件夹和会话，右边的标记是它现在的状态。已有的会话从「浏览会话」里挑。">
 							<Button variant="outline" size="sm" className="gap-1.5" onClick={() => setNewOpen(true)}>
 								<SquarePen className="size-3.5" />
 								新会话
 							</Button>
-						</Empty>
+						</Placeholder>
 					)}
 				</div>
 			</SidebarInset>

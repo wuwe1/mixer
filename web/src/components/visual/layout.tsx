@@ -1,9 +1,9 @@
 // 排版：并排、卡片、切换、逐帧翻（Stepper）。
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Spec } from "@/lib/visual";
+import type { Spec } from "@shared/visual";
 import { Frame, Kids, Node } from "./index";
 
 const COLS = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-2 lg:grid-cols-4" } as const;
@@ -76,7 +76,7 @@ export function usePlayer(n: number) {
 }
 
 /** 播放条：上一步、播放 / 暂停、下一步、第几步，下面一排小点能直接点到某一步 */
-export function Controls({ p, children }: { p: ReturnType<typeof usePlayer>; children?: ReactNode }) {
+export function Controls({ p }: { p: ReturnType<typeof usePlayer> }) {
 	if (p.n < 2) return null;
 	return (
 		<div className="flex flex-wrap items-center gap-1 border-t pt-2">
@@ -91,7 +91,6 @@ export function Controls({ p, children }: { p: ReturnType<typeof usePlayer>; chi
 					</button>
 				))}
 			</div>
-			{children}
 		</div>
 	);
 }

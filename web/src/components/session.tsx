@@ -2,26 +2,26 @@
 // 顶栏只有一个开关，三个 tab 在面板顶上，写字不用图标；开的是这台设备上次看的那个 tab。
 // 打开着的会话跑完了，就算看过了。
 import { ArrowDown, ChevronLeft, TriangleAlert, WifiOff, X } from "lucide-react";
-import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { spawner, spawns, useSubs } from "@/lib/agents";
-import { type ApiError, api, enc, temporary, type Node, type Session, type SessionMeta, type ToolNode } from "@/lib/api";
+import { spawner, useSpawns, useSubs } from "@/lib/agents";
+import { ApiError, api, enc, temporary, type Node, type Session, type SessionMeta } from "@shared/api";
 import * as drawer from "@/lib/drawer";
 import { useEvent } from "@/lib/events";
 import { useLive } from "@/lib/live";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
-import { keysOf, merge, tree, walk } from "@/lib/thread";
+import { keysOf, tree, walk } from "@/lib/thread";
+import { useIncremental } from "@/lib/use-incremental";
 import { useStream } from "@/lib/use-stream";
 import { cn } from "@/lib/utils";
 import { Composer } from "./composer";
 import { Conversation, type Reveal } from "./conversation";
+import { Drawer } from "./drawer";
 import { Changes, Files } from "./lazy";
-import { edited } from "./message";
 import { Boundary, Placeholder } from "./placeholder";
 
 const PANELS: { v: Panel; label: string }[] = [
@@ -43,34 +43,6 @@ export const openPanel = (v: Panel) => {
 
 /** 现在开着哪个面板：地址里没写时，宽屏开上次看的、窄屏不开 */
 export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? lastPanel() : null)));
-
-/**
- * 窄屏的面板：从右边拉出来的整屏一页，一直挂在页面上，位置由 lib/drawer 管（拖的时候跟手）。
- * 不用 Sheet：它关着时会卸掉，拖的时候没东西可动。onHidden：关到底、藏起来了，里面的东西可以卸了
- */
-function PanelDrawer({ open, onHidden, children }: { open: boolean; onHidden: () => void; children: ReactNode }) {
-	const el = useRef<HTMLDivElement>(null);
-	const ov = useRef<HTMLDivElement>(null);
-	const hidden = useRef(onHidden);
-	hidden.current = onHidden;
-	useLayoutEffect(() => (el.current && ov.current ? drawer.panel.attach(el.current, ov.current, () => hidden.current()) : undefined), []);
-	useEffect(() => drawer.panel.to(open ? 1 : 0), [open]);
-	useEffect(() => {
-		if (!open) return;
-		const esc = (e: KeyboardEvent) => { if (e.key === "Escape") go({ panel: "none" }); };
-		document.addEventListener("keydown", esc);
-		return () => document.removeEventListener("keydown", esc);
-	}, [open]);
-	return createPortal(
-		<>
-			<div ref={ov} aria-hidden className="fixed inset-0 z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs" onClick={() => go({ panel: "none" })} />
-			<div ref={el} role={open ? "dialog" : undefined} aria-modal={open || undefined} aria-label="目录、文件、改动" data-drawer="right" className="fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-lg">
-				{children}
-			</div>
-		</>,
-		document.body,
-	);
-}
 
 /** 面板顶上的三个 tab：目录带你的消息条数，改动带这个会话改过几个文件 */
 function PanelTabs({ panel, counts }: { panel: Panel; counts: Partial<Record<Panel, { n: number; hint: string }>> }) {
@@ -166,72 +138,39 @@ function keep(key: string, s: Session) {
 }
 
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
-	const { status, queue, runs } = useLive();
+	const { status, hosts, runs } = useLive();
 	const wide = useWide();
-	const [data, setData] = useState<Session | null>(() => kept.get(`${project}/${session}`) ?? null);
-	const cur = useRef<Session | null>(data);
-	const [error, setError] = useState<ApiError | Error | null>(null);
+	const key = `${project}/${session}`;
 	const scroller = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
 	const { away, unseen, toBottom } = useStick(scroller, content);
 	const [reveal, setReveal] = useState<Reveal | null>(null);
 	const first = useRef(true);
 
-	// 跑的时候每 0.5 秒就有一次更新：上一次还没拉回来就先记下，回来了再拉一次（网慢也不会堆一串请求、旧的盖掉新的）。
-	// 拿到过就只要之后变了的。没拿到：已经有内容就接着显示它，没有才换成出错；连不上、502 这种过一会儿自己再拉（1、2、4…30 秒）
-	const pulling = useRef<{ key: string; again: boolean } | null>(null);
+	// 跑的时候每 0.5 秒就有一次更新，拉增量（lib/use-incremental）。会话页按会话换着挂（app.tsx 的 key），project、session 不会变。
+	// 没拿到：已经有内容就接着显示它，没有才换成出错；连不上、502 这种过一会儿自己再拉（1、2、4…30 秒）
 	const retry = useRef<{ timer?: ReturnType<typeof setTimeout>; wait: number }>({ wait: 1000 });
-	const load = useCallback(() => {
-		const key = `${project}/${session}`;
-		if (pulling.current?.key === key) return void (pulling.current.again = true);
-		pulling.current = { key, again: false };
-		clearTimeout(retry.current.timer);
-		const done = () => {
-			const p = pulling.current;
-			if (p?.key !== key) return;
-			pulling.current = null;
-			if (p.again) load();
-		};
-		const since = cur.current ? `?since=${enc(cur.current.version)}` : "";
-		api<Session>(`/api/sessions/${enc(project)}/${enc(session)}${since}`).then(
-			(d) => {
-				if (pulling.current?.key === key) {
-					cur.current = merge(cur.current, d);
-					keep(key, cur.current);
-					setData(cur.current);
-					setError(null);
-					retry.current.wait = 1000;
-				}
-				done();
-			},
-			(e: Error) => {
-				if (pulling.current?.key === key) {
-					if (!cur.current) setError(e);
-					if (temporary(e)) {
-						retry.current.timer = setTimeout(load, retry.current.wait);
-						retry.current.wait = Math.min(retry.current.wait * 2, 30_000);
-					}
-				}
-				done();
-			},
-		);
-	}, [project, session]);
+	const { data, error, load } = useIncremental<Session>(`/api/sessions/${enc(project)}/${enc(session)}`, {
+		init: kept.get(key) ?? null,
+		onError: (e) => {
+			if (!temporary(e)) return;
+			clearTimeout(retry.current.timer);
+			retry.current.timer = setTimeout(load, retry.current.wait);
+			retry.current.wait = Math.min(retry.current.wait * 2, 30_000);
+		},
+	});
 	useEffect(() => {
-		cur.current = kept.get(`${project}/${session}`) ?? null;
-		setData(cur.current);
-		setError(null);
-		first.current = true;
+		if (!data) return;
+		keep(key, data);
 		retry.current.wait = 1000;
-		load();
-		return () => clearTimeout(retry.current.timer);
-	}, [project, session, load]);
+	}, [key, data]);
+	useEffect(() => () => clearTimeout(retry.current.timer), []);
 
 	// 记下看到哪儿：停下来 0.15 秒再记，贴在底部记 null
 	useEffect(() => {
 		const el = scroller.current;
 		const inner = content.current;
 		if (!el || !inner) return;
-		const key = `${project}/${session}`;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const save = () => {
 			if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) return void spots.set(key, null);
@@ -250,22 +189,30 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			clearTimeout(timer);
 			el.removeEventListener("scroll", onScroll);
 		};
-	}, [project, session]);
+	}, [key]);
 	useEvent("session", useCallback((e: { project: string; id: string }) => { if (e.project === project && e.id === session) load(); }, [project, session, load]));
-	useEvent("reconnect", load);
+	useEvent("hello", load);
 
 	const nodes = data?.nodes;
-	const stream = useStream(session, useMemo(() => keysOf(nodes ?? []), [nodes]));
+	// 记录里有的段（消息 id 全局唯一，整个会话的一份就够）：流里的哪几段已经写进去了
+	const keys = useMemo(() => keysOf(nodes ?? []), [nodes]);
+	const stream = useStream(session, data?.version ?? null);
 	const t = useMemo(() => (nodes ? tree(nodes) : null), [nodes]);
-	const w = useMemo(() => (t ? walk(t, r.leaf) : null), [t, r.leaf]);
+	const home = data?.leaf ?? null;
+	const w = useMemo(() => (t ? walk(t, r.leaf, home) : null), [t, r.leaf, home]);
 	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
-	const st = status(meta ?? data?.meta ?? { id: session, active: false, unread: null });
-	const codex = (meta ?? data?.meta)?.agent === "codex";
+	const m = meta ?? data?.meta;
+	const st = status(m ?? { id: session, terminal: null, unread: null });
+	const codex = m?.agent === "codex";
 	// 子代理（Codex 没有）：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
 	const spawning = useMemo(() => !codex && !!nodes?.some(spawner), [codex, nodes]);
 	const subs = useSubs(project, session, spawning);
-	const busy = st === "running" || st === "waiting" || st === "background" || st === "terminal";
-	const spawned = useMemo(() => (w && !codex ? spawns(w.path, subs, busy) : null), [w, codex, subs, busy]);
+	// 终端里开着、Claude 登记着在跑：和 mixer 里在跑一样画 ping 点；闲着的（Codex 的看不出来，也算闲着）只是开着
+	const outside = st === "terminal" && m?.terminal === "busy";
+	const busy = st === "running" || st === "waiting" || st === "background" || outside;
+	// 在 mixer 里开着 claude 进程：后台子代理在不在跑看它报的后台任务；没有进程（终端里开的、进程退了）才猜
+	const jobs = hosts.find((h) => h.session === session)?.tasks ?? null;
+	const spawned = useSpawns(w && !codex ? w.path : null, subs, busy, jobs);
 	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
 	// 开着的会话跑完了（页面在前台）：算看过了
@@ -280,31 +227,18 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	useEffect(() => {
 		if (!data || !w || !first.current) return;
 		first.current = false;
-		const spot = spots.get(`${project}/${session}`);
+		const spot = spots.get(key);
 		if (spot && w.path.some((n) => n.uuid === spot.uuid)) setReveal({ ...spot, at: Date.now() });
 		else requestAnimationFrame(() => toBottom());
-	}, [data, w, project, session, toBottom]);
+	}, [data, w, key, toBottom]);
 
-	// 刚发出去的话（排上队了，或者开始跑了）：不管刚才在哪，滚到最后贴上，让人看见
-	const queued = queue.filter((q) => q.session === session).length;
-	const running = runs.find((x) => x.session === session && x.status === "running")?.id;
-	const seen = useRef({ queued, running });
-	useEffect(() => {
-		const before = seen.current;
-		seen.current = { queued, running };
-		if (queued > before.queued || (running && running !== before.running)) requestAnimationFrame(() => toBottom(true));
-	}, [queued, running, toBottom]);
+	// 刚发出去（排上队了，或者开始跑了）：不管刚才在哪，滚到最后贴上，让人看见
+	const onSent = useCallback(() => requestAnimationFrame(() => toBottom(true)), [toBottom]);
 
 	const rel = useCallback((abs: string) => (root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null), [root]);
-	const touched = useMemo(() => {
-		const set = new Set<string>();
-		for (const n of nodes ?? []) {
-			const p = n.k === "tool" ? edited(n as ToolNode) : null;
-			const r2 = p ? rel(p) : null;
-			if (r2) set.add(r2);
-		}
-		return [...set];
-	}, [nodes, rel]);
+	// 这个会话（连子代理）改过的文件：服务端照工具结果里结构化的那份给，这里只换成仓库里的相对路径
+	const changed = data?.touched;
+	const touched = useMemo(() => [...new Set((changed ?? []).flatMap((p) => rel(p) ?? []))], [changed, rel]);
 	const onFile = useCallback((abs: string, diff: boolean) => {
 		const p = rel(abs);
 		if (!p) return void toast(`不在这个项目里：${abs}`);
@@ -317,9 +251,10 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	useEffect(() => { if (narrow) setPeek(narrow); }, [narrow]);
 	const onStart = useCallback(() => setPeek(lastPanel()), []);
 	const setOpen = useCallback((o: boolean) => (o ? openPanel(lastPanel()) : go({ panel: "none" })), []);
-	drawer.useSwipe(drawer.panel, { on: !wide, open: !!narrow, setOpen, onStart });
 
-	if (error && !data)
+	// 新会话、分叉刚开始跑，记录文件还没写出来（404）：等着，文件有了会推 session 过来再拉
+	const starting = error instanceof ApiError && error.status === 404 && runs.some((x) => x.session === session && x.status === "running");
+	if (error && !data && !starting)
 		return (
 			<Placeholder icon={temporary(error) ? WifiOff : TriangleAlert} title="没打开" text={temporary(error) ? `${error.message}，过一会儿自己再试` : error.message}>
 				<Button variant="outline" size="sm" onClick={load}>重试</Button>
@@ -359,8 +294,8 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
-								<Boundary key={session}>
-									<Conversation project={project} session={session} w={w} t={t} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
+								<Boundary>
+									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} kind={codex ? "codex" : "claude"} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -376,7 +311,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && data && <Composer project={project} session={session} w={w} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} agent={codex ? "codex" : "claude"} />}
+				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} agent={codex ? "codex" : "claude"} onSent={onSent} />}
 			</div>
 
 			{wide && panel && (
@@ -391,8 +326,8 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 				</aside>
 			)}
 			{!wide && (
-				// 窄屏的面板是整屏的一页：左上角回到对话，旁边直接切目录 / 文件 / 改动；上下让开刘海和 Home 条
-				<PanelDrawer open={!!narrow} onHidden={() => setPeek(null)}>
+				// 窄屏的面板是从右边拉出来的整屏一页（往左滑打开、往右滑关上）：左上角回到对话，旁边直接切目录 / 文件 / 改动；上下让开刘海和 Home 条
+				<Drawer d={drawer.panel} open={!!narrow} onOpenChange={setOpen} onStart={onStart} onHidden={() => setPeek(null)} label="目录、文件、改动" className="inset-0 bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
 					<div className="flex shrink-0 items-center gap-1 border-b p-1.5 pr-2">
 						<Button variant="ghost" size="icon" onClick={() => go({ panel: "none" })} aria-label="回到对话">
 							<ChevronLeft className="size-4" />
@@ -402,7 +337,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</span>
 					</div>
 					{body}
-				</PanelDrawer>
+				</Drawer>
 			)}
 		</div>
 	);

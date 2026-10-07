@@ -1,7 +1,7 @@
 // diff 的样子，照 GitHub：左边旧、新两列行号，加的行绿底、删的行红底，代码照常高亮；成对改过的行里，真改了的那几个字底色再深一点。
 // 高亮：旧的一边（没变的 + 删掉的）、新的一边（没变的 + 加上的）各拼成一段交给 Worker，再按行放回去。
 import { type CSSProperties, Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { changed, type FileDiff, type Line, parseDiff } from "@/lib/diff";
+import { changed, type FileDiff, type Line } from "@/lib/diff";
 import { cn } from "@/lib/utils";
 import { langOf, type Token, tokenize } from "./code";
 
@@ -84,6 +84,9 @@ const ROW = {
 	" ": { line: "", gutter: "", sign: "", em: "" },
 };
 
+/** diff 那里的一句灰字：不显示内容的原因、出错 */
+export const Note = ({ children }: { children: ReactNode }) => <p className="px-3 py-2 text-xs text-muted-foreground">{children}</p>;
+
 /** 一个文件的 diff（不带文件名那行） */
 export function Hunks({ file }: { file: FileDiff }) {
 	const big = file.add + file.del > MAX;
@@ -91,9 +94,8 @@ export function Hunks({ file }: { file: FileDiff }) {
 	const show = !big || all;
 	const toks = useTokens(file, show);
 	const em = useEmphasis(file);
-	const note = (t: string) => <p className="px-3 py-2 text-xs text-muted-foreground">{t}</p>;
-	if (file.binary) return note("二进制文件，不显示内容");
-	if (!file.hunks.length) return note(file.kind === "R" ? `只改了名字，原来是 ${file.from}` : "内容没变（可能只改了权限）");
+	if (file.binary) return <Note>二进制文件，不显示内容</Note>;
+	if (!file.hunks.length) return <Note>{file.kind === "R" ? `只改了名字，原来是 ${file.from}` : "内容没变（可能只改了权限）"}</Note>;
 	if (!show)
 		return (
 			<button type="button" onClick={() => setAll(true)} className="w-full px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground">
@@ -124,16 +126,6 @@ export function Hunks({ file }: { file: FileDiff }) {
 					</Fragment>
 				))}
 			</div>
-		</div>
-	);
-}
-
-/** 一段 diff 文字（「文件」里看某个文件的改动用） */
-export function Diff({ text }: { text: string }) {
-	const files = useMemo(() => parseDiff(text), [text]);
-	return (
-		<div className="flex flex-col gap-4 py-2">
-			{files.map((f, i) => <Hunks key={i} file={f} />)}
 		</div>
 	);
 }

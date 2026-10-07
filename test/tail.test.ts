@@ -1,7 +1,7 @@
 // tail.ts：运行输出流 → 短事件 → 正在写的那几段
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { coalesce, emptyTail, type Ev, project, step, summarize, type Tail } from "../web/src/lib/tail.ts";
+import { coalesce, emptyTail, type Ev, project, step, summarize, type Tail } from "../shared/tail.ts";
 
 const ev = (event: object) => ({ type: "stream_event", event });
 const start = (id: string) => ev({ type: "message_start", message: { id } });

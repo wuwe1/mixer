@@ -6,28 +6,27 @@ import { closestCenter, DndContext, type DragEndEvent, type Modifier, PointerSen
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import {
-	Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuAction,
+	Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarMenu, SidebarMenuAction,
 	SidebarMenuButton, SidebarMenuItem, SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem, useSidebar,
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, enc, type Group, type SessionMeta } from "@/lib/api";
+import { api, enc, type Group, type SessionMeta } from "@shared/api";
 import { useOnline } from "@/lib/events";
 import { type Status, useLive } from "@/lib/live";
-import { go, openSession, type Route } from "@/lib/route";
+import { openProject, openSession, type Route } from "@/lib/route";
 import { since } from "@/lib/time";
-import * as drawer from "@/lib/drawer";
 import { cn } from "@/lib/utils";
 import { Browse } from "./lazy";
+import { Placeholder } from "./placeholder";
 import { UsageFooter } from "./usage";
 
 /** ok / failed 是一步工具调用跑完了：成功、失败 */
@@ -74,8 +73,8 @@ export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 export const statusLabel = (s: Status) => (s ? STATUS_LABEL[s] : null);
 
 export const projectName = (p: { path: string | null; id: string }) => p.path?.split("/").pop() || p.id;
-/** 分叉出来的会话：标题用分叉后问的第一句（前面的都是原会话的） */
-export const sessionTitle = (s: SessionMeta) => (s.parent ? s.fresh || s.last || s.title : s.title || s.first) || s.id.slice(0, 8);
+/** 人起的名字（/rename、/branch）最优先；分叉出来的会话：标题用分叉后问的第一句（ai-title 和前面的记录都是原会话的） */
+export const sessionTitle = (s: SessionMeta) => (s.custom ? s.title : s.parent ? s.fresh || s.last || s.title : s.title || s.first) || s.id.slice(0, 8);
 
 const OPEN_KEY = "mixer.open";
 function useOpenState() {
@@ -93,14 +92,34 @@ function useOpenState() {
 }
 
 type Family = { head: SessionMeta; kids: SessionMeta[]; latest: string };
-/** 分叉的一家：原会话在前、分叉出来的挂在下面；一家按最近的修改时间排，新的在上面 */
+/**
+ * 分叉的一家：原会话在前、分叉出来的挂在下面；一家按最近的修改时间排，新的在上面。
+ * parent 是直接分叉自的那个（分叉的分叉指向中间那个；只有终端里 --fork-session 出来、靠猜的 Claude 会话指向一家最早的那个）：
+ * 顺着 parent 往上走到这些会话里最上面的那个，挂在它下面
+ */
 export function families(sessions: SessionMeta[]): Family[] {
-	const ids = new Set(sessions.map((s) => s.id));
+	const byId = new Map(sessions.map((s) => [s.id, s]));
+	// parent 绕成圈的（不该有）：自己单独成一家
+	const top = (s: SessionMeta) => {
+		const seen = new Set([s.id]);
+		let t = s;
+		for (let p = t.parent ? byId.get(t.parent) : undefined; p; p = t.parent ? byId.get(t.parent) : undefined) {
+			if (seen.has(p.id)) return s;
+			seen.add(p.id);
+			t = p;
+		}
+		return t;
+	};
 	const map = new Map<string, Family>();
-	for (const s of sessions) if (!s.parent || !ids.has(s.parent)) map.set(s.id, { head: s, kids: [], latest: s.mtime });
+	const kids: [string, SessionMeta][] = [];
 	for (const s of sessions) {
-		const f = s.parent ? map.get(s.parent) : undefined;
-		if (!f || f.head.id === s.id) continue;
+		const t = top(s);
+		if (t === s) map.set(s.id, { head: s, kids: [], latest: s.mtime });
+		else kids.push([t.id, s]);
+	}
+	for (const [t, s] of kids) {
+		const f = map.get(t);
+		if (!f) continue;
 		f.kids.push(s);
 		if (s.mtime > f.latest) f.latest = s.mtime;
 	}
@@ -125,7 +144,7 @@ type Doomed = { project: string; s: SessionMeta };
 
 /**
  * 长按（手机）、右键（电脑）出菜单：Radix 的 ContextMenuTrigger 自带 -webkit-touch-callout: none，shadcn 那层加了 select-none，iOS 上长按不选字、不弹系统菜单。
- * 长按出菜单松手时，有的浏览器还会补一个点按（主屏幕 app 里从左边起手的，useSwipe 也会补）：菜单开着时的点按不算。
+ * 长按出菜单松手时，有的浏览器还会补一个点按（主屏幕 app 里从边上起手的，lib/drawer 的 guardEdges 也会补）：菜单开着时的点按不算。
  * 菜单开着时 onOpenChange 记下
  */
 function useMenuOpen() {
@@ -148,10 +167,10 @@ function SessionRow({ s, r, project, kid, onDelete }: { s: SessionMeta; r: Route
 							{kid && <GitFork className="size-3! text-muted-foreground" />}
 							<span className={cn("min-w-0 flex-1 truncate text-md", st === "done" || st === "error" || st === "waiting" ? "font-medium" : "")}>{sessionTitle(s)}</span>
 							{s.agent === "codex" && <span className="shrink-0 text-2xs text-muted-foreground">Codex</span>}
-							{/* 右边：时间，最右一格是状态标记（每行都留着这一格，时间才对得齐）。正在发生的（运行中、待确认、终端中打开）时间总是「刚刚」，不写。
+							{/* 右边：时间，最右一格是状态标记（每行都留着这一格，时间才对得齐）。正在发生的（运行中、待确认、后台任务）时间总是「刚刚」，不写；终端中打开可能闲着好几天，照写。
 							    Claude Code 7 天内要清理的，时间换成「N 天后清理」 */}
 							<span className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground tabular-nums">
-								<span className="md:group-hover/row:invisible" title={exp?.title}>{(!st || st === "done" || st === "error") && (exp?.text ?? since(s.mtime))}</span>
+								<span className="md:group-hover/row:invisible" title={exp?.title}>{(!st || st === "done" || st === "error" || st === "terminal") && (exp?.text ?? since(s.mtime))}</span>
 								<StatusIcon s={st} />
 							</span>
 						</button>
@@ -183,8 +202,8 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 		setBusy(true);
 		try {
 			await api(`/api/sessions/${enc(doomed.project)}/${enc(doomed.s.id)}/delete`, {});
-			toast.success("已删除");
-			if (r.session === doomed.s.id) go({ project: doomed.project, session: null, leaf: null });
+			toast("已删除");
+			if (r.session === doomed.s.id) openProject(doomed.project);
 			onClose();
 		} catch (e) {
 			// 在跑、排队、待确认、终端里开着：服务端说明原因（409）
@@ -243,7 +262,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 					{/* 菜单只挂在文件夹这一行上：挂在整个 item 上，长按里面的会话两个菜单都会开 */}
 					<ContextMenu onOpenChange={menu.onOpenChange}>
 						<ContextMenuTrigger asChild>
-							<SidebarMenuButton isActive={r.project === g.id && !r.session} onClick={() => { if (menu.open.current) return; go({ project: g.id, session: null, leaf: null }); setOpen(true); setOpenMobile(false); }} className="h-11 gap-2 pr-14 md:h-8">
+							<SidebarMenuButton isActive={r.project === g.id && !r.session} onClick={() => { if (menu.open.current) return; openProject(g.id); setOpen(true); setOpenMobile(false); }} className="h-11 gap-2 pr-14 md:h-8">
 								<span ref={setActivatorNodeRef} {...listeners} className="-m-1 flex cursor-grab touch-none p-1 active:cursor-grabbing" aria-label="拖动排序">
 									<Folder className="size-4 text-muted-foreground md:group-hover/menu-item:hidden" />
 									<GripVertical className="hidden size-4 text-muted-foreground md:group-hover/menu-item:block" />
@@ -304,17 +323,10 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	);
 }
 
-/** 手机上横着滑开关侧栏：往右滑打开，往左滑关上 */
-function useSidebarSwipe() {
-	const { isMobile, openMobile, setOpenMobile } = useSidebar();
-	drawer.useSwipe(drawer.sidebar, { on: isMobile, open: openMobile, setOpen: setOpenMobile });
-}
-
 /** 拖动只上下走 */
 const vertical: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
 export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
-	useSidebarSwipe();
 	const { workspace, change } = useLive();
 	const online = useOnline();
 	const { setOpenMobile } = useSidebar();
@@ -357,16 +369,12 @@ export function AppSidebar({ r, openNew }: { r: Route; openNew: () => void }) {
 							</DndContext>
 						</SidebarMenu>
 						{workspace?.length === 0 && (
-							<Empty className="px-2 py-10">
-								<EmptyHeader>
-									<EmptyTitle className="text-sm">工作区是空的</EmptyTitle>
-									<EmptyDescription className="text-xs">选一个文件夹开新会话，或者把已有的会话放进来</EmptyDescription>
-								</EmptyHeader>
-								<EmptyContent className="flex-row justify-center gap-2">
+							<Placeholder title="工作区是空的" text="选一个文件夹开新会话，或者把已有的会话放进来" className="px-2 py-10">
+								<div className="flex justify-center gap-2">
 									<Button variant="outline" size="sm" className="gap-1.5" onClick={startNew}><SquarePen className="size-3.5" />新会话</Button>
 									<Button variant="outline" size="sm" className="gap-1.5" onClick={() => setBrowse(true)}><Library className="size-3.5" />浏览会话</Button>
-								</EmptyContent>
-							</Empty>
+								</div>
+							</Placeholder>
 						)}
 					</SidebarGroupContent>
 				</SidebarGroup>

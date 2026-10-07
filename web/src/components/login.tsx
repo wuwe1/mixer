@@ -6,9 +6,9 @@ import type { startAuthentication, startRegistration } from "@simplewebauthn/bro
 import { KeyRound } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
-import { api } from "@/lib/api";
+import { api } from "@shared/api";
+import { Loading, Placeholder } from "./placeholder";
 
 /** via：认出来是谁（null 是没认出来）；passkey：这个地址能不能用 passkey 登录 */
 type Auth = { via: string | null; passkey: boolean; passkeys: number };
@@ -38,7 +38,7 @@ export function Gate({ children }: { children: ReactNode }) {
 		window.addEventListener("mixer:login", check);
 		return () => window.removeEventListener("mixer:login", check);
 	}, [check]);
-	if (!auth) return <div className="flex h-svh items-center justify-center text-muted-foreground"><Spinner /></div>;
+	if (!auth) return <Loading className="h-svh" />;
 	return auth.via ? children : <Login auth={auth} />;
 }
 
@@ -84,25 +84,20 @@ function Login({ auth }: { auth: Auth }) {
 				? ["登录 mixer", "用这台设备上的 passkey。还没有 passkey 的设备：在 Mac 上运行 pnpm mixer pair，扫码", { label: "登录", run: login }]
 				: ["还没有能登录的设备", "在 Mac 上运行 pnpm mixer pair，用这台设备扫码", null];
 	return (
-		<Empty className="h-svh">
-			<EmptyHeader>
-				<EmptyMedia variant="icon">
-					<KeyRound />
-				</EmptyMedia>
-				<EmptyTitle>{title}</EmptyTitle>
-				<EmptyDescription>{text}</EmptyDescription>
-			</EmptyHeader>
-			{(action || error) && (
-				<EmptyContent>
-					{action && (
-						<Button onClick={action.run} disabled={busy} className="gap-1.5">
-							{busy && <Spinner />}
-							{action.label}
-						</Button>
-					)}
-					{error && <p className="text-xs text-destructive">{error}</p>}
-				</EmptyContent>
-			)}
-		</Empty>
+		<div className="flex h-svh">
+			<Placeholder icon={KeyRound} title={title} text={text}>
+				{(action || error) && (
+					<>
+						{action && (
+							<Button onClick={action.run} disabled={busy} className="gap-1.5">
+								{busy && <Spinner />}
+								{action.label}
+							</Button>
+						)}
+						{error && <p className="text-xs text-destructive">{error}</p>}
+					</>
+				)}
+			</Placeholder>
+		</div>
 	);
 }

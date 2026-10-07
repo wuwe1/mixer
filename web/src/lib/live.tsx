@@ -1,12 +1,12 @@
 // 整个页面共用的实时状态：工作区（侧栏里放的文件夹和会话）、mixer 里的运行、等人确认的请求、排着队的话，订阅用量。
 // 会话的「状态」由这几样合起来算：等你确认 > 在跑 > 后台任务在跑（Claude 闲着，跑完了会叫醒它）> 跑完了没看 / 出错了 > 终端里开着。
 // 都从 SSE 连上时的 hello 来（第一次、每次重连），之后按推来的事件改；只有工作区有时还要整个拉一次。
-import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { api, type Approval, type Group, type Hello, type Host, type Queued, type Run, type SessionMeta } from "./api";
+import { api, type Approval, type Group, type Hello, type Host, type Queued, type Run, type SessionMeta } from "@shared/api";
 import { useEvent } from "./events";
 import { openSession } from "./route";
-import type { Account } from "./usage";
+import type { Account } from "@shared/usage";
 
 export type Status = "waiting" | "running" | "background" | "done" | "error" | "terminal" | null;
 
@@ -27,9 +27,11 @@ type Live = {
 	/** 用量：各个账号（Claude、Codex）的窗口用了多少 */
 	usage: Account[];
 	/** 会话现在怎样 */
-	status: (s: Pick<SessionMeta, "id" | "active" | "unread">) => Status;
+	status: (s: Pick<SessionMeta, "id" | "terminal" | "unread">) => Status;
 	/** 这次运行的会话 id 一出来就打开它（新会话、分叉） */
 	follow: (run: Run) => void;
+	/** 来过几次 hello（0：还没连上，运行、队列还不作数） */
+	synced: number;
 };
 
 const Ctx = createContext<Live | null>(null);
@@ -53,16 +55,20 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	const [queue, setQueue] = useState<Queued[]>([]);
 	const [usage, setUsage] = useState<Account[]>([]);
 	const following = useRef(new Set<string>());
+	/** 这个页面开的新会话、分叉（follow 过的）：一开始就出错、什么都没写出来时说一声 */
+	const mine = useRef(new Set<string>());
+	const runsRef = useRef(runs);
+	runsRef.current = runs;
+	const [synced, setSynced] = useState(0);
 	const [putWorkspace, putRuns, putApprovals, putQueue] = useMemo(() => [keep(setWorkspace), keep(setRuns), keep(setApprovals), keep(setQueue)] as const, []);
 
-	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次。pulled：拉过几次（拉回来没变也算，下面「终端中打开」到点了要接着看）
+	// 会话文件一跑起来每秒都在变：最多 1.5 秒拉一次
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const [pulled, setPulled] = useState(0);
 	// 整个拉工作区：hello 之前发出去的，回来时可能比 hello 里的旧，不要了。gen：来过几次 hello
 	const gen = useRef(0);
 	const pullWorkspace = useCallback(() => {
 		const g = gen.current;
-		api<Group[]>("/api/workspace").then((w) => { if (g === gen.current) { putWorkspace(w); setPulled((n) => n + 1); } }, () => {});
+		api<Group[]>("/api/workspace").then((w) => { if (g === gen.current) putWorkspace(w); }, () => {});
 	}, [putWorkspace]);
 	const loadWorkspace = useCallback(() => {
 		if (timer.current) return;
@@ -72,7 +78,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		}, 1500);
 	}, [pullWorkspace]);
 	// 工作区里的会话文件变了：通知里带着侧栏那一行，就地换掉，不再整个重拉。跑的时候 0.5 秒一次，攒着 1.5 秒换一回（整页跟着重画）。
-	// parent 留原来的（服务端不算）；不在本地工作区里的不管（刚放进来的有 workspace 事件整个拉）
+	// 不在本地工作区里的不管（刚放进来的有 workspace 事件整个拉）
 	const rows = useRef(new Map<string, SessionMeta>());
 	const flush = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEvent("session", useCallback((e: { project: string; id: string; meta?: SessionMeta }) => {
@@ -90,20 +96,19 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 					return { ...g, sessions: g.sessions.map((s) => {
 						const m = got.get(s.id);
 						if (!m) return s;
-						const n = { ...m, parent: s.parent };
-						if (JSON.stringify(n) === JSON.stringify(s)) return s;
+						if (JSON.stringify(m) === JSON.stringify(s)) return s;
 						changed = true;
-						return n;
+						return m;
 					}) };
 				});
 				return changed ? next : w;
 			});
-			setPulled((n) => n + 1);
 		}, 1500);
 	}, []));
 	// 连上了（第一次、重连）：整个换成 hello 里的。断线前攒着还没换的侧栏行作废，不然过一会儿旧的盖掉 hello 里的
 	useEvent("hello", useCallback((h: Hello) => {
 		gen.current++;
+		setSynced(gen.current);
 		if (flush.current) clearTimeout(flush.current);
 		flush.current = null;
 		rows.current = new Map();
@@ -114,26 +119,25 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		putApprovals(h.approvals);
 		putQueue(h.queue);
 		setUsage(h.usage ?? []);
-		setPulled((n) => n + 1);
 	}, [putWorkspace, putRuns, putApprovals, putQueue]));
-	// 「终端中打开」是服务端按最近 90 秒有没有写入算的：最早过期的那个到点了再拉一次，不然没有新写入时一直挂着
-	useEffect(() => {
-		const left = (workspace ?? []).flatMap((p) => p.sessions).filter((s) => s.active).map((s) => Date.parse(s.mtime) + 90_000 - Date.now());
-		if (!left.length) return;
-		const t = setTimeout(loadWorkspace, Math.max(0, Math.min(...left)) + 1000);
-		return () => clearTimeout(t);
-	}, [workspace, pulled, loadWorkspace]);
 	useEvent("state", loadWorkspace);
 	useEvent("workspace", pullWorkspace);
 
 	useEvent("run", useCallback((r: Run) => {
 		setRuns((rs) => [r, ...rs.filter((x) => x.id !== r.id)].sort((a, b) => b.started.localeCompare(a.started)));
-		if (r.status === "error" && !r.session) toast.error(`启动失败：${r.error ?? ""}`.slice(0, 300));
+		if (mine.current.has(r.id) && r.status !== "running") {
+			if (failed(r)) toast.error(`启动失败：${r.error ?? ""}`.slice(0, 300));
+			if (r.version !== undefined) mine.current.delete(r.id);
+		}
 		if (r.session && following.current.has(r.id)) {
 			following.current.delete(r.id);
 			openSession(r.project, r.session);
 		}
-		if (r.status !== "running") loadWorkspace();
+		if (r.status !== "running") {
+			// 没拿到会话 id 就结束了（一开始就出错）：不等了
+			following.current.delete(r.id);
+			loadWorkspace();
+		}
 	}, [loadWorkspace]));
 	// 进程变了（开始、结束一轮，后台任务多了少了）：整个换掉；gone 是退出了
 	useEvent("host", useCallback((h: Host | { id: string; gone: true }) => setHosts((l) => ("gone" in h ? l.filter((x) => x.id !== h.id) : [...l.filter((x) => x.id !== h.id), h])), []));
@@ -147,17 +151,22 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 	useEvent("approval-done", useCallback((d: { id: string }) => setApprovals((l) => l.filter((a) => a.id !== d.id)), []));
 
 	const value = useMemo<Live>(() => {
-		const status = (s: Pick<SessionMeta, "id" | "active" | "unread">): Status => {
+		const status = (s: Pick<SessionMeta, "id" | "terminal" | "unread">): Status => {
+			if (approvals.some((a) => a.session === s.id)) return "waiting";
 			const mine = runs.filter((r) => r.session === s.id);
-			if (approvals.some((a) => mine.some((r) => r.id === a.run))) return "waiting";
 			if (mine.some((r) => r.status === "running")) return "running";
 			if (hosts.some((h) => h.session === s.id && h.tasks.length)) return "background";
 			if (s.unread) return s.unread;
-			if (s.active && mine.length === 0) return "terminal";
+			// 在 mixer 外面开着（服务端照 Claude Code、Codex 自己记的算，开了关了都推过来）
+			if (s.terminal) return "terminal";
 			return null;
 		};
+		/** 新会话、分叉：会话 id 一出来就打开。推送可能比请求的回复先到：已经出错结束了的当场说 */
 		const follow = (run: Run) => {
-			if (run.session && run.mode !== "resume") openSession(run.project, run.session);
+			const now = runsRef.current.find((x) => x.id === run.id) ?? run;
+			if (failed(now)) return void toast.error(`启动失败：${now.error ?? ""}`.slice(0, 300));
+			if (now.version === undefined) mine.current.add(run.id);
+			if (run.session) openSession(run.project, run.session);
 			else following.current.add(run.id);
 		};
 		const ids = new Set((workspace ?? []).flatMap((g) => g.sessions.map((s) => s.id)));
@@ -182,11 +191,14 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 			};
 			toast("已移出工作区", { action: { label: "撤销", onClick: () => void undo() } });
 		};
-		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, hosts, approvals, queue, usage, status, follow };
-	}, [workspace, runs, hosts, approvals, queue, usage, pullWorkspace]);
+		return { workspace, inWorkspace: (s: string) => ids.has(s), change, runs, hosts, approvals, queue, usage, status, follow, synced };
+	}, [workspace, runs, hosts, approvals, queue, usage, pullWorkspace, synced]);
 
 	return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
+
+/** 新会话、分叉一开始就出错了：会话记录都没写出来（服务端给的 version 是 null） */
+const failed = (r: Run) => r.status === "error" && r.version === null;
 
 /** 第一次发东西时请求通知权限：别的会话要你确认、跑完了，就算页面在后台也能知道 */
 export function askNotify() {

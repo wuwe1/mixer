@@ -8,9 +8,10 @@
 import { type ChildProcess, spawnSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { shellInner, toolOf } from "./codex.ts";
+import { say } from "./log.ts";
+import * as terminals from "./terminals.ts";
 
 type Raw = Record<string, any>; // biome-ignore lint: app-server 的消息
-const say = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 
 /** codex 命令：MIXER_CODEX、PATH 里的、Codex.app 带的 */
 export function bin(): string | null {
@@ -35,6 +36,10 @@ type Handler = { note: (m: Raw) => void; request: (m: Raw) => Promise<unknown> }
 /** 谁都能听的通知（不分线程）：usage.ts 听 account/rateLimits/updated、turn/completed */
 const listeners = new Set<(m: Raw) => void>();
 export const onNote = (f: (m: Raw) => void) => { listeners.add(f); };
+/** 拿掉线程的运行（只拿自己：同一个线程可能已经换成下一次运行的） */
+const drop = (tid: string, self: Handler) => {
+	if (threads.get(tid) === self) threads.delete(tid);
+};
 
 function connect(): Promise<Server> {
 	if (server) return server;
@@ -43,6 +48,8 @@ function connect(): Promise<Server> {
 		if (!b) return fail(new Error("没找到 codex：装 Codex.app，或者设 MIXER_CODEX 指到 codex 命令"));
 		const p = spawn(b, ["app-server"], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
 		proc = p;
+		// 它载入过的线程一直拿着写锁（thread-writer-locks）：不算「在 mixer 外面开着」
+		if (p.pid) terminals.mine.add(p.pid);
 		let n = 0;
 		let buf = "";
 		const waiting = new Map<number, { ok: (r: Raw) => void; fail: (e: Error) => void }>();
@@ -73,7 +80,7 @@ function connect(): Promise<Server> {
 					else w?.ok(m.result ?? {});
 					continue;
 				}
-				const h = threads.get(String(m.params?.threadId ?? m.params?.conversationId ?? ""));
+				const h = threads.get(String(m.params?.threadId ?? ""));
 				// 它来问我们（确认、提问）：交给那个线程的运行；没人认领的一律拒绝
 				if (m.method && m.id !== undefined) {
 					(h ? h.request(m) : Promise.resolve(deny(m))).then((result) => send({ id: m.id, result }), (e: Error) => send({ id: m.id, error: { code: -32000, message: e.message } }));
@@ -92,9 +99,11 @@ function connect(): Promise<Server> {
 			say(`codex app-server 退出了（${code}）${err.trim() ? `：${err.trim().split("\n").pop()}` : ""}`);
 			if (server === me) server = null;
 			if (proc === p) proc = null;
+			if (p.pid) terminals.mine.delete(p.pid);
 			for (const w of waiting.values()) w.fail(new Error("codex app-server 退出了"));
 			// 正在跑的都算出错结束
 			for (const h of threads.values()) h.note({ method: "turn/completed", params: { turn: { status: "failed", error: { message: "codex app-server 退出了" } } } });
+			// 还在等 turn/start 回来的（通知攒着、没走到 complete）：一样拿掉
 			threads.clear();
 		});
 		// 起来了却不回 initialize：杀掉，下次要用时重起
@@ -119,7 +128,6 @@ function deny(m: Raw): unknown {
 	if (m.method === "item/permissions/requestApproval") return { permissions: {}, scope: "turn" };
 	if (m.method === "item/tool/requestUserInput") return { answers: {} };
 	if (m.method === "mcpServer/elicitation/request") return { action: "decline", content: null, _meta: null };
-	if (m.method === "execCommandApproval" || m.method === "applyPatchApproval") return { decision: "denied" };
 	return { decision: "decline" };
 }
 
@@ -148,10 +156,10 @@ function policy(permission: string) {
 	return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: null };
 }
 
-/** turn/completed 里的错误：常常是一段 JSON（{"error":{"message":…}}），取里面那句 */
+/** turn/completed、error 通知里的错误：常常是一段 JSON（{"error":{"message":…}}），取里面那句；没有是 "" */
 function errorText(e: Raw | null | undefined): string {
 	const msg = String(e?.message ?? "");
-	try { return String(JSON.parse(msg)?.error?.message ?? msg); } catch { return msg || "出错了"; }
+	try { return String(JSON.parse(msg)?.error?.message ?? msg); } catch { return msg; }
 }
 
 export type Hooks = {
@@ -159,9 +167,12 @@ export type Hooks = {
 	event: (ev: Raw) => void;
 	/** 会话（线程）id 知道了 */
 	session: (id: string) => void;
+	/** 这一轮你的消息开始了：它的 item id，就是记录里那条 UserMessage 的 id（试过对得上） */
+	user: (id: string) => void;
 	/** 要人确认：tool / input 照 Claude 的样子（Bash 的 command、Edit 的 file_path），网页上的确认卡片原样能用 */
 	ask: (tool: string, input: unknown) => Promise<{ allow: boolean; message?: string }>;
-	end: (status: "done" | "error" | "stopped", error?: string) => void;
+	/** turn：这一轮的 id（记录里等它收尾）；没拿到是 null */
+	end: (status: "done" | "error" | "stopped", error: string | undefined, turn: string | null) => void;
 };
 
 /**
@@ -210,39 +221,39 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 
 	/** 这一轮结束了：只拿掉自己（同一个线程可能已经换成下一次运行的） */
 	const complete = (t: Raw) => {
-		if (threads.get(tid) === self) threads.delete(tid);
-		h.end(t.status === "completed" ? "done" : t.status === "interrupted" ? "stopped" : "error", t.status === "failed" ? errorText(t.error) || error : undefined);
+		drop(tid, self);
+		h.end(t.status === "completed" ? "done" : t.status === "interrupted" ? "stopped" : "error", t.status === "failed" ? errorText(t.error) || error || "出错了" : undefined, turnId);
 	};
-	/** turn/start 还没回、不知道自己这一轮的 id 时来的 turn/completed：可能是上一次运行迟到的（它被停止兜底结束了），先攒着，知道 id 再对 */
-	const early: Raw[] = [];
+	/**
+	 * turn/start 还没回、不知道自己这一轮的 id 时来的通知都先攒着（可能是上一次运行迟到的：它被停止兜底结束了），知道 id 再对。
+	 * 带着别的轮次 id 的不是这次运行的；没带 id 的（app-server 退出时 mixer 自己补的 turn/completed）算自己的
+	 */
+	let early: Raw[] | null = [];
 	const self: Handler = {
 		note: (m) => {
+			if (early) return void early.push(m);
 			const p = (m.params ?? {}) as Raw;
-			// 上一轮迟到的通知（带着别的 turnId）：不是这次运行的
-			if (turnId && p.turnId && p.turnId !== turnId) return;
-			if (m.method === "item/started" && p.item) begin(p.item);
+			const of = p.turnId ?? p.turn?.id;
+			if (turnId && of && of !== turnId) return;
+			if (m.method === "item/started" && p.item?.type === "userMessage") h.user(String(p.item.id));
+			else if (m.method === "item/started" && p.item) begin(p.item);
 			else if (m.method === "item/agentMessage/delta") delta(String(p.itemId), { type: "text_delta", text: String(p.delta ?? "") });
 			else if (m.method === "item/reasoning/summaryTextDelta") delta(String(p.itemId), { type: "thinking_delta", thinking: String(p.delta ?? "") });
 			else if (m.method === "item/reasoning/summaryPartAdded" && (p.summaryIndex ?? 0) > 0) delta(String(p.itemId), { type: "thinking_delta", thinking: "\n\n" });
 			else if (m.method === "error") error = errorText(p.error);
-			else if (m.method === "turn/completed") {
-				const t = (p.turn ?? {}) as Raw;
-				if (!turnId) return void early.push(t);
-				if (t.id && t.id !== turnId) return;
-				complete(t);
-			}
+			else if (m.method === "turn/completed") complete((p.turn ?? {}) as Raw);
 		},
 		request: async (m) => {
 			const p = (m.params ?? {}) as Raw;
-			if (m.method === "item/commandExecution/requestApproval" || m.method === "execCommandApproval") {
+			if (m.method === "item/commandExecution/requestApproval") {
 				const command = shellInner(p.command ?? items.get(String(p.itemId))?.command ?? "");
 				const a = await h.ask("Bash", { command, description: p.reason ?? undefined });
-				return m.method === "execCommandApproval" ? { decision: a.allow ? "approved" : { denied: { rejection: a.message ?? "在 mixer 里被拒绝了" } } } : { decision: a.allow ? "accept" : "decline" };
+				return { decision: a.allow ? "accept" : "decline" };
 			}
-			if (m.method === "item/fileChange/requestApproval" || m.method === "applyPatchApproval") {
-				const t = toolOf(items.get(String(p.itemId)) ?? { type: "fileChange", changes: p.fileChanges ?? {} });
+			if (m.method === "item/fileChange/requestApproval") {
+				const t = toolOf(items.get(String(p.itemId)) ?? { type: "fileChange", changes: {} });
 				const a = await h.ask("Edit", { file_path: t?.input.file_path ?? p.grantRoot ?? "", description: p.reason ?? undefined });
-				return m.method === "applyPatchApproval" ? { decision: a.allow ? "approved" : { denied: { rejection: a.message ?? "在 mixer 里被拒绝了" } } } : { decision: a.allow ? "accept" : "decline" };
+				return { decision: a.allow ? "accept" : "decline" };
 			}
 			if (m.method === "item/permissions/requestApproval") {
 				const a = await h.ask("权限", { description: p.reason ?? "要更多权限", ...p.permissions });
@@ -263,11 +274,12 @@ export async function launch(o: { cwd: string; mode: "new" | "resume" | "fork"; 
 		const r = await s.call("turn/start", { threadId: tid, input, model, ...(effort ? { effort } : {}), approvalPolicy: pol.approvalPolicy, ...(pol.sandboxPolicy ? { sandboxPolicy: pol.sandboxPolicy } : {}), summary: "detailed" }, SLOW);
 		turnId = String(r.turn?.id ?? "") || null;
 	} catch (e) {
-		if (threads.get(tid) === self) threads.delete(tid);
+		drop(tid, self);
 		throw e;
 	}
-	// 攒着的：是这一轮的才算（没拿到 id 就都算）
-	const mine = early.find((t) => !turnId || !t.id || t.id === turnId);
-	if (mine) complete(mine);
+	// 攒着的照同一条规矩过一遍（没拿到 id 就都算）
+	const held = early;
+	early = null;
+	for (const m of held) self.note(m);
 	return { stop: () => { if (turnId) s.call("turn/interrupt", { threadId: tid, turnId }).catch(() => {}); } };
 }

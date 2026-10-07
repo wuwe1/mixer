@@ -69,8 +69,6 @@ test("没配置：远程的一律不认，带着 Access JWT 也不认（不验�
 	assert.equal(await access.who(remote()), null);
 	const fake = `${b64({ alg: "none" })}.${b64({ iss: `https://${TEAM}`, aud: AUD, email: EMAIL })}.`;
 	assert.equal(await access.who(viaAccess(fake)), null);
-	// 看到的记下来给 setup cloudflare 当默认值
-	assert.deepEqual(access.seenAccess(), { team: TEAM, aud: AUD, email: EMAIL });
 	assert.equal(fetched, 0);
 });
 

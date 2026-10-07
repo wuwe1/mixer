@@ -1,23 +1,22 @@
 // 这个会话上正在跑的那次运行，和它输出流里正在写的那几段。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Hello, type Run } from "./api";
+import { api, type Hello, type Run } from "@shared/api";
 import { useEvent } from "./events";
 import { useLive } from "./live";
-import { type Block, type Ev, emptyTail, step, type Tail } from "./tail";
+import { type Block, type Ev, emptyTail, step, type Tail } from "@shared/tail";
+import { reached } from "./arrival";
 
-export type Stream = { run: Run | null; blocks: Block[] };
-
-/** 跑完了最多再等这么久，等最后几段写进记录 */
-const LINGER = 10_000;
+/** run：正在跑的那次；of：blocks 是哪次的（正在跑的，或者跑完了、它写的还没全拉回来的那次） */
+export type Stream = { run: Run | null; of: Run | null; blocks: Block[] };
 
 /**
  * 服务端也攒着一份：打开（刷新、断线重连）时先拿快照，之后按序号接推送来的短事件（tail.ts 的 Ev）；中间漏了就重新拿快照。
  * 快照在 SSE 连上时的 hello 里就有（同一条流，之后的事件正好接在后面）；新开始的运行、中间漏了的，才去拿 /tail。
  * 每段写完才写进会话记录；对话末尾先用流里的顶上，样子和写进记录之后一样，记录里有了同一段（消息 id : 第几段）就换成记录里的。
- * written：记录里已经有的段。跑完时最后几段可能还没拉回来（会话的变化有节流，还要再拉一次）：先留着，记录里都有了再收，
- * 不然最后那条回复会闪一下没了又回来
+ * 跑完时最后几段可能还没拉回来（会话的变化有节流，还要再拉一次）：留着，直到手里的数据（version）到了这次运行结束时记录写到的地方
+ * （运行的 version）再整个收掉，不然最后那条回复会闪一下没了又回来；停下来时写了一半的那段也是这时收
  */
-export function useStream(session: string, written: Set<string>): Stream {
+export function useStream(session: string, version: string | null): Stream {
 	const { runs } = useLive();
 	const run = runs.find((r) => r.session === session && r.status === "running") ?? null;
 	const id = run?.id ?? null;
@@ -78,14 +77,8 @@ export function useStream(session: string, written: Set<string>): Stream {
 		if (e.seq === t.seq + 1) put(step(t, e.event, Date.now()));
 		else sync();
 	}, [sync]));
-	const [late, setLate] = useState(false);
-	useEffect(() => {
-		setLate(false);
-		if (id) return;
-		const t = setTimeout(() => setLate(true), LINGER);
-		return () => clearTimeout(t);
-	}, [id]);
-	// 还有能看见的段（工具调用、有字的回复和思考）没写进记录
-	const left = !run && !late && tail.blocks.some((b) => (b.k === "tool" || b.text.trim()) && !written.has(b.key));
-	return { run, blocks: run || left ? tail.blocks : [] };
+	// 跑完了的那次（mine 是它）：数据还没到它结束时的 version 就接着显示
+	const ended = run ? null : (runs.find((r) => r.id === mine.current) ?? null);
+	const of = run ?? (ended && !reached(version, ended.version) ? ended : null);
+	return { run, of, blocks: of ? tail.blocks : [] };
 }

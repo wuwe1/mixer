@@ -4,7 +4,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Check, Info, Lightbulb, Minus, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Spec } from "@/lib/visual";
+import type { Spec } from "@shared/visual";
 import { cn } from "@/lib/utils";
 import { Code } from "../code";
 import { Markdown } from "../markdown";
@@ -13,10 +13,11 @@ import { Frame } from "./index";
 
 export const TextView = ({ spec }: { spec: Spec<"Text"> }) => <Markdown text={spec.text} />;
 
+// 坑也不用红（红只表示出错）：黑的虚线边加警告图标，和「要点」的实线分开
 const TONES = {
 	note: { icon: Info, line: "border-l-border" },
 	key: { icon: Lightbulb, line: "border-l-foreground" },
-	pitfall: { icon: TriangleAlert, line: "border-l-destructive" },
+	pitfall: { icon: TriangleAlert, line: "border-dashed border-l-foreground" },
 } as const;
 
 export function CalloutView({ spec }: { spec: Spec<"Callout"> }) {

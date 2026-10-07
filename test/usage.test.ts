@@ -1,33 +1,23 @@
-// usage.ts：各个账号拼成一样的样子（Claude 的 rate_limit_event、Codex 的 account/rateLimits/read）、旧的 limits 换过来、hello 里带着；
+// usage.ts：各个账号拼成一样的样子（Claude 的 rate_limit_event、get_usage，Codex 的 account/rateLimits/read）、hello 里带着；
 // pi 的花费：按 provider、本地日期加起来，增量读、半行不算、换月重算；
-// web/src/lib/usage.ts：挑最紧的窗口（过了重置时间的不算）、输入框旁边的提醒、钱怎么写
+// shared/usage.ts：挑最紧的窗口（过了重置时间的不算）、输入框旁边的提醒、钱怎么写
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type Account, money, nearLimit, tightest } from "../web/src/lib/usage.ts";
+import { type Account, money, nearLimit, tightest } from "../shared/usage.ts";
 
-// 不碰这台机器的 ~/.claude、~/.codex、data/。state.json 里是旧版本记的 limits
+// 不碰这台机器的 ~/.claude、~/.codex、data/
 const tmp = mkdtempSync(join(tmpdir(), "mixer-usage-"));
 process.env.HOME = tmp;
 process.env.MIXER_DATA = join(tmp, "data");
-mkdirSync(join(tmp, "data"), { recursive: true });
-const OLD_AT = "2026-10-01T08:00:00.000Z";
-writeFileSync(join(tmp, "data", "state.json"), JSON.stringify({ limits: { five_hour: { utilization: 0.3, resetsAt: 1791269435 }, seven_day: { utilization: 0.55, resetsAt: 1791800240 }, at: OLD_AT } }));
 
 const usage = await import("../server/usage.ts");
 const sse = await import("../server/sse.ts");
 const { hello } = await import("../server/workspace.ts");
 
 const saved = () => JSON.parse(readFileSync(join(tmp, "data", "state.json"), "utf8"));
-
-test("旧的 limits 换成 Claude 的账号，旧字段不再留", () => {
-	assert.deepEqual(usage.list(), [{ id: "claude", label: "Claude", kind: "quota", at: OLD_AT, windows: [{ label: "5 小时", used: 0.3, resetsAt: 1791269435_000 }, { label: "本周", used: 0.55, resetsAt: 1791800240_000 }] }]);
-	const s = saved();
-	assert.equal("limits" in s, false);
-	assert.equal(s.usage.claude.at, OLD_AT);
-});
 
 test("窗口多长 → 叫什么", () => {
 	assert.equal(usage.windowLabel(300), "5 小时");
@@ -54,6 +44,29 @@ test("Claude 的 rate_limit_event → 账号：秒换成毫秒，缺的窗口不
 		assert.deepEqual(list.map((x) => x.kind === "quota" && x.windows.map((w) => w.used)), [[0.1, 0.2]]);
 		assert.deepEqual(saved().usage.claude.windows.map((w: { used: number }) => w.used), [0.1, 0.2]);
 	});
+});
+
+test("Claude 的 get_usage → 账号：0–100 换成 0–1、ISO 时间换成毫秒；只要 5 小时、本周；没登录、没有窗口是 null", () => {
+	const at = "2026-10-07T00:00:00.000Z";
+	// 真的命令行回的（2.1.289，去掉了不用的）
+	const r = {
+		subscription_type: "max", rate_limits_available: true,
+		rate_limits: {
+			five_hour: { utilization: 16, resets_at: "2026-10-07T15:29:59.837832+00:00" },
+			seven_day: { utilization: 25, resets_at: "2026-10-10T23:59:59.837862+00:00" },
+			seven_day_opus: null,
+			iguana_necktie: { utilization: 7.9, resets_at: "2026-11-05T07:59:00+00:00", limit_dollars: 250 },
+		},
+	};
+	assert.deepEqual(usage.claudeUsageAccount(r, at), {
+		id: "claude", label: "Claude", kind: "quota", at,
+		windows: [{ label: "5 小时", used: 0.16, resetsAt: Date.parse("2026-10-07T15:29:59.837Z") }, { label: "本周", used: 0.25, resetsAt: Date.parse("2026-10-10T23:59:59.837Z") }],
+	});
+	const one = usage.claudeUsageAccount({ rate_limits: { five_hour: { utilization: 50, resets_at: null }, seven_day: null } }, at);
+	assert.deepEqual(one?.kind === "quota" && one.windows, [{ label: "5 小时", used: 0.5, resetsAt: null }]);
+	assert.equal(usage.claudeUsageAccount({ rate_limits_available: false, rate_limits: null }, at), null);
+	assert.equal(usage.claudeUsageAccount({ rate_limits: { five_hour: null, seven_day: null } }, at), null);
+	assert.equal(usage.claudeUsageAccount(null as never, at), null);
 });
 
 /** account/rateLimits/read 回来的样子（真的 app-server 回的，去掉了账号 id 这些） */

@@ -11,9 +11,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import QRCode from "qrcode";
-import { config, configured, update } from "./access.ts";
+import { config, configured, PORT, update } from "./access.ts";
 
-const PORT = Number(process.env.MIXER_PORT ?? 4848);
 const LOCAL = `http://127.0.0.1:${PORT}`;
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q: string, def = "") => (await rl.question(def ? `${q}（回车用 ${def}）：` : `${q}：`)).trim() || def;
@@ -73,19 +72,17 @@ async function setupCloudflare() {
 		tunnel = { id: id as string, hostname, credentials };
 	}
 
-	const seen = await local<{ team: string; aud: string; email: string } | null>("/api/auth/seen");
 	console.log(`
 还要在 Cloudflare 后台建一个 Access 应用，挡在 mixer 前面（只做一次）：
   1. 打开 https://one.dash.cloudflare.com → Access → Applications → Add an application → Self-hosted
   2. 域名填 ${hostname || "手机上用的那个地址"}，Session Duration 可以选 1 month
   3. Policy：Action 选 Allow，Include → Emails → 填你的邮箱
   4. 建好后，应用的 Overview 里有 Application Audience (AUD) Tag；团队域名在 Settings → Custom Pages（xxx.cloudflareaccess.com）`);
-	if (seen) console.log("（下面的默认值是从刚才经过 Access 的请求里看到的）");
-	const team = (await ask("\n团队域名", cur?.team ?? seen?.team)).toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+	const team = (await ask("\n团队域名", cur?.team)).toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 	if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(team)) die("团队域名应该像 xxx.cloudflareaccess.com");
-	const aud = await ask("AUD", cur?.aud ?? seen?.aud);
+	const aud = await ask("AUD", cur?.aud);
 	if (!/^[0-9a-f]{64}$/.test(aud)) die("AUD 是 64 位十六进制");
-	const emails = (await ask("放行的邮箱（多个用逗号）", cur?.emails.join(",") ?? seen?.email)).split(",").map((e) => e.trim()).filter(Boolean);
+	const emails = (await ask("放行的邮箱（多个用逗号）", cur?.emails.join(","))).split(",").map((e) => e.trim()).filter(Boolean);
 	if (!emails.length) die("至少一个邮箱");
 	const certs = await fetch(`https://${team}/cdn-cgi/access/certs`).then((r) => r.json() as Promise<{ keys?: unknown[] }>, () => null);
 	if (!certs?.keys?.length) die(`拿不到 ${team} 的公钥，团队域名对吗？`);
