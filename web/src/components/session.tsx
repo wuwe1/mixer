@@ -11,11 +11,13 @@ import { ApiError, api, type SessionMeta, temporary } from "@shared/api";
 import { useSessionLive } from "@/lib/live";
 import { clearNotices } from "@/lib/push";
 import { go, type Route } from "@/lib/route";
+import { scopeOf, SessionScope } from "@/lib/scope";
 import { spotOf, useSpot, useStick } from "@/lib/scroll";
 import { useSessionData } from "@/lib/session-data";
 import { keysOf, tree, type User, walk } from "@/lib/thread";
 import { useStream } from "@/lib/use-stream";
 import { cn } from "@/lib/utils";
+import { AgentSheet } from "./agent-sheet";
 import { Composer } from "./composer";
 import { Conversation, type Reveal } from "./conversation";
 import { Boundary, Placeholder } from "./placeholder";
@@ -90,6 +92,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		if (!p) return void toast(`不在这个项目里：${abs}`);
 		go({ panel: "files", file: p, view: diff ? "diff" : null });
 	}, [rel]);
+	// 开着看的子代理（AgentSheet）。对话里的消息、工具调用从 SessionScope 拿会话、地址、点了文件和子代理怎么办
+	const [agent, setAgent] = useState<string | null>(null);
+	const closeAgent = useCallback(() => setAgent(null), []);
+	const agentRunning = !!agent && !!spawned && [...spawned.values()].some((s) => s.agentId === agent && s.running);
+	const scope = useMemo(() => scopeOf(project, session, { onFile, onAgent: setAgent }), [project, session, onFile]);
 	const prompts = useMemo(() => w?.path.filter((n): n is User => n.k === "user") ?? [], [w]);
 
 	if (failed && error)
@@ -100,33 +107,36 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		);
 
 	return (
-		<div className="flex min-h-0 flex-1">
-			<div className="flex min-w-0 flex-1 flex-col">
-				<div className="relative flex min-h-0 flex-1 flex-col">
-					{/* 原生滚动：shadcn 的 ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
-					<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
-							{t && w ? (
-								<Boundary>
-									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} chosenPermission={data?.permission ?? "auto"} stream={stream} live={live} scroller={scroller} reveal={reveal} spawned={spawned} />
-								</Boundary>
-							) : (
-								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
-							)}
+		<SessionScope value={scope}>
+			<div className="flex min-h-0 flex-1">
+				<div className="flex min-w-0 flex-1 flex-col">
+					<div className="relative flex min-h-0 flex-1 flex-col">
+						{/* 原生滚动：shadcn 的 ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
+						<div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+							<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
+								{t && w ? (
+									<Boundary>
+										<Conversation w={w} t={t} keys={keys} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} chosenPermission={data?.permission ?? "auto"} stream={stream} live={live} scroller={scroller} reveal={reveal} spawned={spawned} />
+									</Boundary>
+								) : (
+									[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
+								)}
+							</div>
 						</div>
+						{away && (
+							<Button variant="outline" size="icon" className="absolute right-4 bottom-3 rounded-full shadow-md" onClick={() => toBottom(true)} aria-label="回到最新" title={working ? `回到最新 · ${working} 个子代理在跑` : "回到最新"}>
+								<ArrowDown className="size-4" />
+								{unseen && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-unread" />}
+								{/* 还在跑的子代理有几个：灰的小数字，不抢眼 */}
+								{working > 0 && <span className="absolute -top-1 -left-1 flex h-4 min-w-4 items-center justify-center rounded-full border bg-background px-1 text-2xs leading-none tabular-nums text-muted-foreground">{working}</span>}
+							</Button>
+						)}
 					</div>
-					{away && (
-						<Button variant="outline" size="icon" className="absolute right-4 bottom-3 rounded-full shadow-md" onClick={() => toBottom(true)} aria-label="回到最新" title={working ? `回到最新 · ${working} 个子代理在跑` : "回到最新"}>
-							<ArrowDown className="size-4" />
-							{unseen && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-unread" />}
-							{/* 还在跑的子代理有几个：灰的小数字，不抢眼 */}
-							{working > 0 && <span className="absolute -top-1 -left-1 flex h-4 min-w-4 items-center justify-center rounded-full border bg-background px-1 text-2xs leading-none tabular-nums text-muted-foreground">{working}</span>}
-						</Button>
-					)}
+					{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} live={live} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} chosenPermission={data.permission ?? "auto"} onSent={onSent} />}
 				</div>
-				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} live={live} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} chosenPermission={data.permission ?? "auto"} onSent={onSent} />}
+				<SessionPanel project={project} r={r} prompts={prompts} touched={touched} onJump={onJump} />
+				<AgentSheet id={agent} running={agentRunning} onClose={closeAgent} />
 			</div>
-			<SessionPanel project={project} r={r} prompts={prompts} touched={touched} onJump={onJump} />
-		</div>
+		</SessionScope>
 	);
 }

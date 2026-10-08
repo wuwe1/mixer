@@ -1,25 +1,22 @@
 // 对话：把节点树走成一条路（默认走到命令行续接时接着的那条，记录里没写就是最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
-// 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、等你确认的请求。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx。
+// 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、出错了的「重试」。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx，子代理的对话在 agent-sheet.tsx。
+// 是哪个会话、点了文件和子代理怎么办从 SessionScope 拿（lib/scope.ts）。
 import { ChevronLeft, ChevronRight, Clock, RotateCw, Square, TriangleAlert, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { type Spawn, spawner } from "@/lib/agents";
-import { type Agent, api, enc, type Node, type Queued, type Run, type Sub } from "@shared/api";
-import { useEvent } from "@/lib/events";
+import { api, type Node, type Queued, type Run } from "@shared/api";
 import { type SessionLive, useLive } from "@/lib/live";
 import { pretty } from "@/lib/model";
 import { go } from "@/lib/route";
+import { useScope } from "@/lib/scope";
 import { type Block, blocks, headOf, isLive, liveNodes, pointOf, type Tree, type User, type Walk } from "@/lib/thread";
-import { useIncremental } from "@/lib/use-incremental";
 import type { Stream } from "@/lib/use-stream";
 import { ForkDialog, type ForkTarget } from "./fork-dialog";
-import { AssistantMessage, Bubble, EventLine, Steps, stable, UserMessage } from "./message";
-import { Loading } from "./placeholder";
+import { AliveDot, AssistantMessage, Bubble, EventLine, Steps, stable, UserMessage } from "./message";
 import { start } from "./prompt";
-import { StatusIcon } from "./side";
 
 /** 跳到这条（目录里点的）；at 让同一条点两次也算 */
 /** 跳到一条：带 offset 是放回原处（切回会话时），不动画，让它的顶边离滚动区顶部 offset 像素 */
@@ -106,22 +103,12 @@ function idsOf(bs: Block[]) {
 	return ids;
 }
 
-/** 在跑，末尾却什么都没在动：留一个 ping 点，知道它还活着。和工具组收着时露出的那一步对齐：同样缩进、同样大小 */
-function AliveDot() {
-	return (
-		<div className="-mt-3 flex py-1 pl-5.5">
-			<StatusIcon s="running" className="size-3.5" />
-		</div>
-	);
-}
-
 /**
  * spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；live：这个会话在 mixer 里的实时情况（lib/live.tsx）；
  * keys：记录里有的段（流里的哪几段已经写进去了，和 useStream 用的同一份）
  */
-export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, chosenPermission, stream, live: sl, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; chosenPermission: string; stream: Stream; live: SessionLive; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
-	/** 开着看的子代理 */
-	const [agent, setAgent] = useState<string | null>(null);
+export function Conversation({ w, t, keys, chosen, chosenEffort, chosenPermission, stream, live: sl, scroller, reveal, spawned }: { w: Walk; t: Tree; keys: Set<string>; chosen: string | null; chosenEffort: string | null; chosenPermission: string; stream: Stream; live: SessionLive; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
+	const { project, session } = useScope();
 	const [fork, setFork] = useState<ForkTarget | null>(null);
 	// 看的是最新处：正在写的接在末尾
 	const live = w.atLatest ? liveNodes(stream, t.ids, keys) : [];
@@ -159,8 +146,6 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 		return { switched, spent };
 	}, [written, w.path]);
 
-	const closeAgent = useCallback(() => setAgent(null), []);
-	const agentRunning = !!agent && !!spawned && [...spawned.values()].some((s) => s.agentId === agent && s.running);
 	// 不变的回调：消息组件是 memo 的
 	const forkEdit = useCallback((n: User) => setFork({ kind: "edit", n }), []);
 	const forkReply = useCallback((n: Node) => setFork({ kind: "at", at: n.uuid, what: "这条回复" }), []);
@@ -176,86 +161,24 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 						{v && <VersionSwitch v={v} />}
 						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
 						{b.kind === "steps" ? (
-							<Steps nodes={b.nodes} project={project} session={session} onAgent={setAgent} onFile={onFile} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} spawns={spawned && b.nodes.some(spawner) ? spawned : undefined} />
+							<Steps nodes={b.nodes} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} spawns={spawned && b.nodes.some(spawner) ? spawned : undefined} />
 						) : b.n.k === "user" ? (
-							<UserMessage n={b.n} project={project} session={session} onFork={isLive(b.n) ? undefined : forkEdit} />
+							<UserMessage n={b.n} onFork={isLive(b.n) ? undefined : forkEdit} />
 						) : b.n.k === "assistant" ? (
 							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} last={b === tail} />
 						) : b.n.k === "event" ? (
 							// 正在重试的那行只在它是最后一条、还在跑时显示（重试过去了、跑完了就不用看了）
-							b.n.kind === "retry" && !(b === tail && sl.working) ? null : <EventLine n={b.n} onAgent={setAgent} />
+							b.n.kind === "retry" && !(b === tail && sl.working) ? null : <EventLine n={b.n} />
 						) : null}
 					</div>
 				);
 			})}
 			{idle && <AliveDot />}
 			<QueuedMessages queued={sl.queued} run={sl.run} />
-			{!sl.working && <LastError project={project} session={session} run={sl.last} last={w.path[w.path.length - 1]} choice={{ permission: chosenPermission, model: chosen, effort: chosenEffort }} />}
-
-			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
+			{!sl.working && <LastError run={sl.last} last={w.path[w.path.length - 1]} choice={{ permission: chosenPermission, model: chosen, effort: chosenEffort }} />}
 
 			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} chosenPermission={chosenPermission} target={fork} onClose={() => setFork(null)} />
 		</>
-	);
-}
-
-/**
- * 子代理的对话（从 Agent 工具调用、后台任务通知、子代理回报点开）。开着的时候它的记录一变（agent 事件）就带 version 拉增量，
- * 上一次还没回来就等它回来再拉一次；还在跑的，正在执行的那一步带 ping 点和耗时。停在底部时跟着往下滚，一打开就在最新处
- */
-function AgentSheet({ project, session, id, running, onClose, onFile }: { project: string; session: string; id: string | null; running: boolean; onClose: () => void; onFile: (path: string, diff: boolean) => void }) {
-	const box = useRef<HTMLDivElement>(null);
-	const near = useRef(true);
-	// 关上了不拉（看过的留着，再打开同一个先画它）。第一次就没拿到（还没有记录）：说一声、关上；跟着拉的时候出错，等下次
-	const { data: a, load } = useIncremental<Agent>(id ? `/api/sessions/${enc(project)}/${enc(session)}/agents/${enc(id)}` : null, {
-		onError: (e, first) => {
-			if (!first) return;
-			toast.error(e.message);
-			onClose();
-		},
-	});
-	useEffect(() => { if (id) near.current = true; }, [id]);
-	useEvent("agent", useCallback((e: Sub & { project: string; session: string }) => { if (id && e.project === project && e.session === session && e.agentId === id) load(); }, [id, project, session, load]));
-	useEvent("hello", load);
-	useLayoutEffect(() => {
-		const el = box.current;
-		if (el && a && id && near.current) el.scrollTop = el.scrollHeight;
-	}, [a, id]);
-	const bs = useMemo(() => (a ? blocks(a.nodes) : []), [a]);
-	const tail = bs[bs.length - 1];
-	const last = running && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
-	const now = last?.k === "tool" && !last.result ? { node: last, since: Date.parse(last.ts) } : null;
-	return (
-		<Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
-			<SheetContent side="right" className="w-full p-0 sm:max-w-2xl">
-				<SheetHeader className="border-b">
-					<SheetTitle className="flex items-center gap-2">
-						{running && <StatusIcon s="running" />}
-						子代理：{a?.info.agentType ?? id}
-					</SheetTitle>
-					<SheetDescription>{a?.info.description}</SheetDescription>
-				</SheetHeader>
-				{/* 原生滚动：ScrollArea 里面是 display:table，长代码会把整栏撑宽 */}
-				<div ref={box} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onScroll={(e) => { const el = e.currentTarget; near.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48; }}>
-					{a ? (
-						<div className="flex flex-col gap-4 p-4">
-							{bs.map((b) =>
-								b.kind === "steps" ? (
-									<Steps key={b.nodes[0].uuid} nodes={b.nodes} project={project} session={session} agent={a.id} onFile={onFile} now={b === tail ? now : null} />
-								) : b.n.k === "assistant" ? (
-									<AssistantMessage key={b.n.uuid} n={b.n} />
-								) : b.n.k === "user" ? (
-									<div key={b.n.uuid} className="rounded-lg border bg-muted/40 p-3 text-md whitespace-pre-wrap">{b.n.text}</div>
-								) : null,
-							)}
-							{running && !now && <AliveDot />}
-						</div>
-					) : (
-						<Loading className="h-full" />
-					)}
-				</div>
-			</SheetContent>
-		</Sheet>
 	);
 }
 
@@ -279,8 +202,9 @@ function VersionSwitch({ v }: { v: { options: Node[]; index: number; to: (string
  * 记录里最后一条是出错（命令行合成的 API Error：终端里跑的、服务重启过的也认得），出错那行已经画了，这里只给按钮；
  * mixer 里最近一次运行出错、记录里没有（命令行没接这条、进程挂了），这里写明原因。之后又写了别的就不显示
  */
-function LastError({ project, session, run, last, choice }: { project: string; session: string; run: Run | null; last: Node | undefined; choice: { permission: string; model: string | null; effort: string | null } }) {
+function LastError({ run, last, choice }: { run: Run | null; last: Node | undefined; choice: { permission: string; model: string | null; effort: string | null } }) {
 	const { follow } = useLive();
+	const { project, session } = useScope();
 	const [sending, setSending] = useState(false);
 	const inRecord = last?.k === "event" && last.kind === "error";
 	const fromRun = run?.status === "error" && run.ended && (!last || Date.parse(run.ended) >= Date.parse(last.ts)) ? run : null;
