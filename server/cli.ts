@@ -11,7 +11,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import QRCode from "qrcode";
-import { config, configured, PORT, update } from "./access.ts";
+import { config, configured, update } from "./access.ts";
+import { PORT } from "./env.ts";
 
 const LOCAL = `http://127.0.0.1:${PORT}`;
 const rl = createInterface({ input: process.stdin, output: process.stdout });

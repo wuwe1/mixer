@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import webpush from "web-push";
 import { type Approval, type Run, sessionTitle } from "../shared/api.ts";
-import { DATA } from "./access.ts";
+import { DATA } from "./env.ts";
 import { say } from "./log.ts";
 import * as runs from "./runs.ts";
 import * as sessions from "./sessions.ts";

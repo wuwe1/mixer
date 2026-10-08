@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Account } from "../shared/usage.ts";
-import { DATA } from "./access.ts";
+import { DATA } from "./env.ts";
 
 const FILE = join(DATA, "state.json");
 

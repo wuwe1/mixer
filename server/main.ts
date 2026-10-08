@@ -4,19 +4,20 @@
 //   推：/api/events（SSE）：运行的输出、运行状态、确认请求、会话文件有变化、子代理在做什么
 // 接口都要先认出是谁（access.ts：本机、Access 的 JWT、passkey 登录的 cookie），页面本身谁都能拿。
 // 每个接口在 ROUTES 里写明谁能用（user / open，见 refuse）；写的接口只收 JSON、只认自己页面的 Origin（本机 http，或隧道来的同源 https）。
-import { execFile, execFileSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, type Stats, statSync, watch } from "node:fs";
+import { createReadStream, existsSync, readFileSync, type Stats, statSync, watch } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname, extname, join, sep } from "node:path";
+import { extname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
 import * as dirs from "./dirs.ts";
+import { PORT } from "./env.ts";
 import { say } from "./log.ts";
 import * as models from "./models.ts";
 import * as repo from "./repo.ts";
 import * as push from "./push.ts";
 import * as runs from "./runs.ts";
+import * as self from "./self.ts";
 import * as skills from "./skills.ts";
 import * as sse from "./sse.ts";
 import { agent, fullResult, image, listProjects, listSessions, PROJECTS, projectOf, row, session, sub, subs, thought, toolDetail, tree } from "./sessions.ts";
@@ -27,73 +28,13 @@ import * as tunnel from "./tunnel.ts";
 import * as usage from "./usage.ts";
 import * as workspace from "./workspace.ts";
 
-const { PORT } = access;
-const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
-const DIST = join(ROOT, "web", "dist");
+const { DIST } = self;
 
 // 哪里漏了没接住的错误：记下来，服务接着跑（launchd 会拉起，但正在跑的、排着的、待确认的就都没了）
 process.on("uncaughtException", (e) => say(`没接住的错误：${e.stack ?? e}`));
 process.on("unhandledRejection", (e) => say(`没接住的错误（Promise）：${e instanceof Error ? e.stack : e}`));
 // 被停（launchd、Ctrl-C）：先停掉自己跑的隧道（cloudflared），再走一遍 exit
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => { tunnel.stop(); process.exit(0); });
-
-/** web/src、shared 比 web/dist 新就重新打包 */
-function build() {
-	const newest = (d: string): number => Math.max(0, ...readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? newest(join(d, e.name)) : statSync(join(d, e.name)).mtimeMs)));
-	const out = join(DIST, "index.html");
-	if (existsSync(out) && statSync(out).mtimeMs > Math.max(newest(join(ROOT, "web", "src")), newest(join(ROOT, "shared")), statSync(join(ROOT, "web", "index.html")).mtimeMs)) return;
-	console.log("打包页面……");
-	execFileSync(join(ROOT, "node_modules", ".bin", "vite"), ["build", "--logLevel", "warn"], { cwd: ROOT, stdio: "inherit" });
-	prune();
-}
-
-/** 页面现在的版本：index.html 里入口脚本的路径（文件名带 hash）。开着的页面比一比，就知道有没有新的 */
-let version: string | null = null;
-const readVersion = () => {
-	try { return /<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/.exec(readFileSync(join(DIST, "index.html"), "utf8"))?.[1] ?? null; } catch { return null; }
-};
-/**
- * 从磁盘重读版本，换了就告诉开着的页面：自己打完包、dist 的 index.html 变了（终端里 pnpm build）、有页面连上时都读。
- * 只在这里改 version：谁先读到新的谁就推 build，不会有人读了却没推。读不到（正写到一半）不算
- */
-function refreshVersion() {
-	const v = readVersion();
-	if (!v || v === version) return;
-	version = v;
-	sse.emit("build", { version });
-}
-
-/**
- * 打包不清空 dist（emptyOutDir: false）：已经开着的页面还要按需加载旧的那些块。
- * 打包完把一天前的、新的 index.html 顺着引用找不到的删掉
- */
-function prune() {
-	const dir = join(DIST, "assets");
-	let names: string[];
-	try { names = readdirSync(dir); } catch { return; }
-	const all = new Set(names);
-	const used = new Set<string>();
-	const todo = [join(DIST, "index.html")];
-	for (let f = todo.pop(); f; f = todo.pop()) {
-		let text: string;
-		try { text = readFileSync(f, "utf8"); } catch { continue; }
-		for (const m of text.matchAll(/[\w.-]+\.(?:js|css|wasm|woff2?|ttf|svg|png|jpe?g|gif|webp|json)\b/g)) {
-			if (!all.has(m[0]) || used.has(m[0])) continue;
-			used.add(m[0]);
-			if (/\.(js|css)$/.test(m[0])) todo.push(join(dir, m[0]));
-		}
-	}
-	let n = 0;
-	for (const name of names) {
-		if (used.has(name)) continue;
-		try {
-			if (Date.now() - statSync(join(dir, name)).mtimeMs < 86_400_000) continue;
-			rmSync(join(dir, name), { force: true });
-			n++;
-		} catch {}
-	}
-	if (n) say(`删掉了 ${n} 个一天前的旧打包文件`);
-}
 
 const TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
@@ -276,7 +217,8 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	["GET", /^\/api\/auth\/status$/, "open", async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
 	// 推送（sse.ts）：先发 build（页面的版本），再发 hello（全部状态）。连上时也从磁盘重读一次版本：换了先推给已经开着的，这条连接直接拿新的
 	["GET", /^\/api\/events$/, "user", (req, res) => {
-		refreshVersion();
+		self.refreshVersion();
+		const version = self.current();
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 		res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
 		// 连着的时候每 30 秒再认一次：删掉了 passkey、JWT 过期了，开着的这条也断掉，不再收到运行的输出（重连时就被拦下）
@@ -430,66 +372,8 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	}],
 ];
 
-/**
- * 改了 mixer 自己的代码：停手 3 秒、mixer 也闲下来（没有运行、排队、待确认）再换上，免得打断正在跑的、丢了排着的。
- *   服务端的代码（server/、两边共用的 shared/）：类型检查过了就退出，launchd（KeepAlive）马上拉起新的，启动时顺便重新打包页面。
- *   检查没过不重启，等下次改；终端里 pnpm start 的退出了没人拉，只提示一句。
- *   只改了页面：重新打包，刷新就是新的
- */
-const LAUNCHD = process.env.XPC_SERVICE_NAME === "com.mixer.server";
-const dirty = { server: 0, web: 0 };
-let swapping = false;
-const CODE = /\.(tsx?|css|html)$/;
-const touched = (kind: keyof typeof dirty) => (_: unknown, f: string | Buffer | null) => { if (CODE.test(String(f ?? ""))) dirty[kind] = Date.now(); };
-watch(join(ROOT, "server"), { recursive: true }, touched("server"));
-watch(join(ROOT, "shared"), { recursive: true }, touched("server"));
-watch(join(ROOT, "web", "index.html"), touched("web"));
-watch(join(ROOT, "web", "src"), { recursive: true }, touched("web"));
-setInterval(() => {
-	const last = Math.max(dirty.server, dirty.web);
-	if (swapping || !last || Date.now() - last < 3000 || !runs.idle()) return;
-	swapping = true;
-	if (dirty.server) {
-		const at = dirty.server;
-		execFile(join(ROOT, "node_modules", ".bin", "tsc"), ["--noEmit", "-p", "server"], { cwd: ROOT }, (err, out) => {
-			swapping = false;
-			// 检查的时候又改了、又有人开始跑了：下一轮再说
-			if (dirty.server !== at || !runs.idle()) return;
-			dirty.server = 0;
-			if (err) return say(`服务端代码改了，类型检查没过，先不重启：\n${out}`);
-			if (!LAUNCHD) return say("服务端代码改了：重启后生效");
-			say("服务端代码改了，现在空闲：重启");
-			process.exit(0);
-		});
-		return;
-	}
-	const at = dirty.web;
-	execFile(join(ROOT, "node_modules", ".bin", "vite"), ["build", "--logLevel", "warn"], { cwd: ROOT }, (err, _out, stderr) => {
-		swapping = false;
-		if (dirty.web === at) dirty.web = 0;
-		packed.clear();
-		say(err ? `页面改了，打包失败：\n${stderr}` : "页面改了：已重新打包");
-		if (err) return;
-		// 开着的页面：有新版本了
-		refreshVersion();
-		prune();
-	});
-}, 5000).unref();
-
-// 打包失败（页面代码写坏了、少装了包）不能挡住起服务：有旧的 dist 就先用旧的，等下次改好了再打包；连旧的都没有才退出，让 launchd 隔一会儿再拉。
-// 顶层抛出去会被上面的 uncaughtException 吞掉，后面的 listen 就不走了，进程靠文件监视挂着却不听端口
-try {
-	build();
-} catch (e) {
-	if (!existsSync(join(DIST, "index.html"))) {
-		say(`打包失败，也没有旧的页面，退出：${e instanceof Error ? e.message : e}`);
-		process.exit(1);
-	}
-	say(`打包失败，先用旧的页面：${e instanceof Error ? e.message : e}`);
-}
-refreshVersion();
-// 别处打的包（终端里 pnpm build）：dist 的 index.html 换了就告诉开着的页面。打包之后才监视：新拉下来的仓库原来没有 dist，监视不上
-watch(DIST, (_, f) => { if (String(f ?? "") === "index.html") throttle("dist", refreshVersion); });
+// 盯着自己的代码、先打包、读版本（self.ts）。页面重新打包了，压好的旧文件不要了
+self.start(() => packed.clear());
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;

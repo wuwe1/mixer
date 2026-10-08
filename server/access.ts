@@ -10,13 +10,10 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "no
 import type { IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
+import { DATA, PORT } from "./env.ts";
 import { say } from "./log.ts";
 
-/** mixer 自己的数据（access.json、state.json）放哪：MIXER_DATA，默认仓库里的 data/（测试、另起一个实例时指到临时目录） */
-export const DATA = process.env.MIXER_DATA || join(dirname(new URL(import.meta.url).pathname), "..", "data");
 export const FILE = join(DATA, "access.json");
-/** 服务的端口：MIXER_PORT，默认 4848 */
-export const PORT = Number(process.env.MIXER_PORT ?? 4848);
 
 export type Passkey = { id: string; key: string; counter: number; transports?: string[]; name: string; at: string };
 export type Config = {
