@@ -11,7 +11,7 @@ import type { Account } from "@shared/usage";
 export type Status = "waiting" | "running" | "background" | "done" | "error" | "terminal" | null;
 
 /** 工作区的改动：放进来（不给 session 就只放文件夹；sessions 是撤销移出文件夹时一起放回去的）、移出去（不给 session 就是整个文件夹）、文件夹的新顺序 */
-export type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string; sessions?: string[] } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
+type WorkspaceOp = { op: "add"; project: string; path: string | null; session?: string; sessions?: string[] } | { op: "remove"; project: string; session?: string } | { op: "order"; order: string[] };
 
 type Live = {
 	workspace: Group[] | null;
@@ -127,7 +127,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 		setUsage(h.usage ?? []);
 	}, [putWorkspace, putRuns, putHosts, putApprovals, putQueue]));
 	// 工作区变了（放进来、移出去、换顺序、删了会话）：推来的就是整份。之前攒着的侧栏行比它旧，作废
+	// 不是数组的不认：页面先换上了、服务端还是老的那一版（只推「变了」）时，等它重启后 hello 带来新的
 	useEvent("workspace", useCallback((w: Group[]) => {
+		if (!Array.isArray(w)) return;
 		rows.current = new Map();
 		putWorkspace(w);
 	}, [putWorkspace]));

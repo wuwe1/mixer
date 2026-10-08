@@ -37,8 +37,6 @@ export function Elapsed({ since, className }: { since: number; className?: strin
 	return <span className={cn("tabular-nums", className)}>{took(now - since)}</span>;
 }
 
-export type { Now };
-
 /** 在跑，末尾却什么都没在动：留一个 ping 点，知道它还活着。和工具组收着时露出的那一步对齐：同样缩进、同样大小 */
 export function AliveDot() {
 	return (

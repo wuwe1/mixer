@@ -5,14 +5,14 @@ import { toast } from "@/lib/toast";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSidebar } from "@/components/ui/sidebar";
-import type { ProjectTree, SessionMeta } from "@shared/api";
+import { type ProjectTree, type SessionMeta, sessionTitle } from "@shared/api";
 import { useLive } from "@/lib/live";
 import { match } from "@/lib/match";
 import { openSession } from "@/lib/route";
 import { since } from "@/lib/time";
 import { useApi } from "@/lib/use-api";
 import { Loading } from "./placeholder";
-import { families, projectName, sessionTitle, StatusIcon } from "./side";
+import { families, projectName, StatusIcon } from "./side";
 
 export function Browse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
 	const { inWorkspace, change, status } = useLive();

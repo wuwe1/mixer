@@ -1,7 +1,7 @@
 // 把 git 的统一 diff 拆成文件 → 段 → 行，带新旧两边的行号。git diff / git show / diff --no-index 的输出都认。
 
 export type Line = { t: "+" | "-" | " "; text: string; a?: number; b?: number };
-export type Hunk = { head: string; lines: Line[] };
+type Hunk = { head: string; lines: Line[] };
 export type FileDiff = { path: string; from?: string; kind: "M" | "A" | "D" | "R"; binary: boolean; hunks: Hunk[]; add: number; del: number };
 
 const strip = (p: string) => p.replace(/^"|"$/g, "").replace(/^[ab]\//, "");

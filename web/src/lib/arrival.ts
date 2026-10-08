@@ -32,7 +32,7 @@ export type Known = { ids: Set<string>; version: string | null; runs: Run[]; que
  * arrived 写进记录了；lost 没发出去，放回输入框；gone 服务端根本没收到（请求没回来的那种：字本来就还在输入框里，忘掉就行）；
  * wait 接着等（带上新知道的 where、seen、mark）
  */
-export type Fate = { f: "arrived" | "lost" | "gone" } | { f: "wait"; where?: "run" | "queue"; seen?: boolean; mark?: string };
+type Fate = { f: "arrived" | "lost" | "gone" } | { f: "wait"; where?: "run" | "queue"; seen?: boolean; mark?: string };
 
 export function fate(x: Item, k: Known): Fate {
 	const run = k.runs.find((r) => r.merged.includes(x.uuid));

@@ -57,7 +57,7 @@ export function StepperView({ spec }: { spec: Spec<"Stepper"> }) {
 }
 
 /** 第几帧、在不在自动播；帧数变多（还在写）时停在原处 */
-export function usePlayer(n: number) {
+function usePlayer(n: number) {
 	const [at, setAt] = useState(0);
 	const [playing, setPlaying] = useState(false);
 	const last = Math.max(0, n - 1);
@@ -76,7 +76,7 @@ export function usePlayer(n: number) {
 }
 
 /** 播放条：上一步、播放 / 暂停、下一步、第几步，下面一排小点能直接点到某一步 */
-export function Controls({ p }: { p: ReturnType<typeof usePlayer> }) {
+function Controls({ p }: { p: ReturnType<typeof usePlayer> }) {
 	if (p.n < 2) return null;
 	return (
 		<div className="flex flex-wrap items-center gap-1 border-t pt-2">

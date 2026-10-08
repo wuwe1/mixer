@@ -4,7 +4,7 @@
 import { createContext, useContext } from "react";
 import { enc } from "@shared/api";
 
-export type Scope = {
+type Scope = {
 	project: string;
 	session: string;
 	/** 子代理的对话里：是哪个子代理 */

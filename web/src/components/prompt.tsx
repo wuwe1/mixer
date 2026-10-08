@@ -44,7 +44,7 @@ export type Of = { project: string; session: string; path: Node[]; chosen: strin
  * - fork：从中间分叉，at 是分叉点（null：改写的是第一条消息，前面没有上下文，就在同一个项目里开新会话）；edit：编辑并分叉的那条，先填上它的字和图
  * - new：在一个文件夹（cwd）或一个已有的项目（project）里开新会话
  */
-export type Target = { resume: Of; fork?: { at: string | null }; record?: { ids: Set<string>; version: string } } | { fork: Of; at: string | null; edit?: User } | { new: { cwd: string } | { project: string } };
+type Target = { resume: Of; fork?: { at: string | null }; record?: { ids: Set<string>; version: string } } | { fork: Of; at: string | null; edit?: User } | { new: { cwd: string } | { project: string } };
 
 /** 项目 id：claude 的规则，路径里非字母数字的字符都换成 -（和 server/dirs.ts 一样） */
 const projectId = (path: string) => path.replace(/[^a-zA-Z0-9]/g, "-");
@@ -142,7 +142,7 @@ export function usePrompt(t: Target, onSent?: () => void) {
 	return { of, text, setText, shots, setShots, add, onPaste, permission, setPermission, choice, setChoice, picking: skills, setPicking: setSkills, project, cwd, busy: busy || loading, empty, send };
 }
 
-export type Prompt = ReturnType<typeof usePrompt>;
+type Prompt = ReturnType<typeof usePrompt>;
 
 /** 「+」：加图片、选 skill（列表在 skills.tsx，点了才加载） */
 function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill: () => void }) {

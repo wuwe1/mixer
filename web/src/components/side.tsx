@@ -68,7 +68,6 @@ function Ping({ dot }: { dot: string }) {
 export const statusLabel = (s: Status) => (s ? STATUS_LABEL[s] : null);
 
 export const projectName = (p: { path: string | null; id: string }) => p.path?.split("/").pop() || p.id;
-export { sessionTitle };
 
 const OPEN_KEY = "mixer.open";
 function useOpenState() {

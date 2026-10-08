@@ -66,7 +66,7 @@ export function useStick(scroller: RefObject<HTMLDivElement | null>, content: Re
 }
 
 /** 离开时看到哪儿：最上面那条（id 是 n-<uuid>）和它的顶边离滚动区顶部多远；贴在底部是 null */
-export type Spot = { uuid: string; offset: number } | null;
+type Spot = { uuid: string; offset: number } | null;
 
 /** 每个会话看到哪儿，只在内存里，留最近的 KEEP 个 */
 const KEEP = 24;
