@@ -52,10 +52,10 @@ type Params = { project: string; cwd: string; from: string | null; session: stri
  */
 type Decision = { allow: boolean; message?: string; cancelled?: boolean; answers?: Record<string, string>; mode?: string };
 /**
- * by：问的那个 claude 进程的 id，进程退了才作废（这一轮完了，后台子代理还可能在等）。
- * req：claude 的 control_request 的 request_id（control_cancel_request 按它认）。timer：10 分钟没人点就拒绝
+ * host：问的那个 claude 进程，进程退了才作废（这一轮完了，后台子代理还可能在等）；有了结果直接回给它（decide）。
+ * req：claude 的 control_request 的 request_id（回的时候带上，control_cancel_request 也按它认）。timer：10 分钟没人点就拒绝
  */
-type Asking = Approval & { by: string; req: string | null; resolve: (d: Decision) => void; timer: NodeJS.Timeout };
+type Asking = Approval & { host: Proc; req: string; timer: NodeJS.Timeout };
 
 /**
  * 服务端自己用的：子进程，和输出流攒成的「正在写的那几段」（网页刷新时从这里拿快照）。
@@ -379,7 +379,7 @@ function settle(h: Proc) {
 
 /** 没有在跑的、写进去没结束的、后台任务（ambient 的不算）、排着队等它的、等人确认的：关 stdin，进程自己退 */
 function close(h: Proc) {
-	if (h.gone || h.cmds.length || h.wake || active(h).length || queue.some((q) => q.session === h.session) || [...approvals.values()].some((a) => a.by === h.id)) return;
+	if (h.gone || h.cmds.length || h.wake || active(h).length || queue.some((q) => q.session === h.session) || [...approvals.values()].some((a) => a.host === h)) return;
 	h.gone = true;
 	h.child.stdin.end();
 }
@@ -392,7 +392,7 @@ function gone(h: Proc, error: string | null) {
 	if (h.child.pid) terminals.mine.delete(h.child.pid);
 	emit("host", { id: h.id, gone: true });
 	// 它的确认请求作废（没人收了，不回）；等回音的 control_request 也不等了
-	for (const a of [...approvals.values()]) if (a.by === h.id) decide(a.id, { allow: false, message: "claude 退出了", cancelled: true });
+	for (const a of [...approvals.values()]) if (a.host === h) decide(a.id, { allow: false, message: "claude 退出了", cancelled: true });
 	for (const r of h.replies.values()) r.fail(new Error("claude 退出了"));
 	h.replies.clear();
 	const left = [...h.cmds.map((c) => c.run), ...(h.wake ? [h.wake] : [])];
@@ -447,22 +447,18 @@ function request(h: Proc, req: Record<string, unknown>) {
 function asked(h: Proc, ev: Record<string, unknown>) {
 	const id = String(ev.request_id ?? "");
 	const r = (ev.request ?? {}) as Record<string, unknown>;
-	const respond = (response: Record<string, unknown>) => write(h, { type: "control_response", response: { request_id: id, ...response } });
-	if (r.subtype !== "can_use_tool") return respond({ subtype: "error", error: `mixer 不支持 ${String(r.subtype)}` });
+	if (r.subtype !== "can_use_tool") return respond(h, id, { subtype: "error", error: `mixer 不支持 ${String(r.subtype)}` });
 	const input = (r.input && typeof r.input === "object" ? r.input : {}) as Record<string, unknown>;
 	const agent = typeof r.agent_id === "string" ? r.agent_id : null;
 	const description = agent ? (h.spawns.get(agent)?.description || h.tasks.find((t) => t.id === agent)?.description || "") : "";
-	open({ by: h.id, req: id, project: h.project, cwd: h.cwd, session: h.session, toolUse: typeof r.tool_use_id === "string" ? r.tool_use_id : null, agent: agent ? { id: agent, description } : null }, String(r.tool_name ?? ""), input).then((d) => {
-		if (d.cancelled || h.gone) return;
-		// 回答提问：答案放进 updatedInput 的 answers（问题原文 → 答案）；批准计划：同时换掉权限模式（setMode，命令行回一个 status 事件）。都试过
-		const allow = { behavior: "allow", updatedInput: d.answers ? { ...input, answers: d.answers } : input, ...(r.tool_name === "ExitPlanMode" ? { updatedPermissions: [{ type: "setMode", mode: d.mode ?? "auto", destination: "session" }] } : {}) };
-		respond({ subtype: "success", response: d.allow ? allow : { behavior: "deny", message: d.message || "在 mixer 里被拒绝了" } });
-	});
+	open({ host: h, req: id, project: h.project, cwd: h.cwd, session: h.session, toolUse: typeof r.tool_use_id === "string" ? r.tool_use_id : null, agent: agent ? { id: agent, description } : null, tool: String(r.tool_name ?? ""), input });
 }
+
+const respond = (h: Proc, req: string, response: Record<string, unknown>) => write(h, { type: "control_response", response: { request_id: req, ...response } });
 
 /** control_cancel_request：命令行不等这个确认了（这一轮被停了、工具调用取消了）：卡片收掉，不回 */
 function withdrawn(h: Proc, ev: Record<string, unknown>) {
-	for (const a of [...approvals.values()]) if (a.by === h.id && a.req === ev.request_id) decide(a.id, { allow: false, message: "claude 不等了", cancelled: true });
+	for (const a of [...approvals.values()]) if (a.host === h && a.req === ev.request_id) decide(a.id, { allow: false, message: "claude 不等了", cancelled: true });
 }
 
 /** control_response：{response: {subtype: success / error, request_id, response / error}}。没人等的（set_model 这些发了不等的）不管 */
@@ -635,27 +631,29 @@ function interrupt(h: Proc, run: Live) {
  * 挂起一个确认请求，等网页上的人点。10 分钟没人点就拒绝。
  * claude 的（asked）归进程的会话，不管它这会儿有没有在跑的一轮（后台子代理在 Claude 闲着时也会问）
  */
-function open(w: Pick<Asking, "by" | "req" | "project" | "cwd" | "session" | "toolUse" | "agent">, tool: string, input: Record<string, unknown>): Promise<Decision> {
-	return new Promise((resolve) => {
-		const id = randomUUID().slice(0, 8);
-		const timer = setTimeout(() => decide(id, { allow: false, message: "10 分钟没人确认，拒绝了" }), 10 * 60_000).unref();
-		const a: Asking = { id, ...w, tool, input, at: new Date().toISOString(), resolve, timer };
-		approvals.set(id, a);
-		emit("approval", approvalView(a));
-	});
+function open(w: Omit<Asking, "id" | "at" | "timer">) {
+	const id = randomUUID().slice(0, 8);
+	const timer = setTimeout(() => decide(id, { allow: false, message: "10 分钟没人确认，拒绝了" }), 10 * 60_000).unref();
+	const a: Asking = { id, ...w, at: new Date().toISOString(), timer };
+	approvals.set(id, a);
+	emit("approval", approvalView(a));
 }
 
-const approvalView = ({ by: _b, req: _q, resolve: _r, timer: _t, ...a }: Asking): Approval => a;
+const approvalView = ({ host: _h, req: _q, timer: _t, ...a }: Asking): Approval => a;
 
 export const answer = (id: string, d: Omit<Decision, "cancelled">) => decide(id, d);
 
-/** 确认请求有了结果（人点了、10 分钟没人点、claude 不等了、claude 退出了）：收掉卡片，回给问的那边（不等了的不回） */
+/** 确认请求有了结果（人点了、10 分钟没人点、claude 不等了、claude 退出了）：收掉卡片，回给问的那个进程（不等了的、进程没了的不回） */
 function decide(id: string, d: Decision) {
 	const a = approvals.get(id);
 	if (!a) return false;
 	approvals.delete(id);
 	clearTimeout(a.timer);
-	a.resolve(d);
+	if (!d.cancelled && !a.host.gone) {
+		// 回答提问：答案放进 updatedInput 的 answers（问题原文 → 答案）；批准计划：同时换掉权限模式（setMode，命令行回一个 status 事件）。都试过
+		const allow = { behavior: "allow", updatedInput: d.answers ? { ...a.input, answers: d.answers } : a.input, ...(a.tool === "ExitPlanMode" ? { updatedPermissions: [{ type: "setMode", mode: d.mode ?? "auto", destination: "session" }] } : {}) };
+		respond(a.host, a.req, { subtype: "success", response: d.allow ? allow : { behavior: "deny", message: d.message || "在 mixer 里被拒绝了" } });
+	}
 	emit("approval-done", { id, allow: d.allow });
 	return true;
 }
