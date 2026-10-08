@@ -148,9 +148,9 @@ async function scan(file: string): Promise<Seen> {
 	return { id, s, size: st.size, mtime: st.mtime, born: st.birthtimeMs };
 }
 
-/** 记录里读出来的会话信息；terminal（在 mixer 外面开着）、unread（跑完没看）随时在变，给出去时由 live 加上 */
+/** 记录里读出来的会话信息；terminal（在 mixer 外面开着）、unread（跑完没看）随时在变，给出去时由 withStatus 加上 */
 type Scanned = Omit<SessionMeta, "terminal" | "unread">;
-const live = (m: Scanned): SessionMeta => ({ ...m, terminal: terminals.of(m.id), unread: unread(m.id) });
+const withStatus = (m: Scanned): SessionMeta => ({ ...m, terminal: terminals.of(m.id), unread: unread(m.id) });
 
 /** 一个 Claude 会话的信息：标题、几句话、从哪分叉、什么时候会被清理 */
 async function metaOf(project: string, x: Seen): Promise<Scanned> {
@@ -222,7 +222,7 @@ async function family(project: string) {
 }
 
 export async function listSessions(project: string): Promise<SessionMeta[]> {
-	const metas = await Promise.all((await family(project)).map(async (x) => live(await metaOf(project, x))));
+	const metas = await Promise.all((await family(project)).map(async (x) => withStatus(await metaOf(project, x))));
 	return metas.sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
@@ -233,7 +233,7 @@ export async function row(project: string, id: string): Promise<SessionMeta | nu
 }
 async function metaAt(project: string, file: string) {
 	if (!roots.has(project)) await family(project);
-	return live(await metaOf(project, await scanMeta(file)));
+	return withStatus(await metaOf(project, await scanMeta(file)));
 }
 
 /** 会话删掉了（trash.ts）：读过的记录、扫过的信息、它的子代理都丢掉 */

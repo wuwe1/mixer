@@ -219,7 +219,7 @@ const control = (h: Proc, request: Record<string, unknown>) => write(h, { type: 
 
 /** 写进这个进程一条消息（一次运行）：权限、模型、思考强度和上一轮不一样先换掉，再写消息，带上 uuid 认它的下落 */
 function turn(h: Proc, o: Params) {
-	const run = fresh(o);
+	const run = newRun(o);
 	run.halt = () => interrupt(h, run);
 	runs.set(run.id, run);
 	const uuid = o.uuid;
@@ -242,7 +242,7 @@ function turn(h: Proc, o: Params) {
 	write(h, { type: "user", uuid, message: { role: "user", content } });
 	emit("run", view(run));
 	emit("host", hostView(h));
-	known(run);
+	remember(run);
 	return view(run);
 }
 
@@ -258,7 +258,7 @@ function line(h: Proc, raw: string) {
 	}
 	if (ev.type === "command_lifecycle") return lifecycle(h, ev);
 	if (ev.type === "control_response") return void h.io.reply(ev);
-	if (ev.type === "control_request") return asked(h, ev);
+	if (ev.type === "control_request") return controlRequest(h, ev);
 	if (ev.type === "control_cancel_request") return withdrawn(h, ev);
 	// 没有消息在跑却有了主线的输出（子代理的带 parent_tool_use_id）：后台任务的通知叫醒了 Claude，另起一轮
 	if ((ev.type === "stream_event" || ev.type === "assistant") && ev.parent_tool_use_id == null && !h.cmds.length && !h.wake) wake(h);
@@ -342,7 +342,7 @@ function tasks(h: Proc, ev: Record<string, unknown>) {
 
 /** 通知叫醒的一轮：没有人说的话，权限、模型接着用进程现在的 */
 function wake(h: Proc) {
-	const run = fresh({ project: h.project, cwd: h.cwd, from: h.session, session: h.session, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] });
+	const run = newRun({ project: h.project, cwd: h.cwd, from: h.session, session: h.session, mode: "resume", prompt: "", images: [], permission: h.permission, model: h.model, effort: h.effort, uuid: "", merged: [] });
 	run.halt = () => interrupt(h, run);
 	runs.set(run.id, run);
 	h.wake = run;
@@ -420,14 +420,14 @@ export async function taskOutput(host: string, task: string) {
  * {behavior: allow, updatedInput: 原样的参数} / {behavior: deny, message}（不带 updatedInput 也行，试过）。
  * 别的（MCP 的 elicitation 这些）mixer 答不了：回 error，命令行不会一直等
  */
-function asked(h: Proc, ev: Record<string, unknown>) {
+function controlRequest(h: Proc, ev: Record<string, unknown>) {
 	const id = String(ev.request_id ?? "");
 	const r = (ev.request ?? {}) as Record<string, unknown>;
 	if (r.subtype !== "can_use_tool") return respond(h, id, { subtype: "error", error: `mixer 不支持 ${String(r.subtype)}` });
 	const input = (r.input && typeof r.input === "object" ? r.input : {}) as Record<string, unknown>;
 	const agent = typeof r.agent_id === "string" ? r.agent_id : null;
 	const description = agent ? (h.spawns.get(agent)?.description || h.tasks.find((t) => t.id === agent)?.description || "") : "";
-	open({ host: h, req: id, project: h.project, cwd: h.cwd, session: h.session, toolUse: typeof r.tool_use_id === "string" ? r.tool_use_id : null, agent: agent ? { id: agent, description } : null, tool: String(r.tool_name ?? ""), input });
+	ask({ host: h, req: id, project: h.project, cwd: h.cwd, session: h.session, toolUse: typeof r.tool_use_id === "string" ? r.tool_use_id : null, agent: agent ? { id: agent, description } : null, tool: String(r.tool_name ?? ""), input });
 }
 
 const respond = (h: Proc, req: string, response: Record<string, unknown>) => write(h, { type: "control_response", response: { request_id: req, ...response } });
@@ -438,7 +438,7 @@ function withdrawn(h: Proc, ev: Record<string, unknown>) {
 }
 
 /** 一次运行的样子 */
-function fresh(o: Params): Live {
+function newRun(o: Params): Live {
 	const id = randomUUID().slice(0, 8);
 	const run: Live = {
 		id,
@@ -471,7 +471,7 @@ function fresh(o: Params): Live {
 }
 
 /** 写进去了：记下选的模型、分叉的来处（state.fork），放进工作区（新会话、分叉的文件夹放到最上面） */
-function known(run: Live) {
+function remember(run: Live) {
 	state.chooseModel(run.session, run.model, run.effort, run.permission);
 	if (run.mode === "fork" && run.from) state.fork(run.session, { session: run.from, at: run.at });
 	if (state.addToWorkspace(run.project, run.cwd, run.session)) emit("workspace", null);
@@ -595,9 +595,9 @@ function interrupt(h: Proc, run: Live) {
 
 /**
  * 挂起一个确认请求，等网页上的人点。10 分钟没人点就拒绝。
- * claude 的（asked）归进程的会话，不管它这会儿有没有在跑的一轮（后台子代理在 Claude 闲着时也会问）
+ * claude 的（controlRequest）归进程的会话，不管它这会儿有没有在跑的一轮（后台子代理在 Claude 闲着时也会问）
  */
-function open(w: Omit<Asking, "id" | "at" | "timer">) {
+function ask(w: Omit<Asking, "id" | "at" | "timer">) {
 	const id = randomUUID().slice(0, 8);
 	const timer = setTimeout(() => decide(id, { allow: false, message: "10 分钟没人确认，拒绝了" }), 10 * 60_000).unref();
 	const a: Asking = { id, ...w, at: new Date().toISOString(), timer };
