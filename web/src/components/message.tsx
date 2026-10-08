@@ -2,7 +2,7 @@
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
 // 每条消息、每组工具调用后面几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。平时收着，指着、点一下那条才出现，
 // 最后一条回复的常驻；手机上工具组的分叉常驻（点工具组是展开）。图片点了在当前页面放大。
-import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
+import { Bell, Bot, Brain, Check, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
+import { CHEVRON, Chevron } from "./placeholder";
 import { StatusIcon } from "./side";
 
 const ICON: Record<string, typeof Wrench> = {
@@ -153,7 +154,7 @@ export const EventLine = memo(function EventLine({ n }: { n: Ev }) {
 		<>
 			<span className="h-px flex-1 bg-border" />
 			<span className="flex max-w-[80%] items-center gap-1.5 text-center">
-				{n.detail && <ChevronRight className="size-3 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90" />}
+				{n.detail && <Chevron className="text-current" />}
 				{I && <I className="size-3.5 shrink-0" />}
 				<span>{n.kind === "summary" ? `小结：${n.text}` : n.text}</span>
 			</span>
@@ -162,7 +163,7 @@ export const EventLine = memo(function EventLine({ n }: { n: Ev }) {
 	);
 	if (!n.detail) return <div id={`n-${n.uuid}`} className="flex items-center gap-3 py-1 text-xs text-muted-foreground">{line}</div>;
 	return (
-		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+		<Collapsible id={`n-${n.uuid}`} className={CHEVRON}>
 			<CollapsibleTrigger className="flex w-full items-center gap-3 py-1 text-xs text-muted-foreground hover:text-foreground" title="点开看摘要">{line}</CollapsibleTrigger>
 			<CollapsibleContent className="mt-2 max-h-96 overflow-auto rounded-lg border bg-muted/30 p-3">
 				<Markdown text={n.detail} />
@@ -177,10 +178,10 @@ function TaskNotice({ n }: { n: Ev }) {
 	const failed = n.status === "failed";
 	const I = n.status === "completed" ? CircleCheck : failed ? CircleX : n.status === "killed" ? CircleStop : Bell;
 	return (
-		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+		<Collapsible id={`n-${n.uuid}`} className={CHEVRON}>
 			<div className="flex items-center gap-2 text-xs text-muted-foreground">
 				<CollapsibleTrigger disabled={!n.detail} className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left enabled:hover:text-foreground">
-					<ChevronRight className={cn("size-3.5 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90", !n.detail && "invisible")} />
+					<Chevron className={cn("size-3.5 text-current", !n.detail && "invisible")} />
 					<I className={cn("size-3.5 shrink-0", failed && "text-destructive")} />
 					<span className="shrink-0 font-medium">后台任务{n.status ? ` · ${TASK_STATUS[n.status] ?? n.status}` : ""}</span>
 					<span className="truncate">{n.text}</span>
@@ -258,8 +259,8 @@ export const Steps = memo(function Steps({ nodes, onFork, now, spawns }: StepsPr
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<div className="flex items-center gap-1">
-			<CollapsibleTrigger className="group/steps flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
-				<ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/steps:rotate-90" />
+			<CollapsibleTrigger className="group/chevron flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+				<Chevron className="size-3.5 text-current" />
 				{head.k === "thinking" ? (
 					<>
 						<StatusIcon s="running" className="size-3.5" />

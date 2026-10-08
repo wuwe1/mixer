@@ -39,7 +39,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 - **系列色**：`--series-1…8`，只用在图解里表示「这是哪一类」：图表里是哪一组数据，Graph 里是节点的类型（`kinds`，浅底色加同色边框，同一类的另一种状态 `alt` 更浅带斜线，图下出图例）。按顺序用、不循环（dataviz 参考调色板，深浅色各一套）。图解别的地方不上色，强调靠字重和黑白对比
 - **字号**：`text-2xs` 11px（时间、徽标、小按钮）、`text-xs` 12px（代码、diff、次要文字）、`text-md` 13px（列表行、工具行）、`text-sm` 14px（消息正文）、`text-lg` 18px（标题：侧栏的 mixer、项目页的项目名）；代码块、diff 的行高用 `leading-code`。名字必须是 t-shirt 尺寸：`cn`（tailwind-merge）不认识的 `text-xxx` 会被当成颜色，和 `text-muted-foreground` 写在一起时被删掉
 - **图标按钮**：Button 的 `size="icon-xs"`（24px，消息后面）/ `"icon-sm"`（28px，面板里）/ `"icon"`（32px，顶栏、发送），不在 className 里另写 `size-*`；小文字按钮用 `size="xs"`（自带 `text-2xs`）/ `"sm"`（自带 `text-xs`），className 里不再写字号、高度
-- **加载中**：有形状的内容（列表、正文、diff、正在画的图解）在等，用 `Skeleton` 先画出轮廓（会话、文件、改动、侧栏）；没有形状的一块地方在等（对话框、整页），一律 `Loading`（居中的 `Spinner`，className 定高）；按钮里、行内的直接用 `Spinner`（和状态标记同样的点带扩散，颜色跟文字）；Claude 运行中用 `StatusIcon` 的 `running`（蓝）。不用转圈；**展开收起**：一律左边一个 `Chevron`（`›`，展开时转 90°）；**空状态**：一律 `Placeholder`（`Empty`，图标可以不给）；渲染出错是 `Boundary`。这几个都在 `placeholder.tsx`
+- **加载中**：有形状的内容（列表、正文、diff、正在画的图解）在等，用 `Skeleton` 先画出轮廓（会话、文件、改动、侧栏）；没有形状的一块地方在等（对话框、整页），一律 `Loading`（居中的 `Spinner`，className 定高）；按钮里、行内的直接用 `Spinner`（和状态标记同样的点带扩散，颜色跟文字）；Claude 运行中用 `StatusIcon` 的 `running`（蓝）。不用转圈；**展开收起**：一律左边一个 `Chevron`（`›`，展开时转 90°；不受控的 Collapsible 不给 `open`，在离它最近的 Collapsible / Trigger 上加 `CHEVRON`，照 data-state 转）；**空状态**：一律 `Placeholder`（`Empty`，图标可以不给）；渲染出错是 `Boundary`。这几个都在 `placeholder.tsx`
 - **代码块**：代码、命令、输出一律 `CodeBlock`（`message.tsx`），调用处只给 `max-h-*` 和出错的红；**浮层**：电脑上 Popover、手机上底部 Sheet 一律 `Popsheet`（`popsheet.tsx`）
 - **提示**：一律 `toast`（`lib/toast.tsx`，不用 sonner）：顶栏下面浮出一条（不挡顶栏，页面不跳），几秒后收回，同时只有一条；出错的字是红的、多留一会儿，带按钮的（撤销、刷新）也多留一会儿
 - **时间**：列表里用 `since()`（刚刚 / 5 分钟 / 3 小时 / 2 天 / 10/3），消息上用 `clock()`（10/5 11:58）

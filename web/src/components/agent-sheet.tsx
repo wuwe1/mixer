@@ -2,13 +2,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { toast } from "@/lib/toast";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { type Agent, enc, type Sub } from "@shared/api";
 import { useEvent } from "@/lib/events";
 import { scopeOf, SessionScope, useScope } from "@/lib/scope";
 import { blocks } from "@/lib/thread";
 import { useIncremental } from "@/lib/use-incremental";
+import { cn } from "@/lib/utils";
 import { AliveDot, AssistantMessage, Steps } from "./message";
-import { Loading } from "./placeholder";
 import { StatusIcon } from "./side";
 
 /**
@@ -70,7 +71,9 @@ export function AgentSheet({ id, running, onClose }: { id: string | null; runnin
 							</div>
 						</SessionScope>
 					) : (
-						<Loading className="h-full" />
+						<div className="flex flex-col gap-4 p-4">
+							{[0, 1, 2].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-2/3" : "w-full")} />)}
+						</div>
 					)}
 				</div>
 			</SheetContent>

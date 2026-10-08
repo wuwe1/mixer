@@ -1,8 +1,8 @@
 // 首屏用不着的几块按需加载，主包小一点，手机上打开快：浏览会话、新会话、选 skill 的对话框，项目页，文件、改动面板，回复里的图解。
-// 对话框第一次打开时才加载，之后一直挂着（关的时候有动画）；页面、面板加载时显示 Spinner。
+// 对话框第一次打开时才加载，之后一直挂着（关的时候有动画）；页面、面板加载时是 Loading，图解是和「正在画」一样的 Skeleton。
 // 重新打包之后旧的那几块就没了：main.tsx 里拿不到时刷新
 import { type ComponentType, lazy, type ReactNode, Suspense, useState } from "react";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Loading } from "./placeholder";
 
 function later<P extends object>(load: () => Promise<ComponentType<P>>, fallback: ReactNode) {
@@ -30,4 +30,4 @@ export const ProjectHome = later(() => import("./project").then((m) => m.Project
 export const Files = later(() => import("./files").then((m) => m.Files), <Loading />);
 export const Changes = later(() => import("./changes").then((m) => m.Changes), <Loading />);
 // 回复里第一次出现 ```ui 才拿（带着 dagre、katex）
-export const Visual = later(() => import("./visual").then((m) => m.Visual), <Spinner className="my-4 text-muted-foreground" />);
+export const Visual = later(() => import("./visual").then((m) => m.Visual), <Skeleton className="h-20 w-full rounded-lg" />);

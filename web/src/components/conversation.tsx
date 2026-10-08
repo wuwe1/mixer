@@ -22,6 +22,8 @@ import { start } from "./prompt";
 /** 跳到一条：带 offset 是放回原处（切回会话时），不动画，让它的顶边离滚动区顶部 offset 像素 */
 export type Reveal = { uuid: string; at: number; offset?: number };
 
+type Ev = Extract<Node, { k: "event" }>;
+
 const STEP = 60;
 
 /**
@@ -126,14 +128,15 @@ export function Conversation({ w, t, keys, chosen, chosenEffort, chosenPermissio
 	const idle = !!stream.run && w.atLatest && !now && !writing && sl.status !== "waiting";
 	// 只看写进记录的（正在写的没有模型、不算用时），不用每来一个字就重算一遍
 	const { switched, spent } = useMemo(() => {
-		// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线
-		const switched = new Map<string, string>();
+		// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线（节点在这里建好：EventLine 是 memo 的，每次新拼一个会重画）
+		const switched = new Map<string, Ev>();
 		let prev: string | null = null;
 		for (const b of written) {
 			const ns = b.kind === "one" ? [b.n] : b.nodes;
 			const m = ns.map((n) => ("ctx" in n ? n.ctx?.model : undefined)).find(Boolean);
 			if (!m) continue;
-			if (prev && m !== prev) switched.set(headOf(b).uuid, m);
+			const head = headOf(b);
+			if (prev && m !== prev) switched.set(head.uuid, { k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(m)}` });
 			prev = m;
 		}
 		// 每条回复用了多久：从这一轮开头（你的消息，或者后台任务的通知把 Claude 叫起来）算起
@@ -156,10 +159,11 @@ export function Conversation({ w, t, keys, chosen, chosenEffort, chosenPermissio
 			{(first ? bs.slice(first) : bs).map((b, i) => {
 				const head = headOf(b);
 				const v = w.versions.get(head.uuid);
+				const sw = switched.get(head.uuid);
 				return (
 					<div key={ids[first + i]} className="flex flex-col gap-2">
 						{v && <VersionSwitch v={v} />}
-						{switched.has(head.uuid) && <EventLine n={{ k: "event", uuid: `model-${head.uuid}`, parent: null, ts: head.ts, kind: "info", text: `换成 ${pretty(switched.get(head.uuid) as string)}` }} />}
+						{sw && <EventLine n={sw} />}
 						{b.kind === "steps" ? (
 							<Steps nodes={b.nodes} now={b === tail ? now : null} onFork={b.nodes.some(isLive) ? undefined : forkSteps} spawns={spawned && b.nodes.some(spawner) ? spawned : undefined} />
 						) : b.n.k === "user" ? (

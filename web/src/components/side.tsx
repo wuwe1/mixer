@@ -5,7 +5,7 @@
 import { closestCenter, DndContext, type DragEndEvent, type Modifier, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
+import { Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -26,7 +26,7 @@ import { openProject, openSession, type Route } from "@/lib/route";
 import { since } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Browse } from "./lazy";
-import { Placeholder } from "./placeholder";
+import { Chevron, Placeholder } from "./placeholder";
 import { UsageFooter } from "./usage";
 
 /** ok / failed 是一步工具调用跑完了：成功、失败 */
@@ -41,24 +41,9 @@ const STATUS_LABEL: Record<Exclude<Mark, null>, string> = { waiting: "待确认"
  */
 export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 	const icon =
-		s === "waiting" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full bg-waiting opacity-60" />
-				<span className="relative size-2 rounded-full bg-waiting" />
-			</span>
-		)
-		: s === "running" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full bg-unread opacity-60" />
-				<span className="relative size-2 rounded-full bg-unread" />
-			</span>
-		)
-		: s === "background" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full border border-unread opacity-60" />
-				<span className="relative size-2 rounded-full border border-unread" />
-			</span>
-		)
+		s === "waiting" ? <Ping dot="bg-waiting" />
+		: s === "running" ? <Ping dot="bg-unread" />
+		: s === "background" ? <Ping dot="border border-unread" />
 		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
 		: s === "error" || s === "failed" ? <span className="size-2 rounded-full bg-destructive" />
 		: s === "ok" ? <span className="size-2 rounded-full bg-success" />
@@ -70,6 +55,16 @@ export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 		</span>
 	);
 }
+/** 带一圈扩散的点：dot 是点的样子（实心的底色，或者空心的边框），扩散的那圈照它画 */
+function Ping({ dot }: { dot: string }) {
+	return (
+		<span className="relative flex size-2">
+			<span className={cn("absolute inset-0 animate-ping rounded-full opacity-60", dot)} />
+			<span className={cn("relative size-2 rounded-full", dot)} />
+		</span>
+	);
+}
+
 export const statusLabel = (s: Status) => (s ? STATUS_LABEL[s] : null);
 
 export const projectName = (p: { path: string | null; id: string }) => p.path?.split("/").pop() || p.id;
@@ -256,7 +251,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	}, [g.sessions, status]);
 	return (
 		<div ref={setNodeRef} style={{ transform: CSS.Translate.toString(transform), transition }} className={cn(isDragging && "relative z-10 rounded-md bg-sidebar opacity-90 shadow-md")}>
-			<Collapsible open={open} onOpenChange={setOpen} className="group/collapsible">
+			<Collapsible open={open} onOpenChange={setOpen}>
 				<SidebarMenuItem>
 					{/* 菜单只挂在文件夹这一行上：挂在整个 item 上，长按里面的会话两个菜单都会开 */}
 					<ContextMenu onOpenChange={menu.onOpenChange}>
@@ -295,7 +290,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 					</DropdownMenu>
 					<CollapsibleTrigger asChild>
 						<SidebarMenuAction className={ACTION} aria-label={open ? "收起" : "展开"}>
-							<ChevronRight className="transition-transform group-data-[state=open]/collapsible:rotate-90" />
+							<Chevron open={open} className="text-current" />
 						</SidebarMenuAction>
 					</CollapsibleTrigger>
 					<CollapsibleContent>
@@ -308,12 +303,12 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 							))}
 							{!all && shown.length < fams.length && (
 								<SidebarMenuSubItem>
-									<SidebarMenuSubButton asChild className="h-7 w-full text-left text-xs text-muted-foreground">
+									<SidebarMenuSubButton asChild className="h-11 w-full text-left text-xs text-muted-foreground md:h-8">
 										<button type="button" onClick={() => setAll(true)}>还有 {fams.length - shown.length} 个</button>
 									</SidebarMenuSubButton>
 								</SidebarMenuSubItem>
 							)}
-							{fams.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">还没有会话：点文件夹开一个</p>}
+							{fams.length === 0 && <Placeholder text="还没有会话：点文件夹开一个" className="px-2 py-3" />}
 						</SidebarMenuSub>
 					</CollapsibleContent>
 				</SidebarMenuItem>
