@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Hello, type Run } from "@shared/api";
 import { useEvent } from "./events";
-import { useLive } from "./live";
+import { useSessionLive } from "./live";
 import { type Block, type Ev, emptyTail, step, type Tail } from "@shared/tail";
 import { reached } from "./arrival";
 
@@ -17,8 +17,7 @@ export type Stream = { run: Run | null; of: Run | null; blocks: Block[] };
  * （运行的 version）再整个收掉，不然最后那条回复会闪一下没了又回来；停下来时写了一半的那段也是这时收
  */
 export function useStream(session: string, version: string | null): Stream {
-	const { runs } = useLive();
-	const run = runs.find((r) => r.session === session && r.status === "running") ?? null;
+	const { run, last } = useSessionLive(session);
 	const id = run?.id ?? null;
 	const [tail, setTail] = useState<Tail>(emptyTail);
 	const cur = useRef<Tail>(tail);
@@ -77,8 +76,8 @@ export function useStream(session: string, version: string | null): Stream {
 		if (e.seq === t.seq + 1) put(step(t, e.event, Date.now()));
 		else sync();
 	}, [sync]));
-	// 跑完了的那次（mine 是它）：数据还没到它结束时的 version 就接着显示
-	const ended = run ? null : (runs.find((r) => r.id === mine.current) ?? null);
+	// 跑完了的那次（最近的一次，mine 是它）：数据还没到它结束时的 version 就接着显示
+	const ended = !run && last?.id === mine.current ? last : null;
 	const of = run ?? (ended && !reached(version, ended.version) ? ended : null);
 	return { run, of, blocks: of ? tail.blocks : [] };
 }

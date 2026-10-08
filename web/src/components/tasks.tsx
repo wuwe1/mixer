@@ -6,7 +6,6 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api, enc, type Host, type Task } from "@shared/api";
-import { useLive } from "@/lib/live";
 import { CodeBlock, Elapsed } from "./message";
 import { Chevron } from "./placeholder";
 import { Popsheet } from "./popsheet";
@@ -22,11 +21,10 @@ const kind = (t: Task) => KIND[t.type] ?? (/monitor/i.test(t.type) ? KIND.monito
 
 const HINT = "跑完了会叫醒 Claude 接着做";
 
-/** 输入框那一排：这个会话有后台任务才出现 */
-export function BackgroundTasks({ session }: { session: string }) {
-	const { hosts } = useLive();
+/** 输入框那一排：这个会话的 claude 进程（host）有后台任务才出现 */
+export function BackgroundTasks({ host }: { host: Host | null }) {
 	const [open, setOpen] = useState(false);
-	const h = hosts.find((x) => x.session === session && x.tasks.length);
+	const h = host?.tasks.length ? host : null;
 	useEffect(() => { if (!h) setOpen(false); }, [h]);
 	if (!h) return null;
 	const n = h.tasks.length;

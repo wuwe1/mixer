@@ -190,14 +190,14 @@ function SessionRow({ s, r, project, kid, onDelete }: { s: SessionMeta; r: Route
 
 /** 删掉一个会话：先问一句，说清楚会怎样、怎么找回（挪进废纸篓）。删的正开着就回到项目页 */
 function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route; onClose: () => void }) {
-	const [busy, setBusy] = useState(false);
+	const [deleting, setDeleting] = useState(false);
 	// 关上的动画里还显示刚才那个
 	const last = useRef(doomed);
 	if (doomed) last.current = doomed;
 	const shown = last.current;
 	const remove = async () => {
 		if (!doomed) return;
-		setBusy(true);
+		setDeleting(true);
 		try {
 			await api(`/api/sessions/${enc(doomed.project)}/${enc(doomed.s.id)}/delete`, {});
 			toast("已删除");
@@ -207,11 +207,11 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 			// 在跑、排队、待确认、终端里开着：服务端说明原因（409）
 			toast.error(e instanceof Error ? e.message : String(e));
 		} finally {
-			setBusy(false);
+			setDeleting(false);
 		}
 	};
 	return (
-		<AlertDialog open={!!doomed} onOpenChange={(o) => { if (!o && !busy) onClose(); }}>
+		<AlertDialog open={!!doomed} onOpenChange={(o) => { if (!o && !deleting) onClose(); }}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
 					<AlertDialogTitle>删除会话？</AlertDialogTitle>
@@ -221,10 +221,10 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+					<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
 					{/* 等删完再关：别让它自己关上 */}
-					<AlertDialogAction variant="destructive" disabled={busy} onClick={(e) => { e.preventDefault(); remove(); }}>
-						{busy && <Spinner />}删除
+					<AlertDialogAction variant="destructive" disabled={deleting} onClick={(e) => { e.preventDefault(); remove(); }}>
+						{deleting && <Spinner />}删除
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
@@ -243,8 +243,9 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	const [all, setAll] = useState(false);
 	const { listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: g.id });
 	const fams = useMemo(() => families(g.sessions), [g.sessions]);
-	const busy = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
-	const shown = all ? fams : fams.filter((f, i) => i < SHOWN || busy(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
+	// 有事的一家（待确认、在跑、后台任务、跑完没看）：不在前 SHOWN 个里也露出来；只是终端里开着的不算
+	const notable = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
+	const shown = all ? fams : fams.filter((f, i) => i < SHOWN || notable(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
 	const counts = useMemo(() => {
 		const c = { waiting: 0, running: 0, background: 0, done: 0, error: 0 };
 		for (const s of g.sessions) {

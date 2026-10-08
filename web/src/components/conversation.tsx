@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { type Spawn, spawner } from "@/lib/agents";
-import { type Agent, api, enc, type Node, type Sub } from "@shared/api";
+import { type Agent, api, enc, type Node, type Queued, type Run, type Sub } from "@shared/api";
 import { useEvent } from "@/lib/events";
-import { type Status, useLive } from "@/lib/live";
+import { type SessionLive, useLive } from "@/lib/live";
 import { pretty } from "@/lib/model";
 import { go } from "@/lib/route";
 import { type Block, blocks, headOf, isLive, liveNodes, pointOf, type Tree, type User, type Walk } from "@/lib/thread";
@@ -116,10 +116,10 @@ function AliveDot() {
 }
 
 /**
- * spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；
+ * spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；live：这个会话在 mixer 里的实时情况（lib/live.tsx）；
  * keys：记录里有的段（流里的哪几段已经写进去了，和 useStream 用的同一份）
  */
-export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, chosenPermission, stream, status, busy, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; chosenPermission: string; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
+export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, chosenPermission, stream, live: sl, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; chosenPermission: string; stream: Stream; live: SessionLive; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
 	/** 开着看的子代理 */
 	const [agent, setAgent] = useState<string | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
@@ -129,14 +129,14 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 	const bs = blocks(live, written);
 	const first = useWindow(bs, scroller, reveal);
 	const ids = idsOf(bs);
-	// 还在跑（busy：mixer 里在跑、待确认，或者终端里开着在跑）：最后一组里还没结果的工具、正在写的那一步，带上 ping 点和耗时
+	// Claude 在一轮里（mixer 里在跑、待确认，或者终端里开着在跑）：最后一组里还没结果的工具、正在写的那一步，带上 ping 点和耗时
 	const tail = bs[bs.length - 1];
-	const last = busy && w.atLatest && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
+	const last = sl.working && w.atLatest && tail?.kind === "steps" ? tail.nodes[tail.nodes.length - 1] : null;
 	const liveAt = (n: Node) => stream.blocks.find((b) => `live:${b.key}` === n.uuid)?.at ?? Date.now();
 	const now = last && ((last.k === "tool" && !last.result) || (last.k === "thinking" && isLive(last))) ? { node: last, since: isLive(last) ? liveAt(last) : Date.parse(last.ts) } : null;
 	// 在跑，末尾却什么都没在动（等 Claude 开口、工具结果回来之后）：留一个 ping 点，知道它还活着
 	const writing = live.length > 0 && live[live.length - 1].k === "assistant";
-	const idle = !!stream.run && w.atLatest && !now && !writing && status !== "waiting";
+	const idle = !!stream.run && w.atLatest && !now && !writing && sl.status !== "waiting";
 	// 只看写进记录的（正在写的没有模型、不算用时），不用每来一个字就重算一遍
 	const { switched, spent } = useMemo(() => {
 		// 换过模型的地方：前一条回复和这一条用的模型不同，前面放一条分隔线
@@ -183,14 +183,14 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} last={b === tail} />
 						) : b.n.k === "event" ? (
 							// 正在重试的那行只在它是最后一条、还在跑时显示（重试过去了、跑完了就不用看了）
-							b.n.kind === "retry" && !(b === tail && busy) ? null : <EventLine n={b.n} onAgent={setAgent} />
+							b.n.kind === "retry" && !(b === tail && sl.working) ? null : <EventLine n={b.n} onAgent={setAgent} />
 						) : null}
 					</div>
 				);
 			})}
 			{idle && <AliveDot />}
-			<QueuedMessages session={session} />
-			{!busy && <LastError project={project} session={session} last={w.path[w.path.length - 1]} choice={{ permission: chosenPermission, model: chosen, effort: chosenEffort }} />}
+			<QueuedMessages queued={sl.queued} run={sl.run} />
+			{!sl.working && <LastError project={project} session={session} run={sl.last} last={w.path[w.path.length - 1]} choice={{ permission: chosenPermission, model: chosen, effort: chosenEffort }} />}
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
@@ -279,26 +279,25 @@ function VersionSwitch({ v }: { v: { options: Node[]; index: number; to: (string
  * 记录里最后一条是出错（命令行合成的 API Error：终端里跑的、服务重启过的也认得），出错那行已经画了，这里只给按钮；
  * mixer 里最近一次运行出错、记录里没有（命令行没接这条、进程挂了），这里写明原因。之后又写了别的就不显示
  */
-function LastError({ project, session, last, choice }: { project: string; session: string; last: Node | undefined; choice: { permission: string; model: string | null; effort: string | null } }) {
-	const { runs, follow } = useLive();
-	const [busy, setBusy] = useState(false);
-	const run = runs.find((r) => r.session === session);
+function LastError({ project, session, run, last, choice }: { project: string; session: string; run: Run | null; last: Node | undefined; choice: { permission: string; model: string | null; effort: string | null } }) {
+	const { follow } = useLive();
+	const [sending, setSending] = useState(false);
 	const inRecord = last?.k === "event" && last.kind === "error";
 	const fromRun = run?.status === "error" && run.ended && (!last || Date.parse(run.ended) >= Date.parse(last.ts)) ? run : null;
 	if (!inRecord && !fromRun) return null;
 	const retry = async () => {
-		setBusy(true);
+		setSending(true);
 		try {
 			await start({ project, session, mode: "resume", prompt: "继续", uuid: crypto.randomUUID(), permission: choice.permission, model: choice.model, effort: choice.effort }, follow);
 		} catch (e) {
 			toast.error(`没发出去：${e instanceof Error ? e.message : String(e)}`);
 		} finally {
-			setBusy(false);
+			setSending(false);
 		}
 	};
 	const button = (
-		<Button variant="outline" size="xs" className="shrink-0" disabled={busy} onClick={retry}>
-			{busy ? <Spinner /> : <RotateCw />}
+		<Button variant="outline" size="xs" className="shrink-0" disabled={sending} onClick={retry}>
+			{sending ? <Spinner /> : <RotateCw />}
 			重试
 		</Button>
 	);
@@ -312,15 +311,12 @@ function LastError({ project, session, last, choice }: { project: string; sessio
 	);
 }
 
-/** 这个会话排着队的消息：这次运行结束后一起发出。每条可以取消；也可以停下这次运行马上发 */
-function QueuedMessages({ session }: { session: string }) {
-	const { queue, runs } = useLive();
-	const mine = queue.filter((q) => q.session === session);
-	if (!mine.length) return null;
-	const run = runs.find((r) => r.session === session && r.status === "running");
+/** 这个会话排着队的消息：这次运行（run）结束后一起发出。每条可以取消；也可以停下这次运行马上发 */
+function QueuedMessages({ queued, run }: { queued: Queued[]; run: Run | null }) {
+	if (!queued.length) return null;
 	return (
 		<div className="flex flex-col items-end gap-2">
-			{mine.map((q) => (
+			{queued.map((q) => (
 				<div key={q.id} className="flex w-full flex-col items-end gap-1.5">
 					<Bubble queued text={q.prompt} srcs={Array.from({ length: q.images }, (_, i) => `/api/queue/${q.id}/image/${i}`)} />
 					<div className="flex items-center gap-1 px-1 text-2xs text-muted-foreground">

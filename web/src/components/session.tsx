@@ -12,7 +12,7 @@ import { spawner, useSpawns, useSubs } from "@/lib/agents";
 import { ApiError, api, enc, temporary, type Node, type Session, type SessionMeta } from "@shared/api";
 import * as drawer from "@/lib/drawer";
 import { useEvent } from "@/lib/events";
-import { useLive } from "@/lib/live";
+import { useSessionLive } from "@/lib/live";
 import { clearNotices } from "@/lib/push";
 import { go, type Panel, type Route, useWide } from "@/lib/route";
 import { keysOf, tree, walk } from "@/lib/thread";
@@ -139,7 +139,6 @@ function keep(key: string, s: Session) {
 }
 
 export function SessionView({ project, root, session, r, meta }: { project: string; root: string | null; session: string; r: Route; meta: SessionMeta | undefined }) {
-	const { status, hosts, runs } = useLive();
 	const wide = useWide();
 	const key = `${project}/${session}`;
 	const scroller = useRef<HTMLDivElement>(null);
@@ -159,8 +158,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 			retry.current.wait = Math.min(retry.current.wait * 2, 30_000);
 		},
 	});
+	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
+	const live = useSessionLive(session, meta ?? data?.meta);
+	const st = live.status;
 	// 新会话、分叉刚开始跑，记录文件还没写出来（404）：等着，文件有了会推 session 过来再拉
-	const starting = error instanceof ApiError && error.status === 404 && runs.some((x) => x.session === session && x.status === "running");
+	const starting = error instanceof ApiError && error.status === 404 && !!live.run;
 	// 出错时整页换成「没打开」，滚动的那一层卸掉了；拉到了再挂上：靠它让下面挂在滚动层上的 effect 重新挂
 	const failed = !!error && !data && !starting;
 	const { away, unseen, toBottom } = useStick(scroller, content, failed);
@@ -205,18 +207,11 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 	const t = useMemo(() => (nodes ? tree(nodes) : null), [nodes]);
 	const home = data?.leaf ?? null;
 	const w = useMemo(() => (t ? walk(t, r.leaf, home) : null), [t, r.leaf, home]);
-	// 状态用侧栏那份（看过之后会更新），还没有就用会话自己带的
-	const m = meta ?? data?.meta;
-	const st = status(m ?? { id: session, terminal: null, unread: null });
 	// 子代理：Agent 调用下面画它在做什么；往上翻着的时候「↓」上带着还在跑的有几个
 	const spawning = useMemo(() => !!nodes?.some(spawner), [nodes]);
 	const subs = useSubs(project, session, spawning);
-	// 终端里开着、Claude 登记着在跑：和 mixer 里在跑一样画 ping 点；闲着的只是开着
-	const outside = st === "terminal" && m?.terminal === "busy";
-	const busy = st === "running" || st === "waiting" || st === "background" || outside;
 	// 在 mixer 里开着 claude 进程：后台子代理在不在跑看它报的后台任务；没有进程（终端里开的、进程退了）才猜
-	const jobs = hosts.find((h) => h.session === session)?.tasks ?? null;
-	const spawned = useSpawns(w ? w.path : null, subs, busy, jobs);
+	const spawned = useSpawns(w ? w.path : null, subs, live.active, live.jobs);
 	const working = spawned ? [...spawned.values()].filter((s) => s.running).length : 0;
 
 	// 开着的会话跑完了（页面在前台）：算看过了；它的通知也收掉
@@ -304,7 +299,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary>
-									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} chosenPermission={data?.permission ?? "auto"} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} spawned={spawned} />
+									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} chosenPermission={data?.permission ?? "auto"} stream={stream} live={live} scroller={scroller} reveal={reveal} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -320,7 +315,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} chosenPermission={data.permission ?? "auto"} run={stream.run} onSent={onSent} />}
+				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} live={live} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} chosenPermission={data.permission ?? "auto"} onSent={onSent} />}
 			</div>
 
 			{wide && panel && (

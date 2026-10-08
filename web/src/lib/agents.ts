@@ -46,13 +46,12 @@ export function useSubs(project: string, session: string, on: boolean): Map<stri
 }
 
 /**
- * 用 spawns.ts 算，path 是 null（还没拿到会话）就不算。jobs：这个会话在 mixer 里开着的 claude 进程报的后台任务，没有进程是 null。
+ * 用 spawns.ts 算，path 是 null（还没拿到会话）就不算。active：会话有事在发生（lib/live.tsx 的 SessionLive）；
+ * jobs：这个会话在 mixer 里开着的 claude 进程报的后台任务，没有进程是 null（没变时 live.tsx 留着原来的数组，Steps 的 memo 不破）。
  * 没有进程时只靠「90 秒内写过」算在跑的，过了时候要变：到点了重算
  */
-export function useSpawns(path: Node[] | null, subs: Map<string, Sub>, busy: boolean, jobs: Job[] | null) {
+export function useSpawns(path: Node[] | null, subs: Map<string, Sub>, active: boolean, jobs: Job[] | null) {
 	const tick = useDeadline(jobs ? null : nextOf([...subs.values()].map((a) => a.mtime + FRESH)));
-	// 进程的任务表每次推过来都是新的：按内容比，没变就不重算（Steps 的 memo 不破）
-	const key = jobs ? jobs.map((j) => `${j.id} ${j.tool ?? ""}`).join("\n") : null;
 	// tick：到点了，重算
-	return useMemo(() => (path ? spawns(path, subs, busy, key === null ? null : jobs) : null), [path, subs, busy, tick, key]);
+	return useMemo(() => (path ? spawns(path, subs, active, jobs) : null), [path, subs, active, jobs, tick]);
 }

@@ -14,14 +14,14 @@ export type Spawn = { agentId: string | null; latest: string | null; running: bo
 export type Job = { id: string; tool: string | null };
 
 /**
- * 路上每个 Agent 工具调用开出来的子代理怎么样了。busy：会话在跑（mixer 里、待确认、后台任务、终端里开着）。
- *   前台的（工具还没结果）：会话在跑、而且是这一轮的，就是在跑
+ * 路上每个 Agent 工具调用开出来的子代理怎么样了。active：会话有事在发生（mixer 里在跑、待确认、后台任务，或者终端里开着在跑）。
+ *   前台的（工具还没结果）：会话有事在发生、而且是这一轮的，就是在跑
  *   后台的（结果马上就回来了，服务端照结构化的结果标了 async）：
  *     jobs 不是 null（这个会话在 mixer 里开着 claude 进程）：进程报的后台任务里有它（tool 是这个调用，或者任务 id 是它的 agentId），就是在跑。准的，不猜
- *     jobs 是 null（终端里开的、进程退了）：会话在跑或者它 90 秒内写过，而且最后写的时间晚于它的结束通知（后台任务通知、子代理回报），就是在跑。
+ *     jobs 是 null（终端里开的、进程退了）：会话有事在发生或者它 90 秒内写过，而且最后写的时间晚于它的结束通知（后台任务通知、子代理回报），就是在跑。
  *     结束了又被 SendMessage 叫起来接着干的，也是这样算
  */
-export function spawns(path: Node[], subs: Map<string, Sub>, busy: boolean, jobs: Job[] | null, now = Date.now()): Map<string, Spawn> {
+export function spawns(path: Node[], subs: Map<string, Sub>, active: boolean, jobs: Job[] | null, now = Date.now()): Map<string, Spawn> {
 	const out = new Map<string, Spawn>();
 	if (!path.some(spawner)) return out;
 	const byAgent = new Map([...subs.values()].map((a) => [a.agentId, a]));
@@ -39,12 +39,12 @@ export function spawns(path: Node[], subs: Map<string, Sub>, busy: boolean, jobs
 		const agentId = a?.agentId ?? t.agent;
 		const end = agentId ? ends.get(agentId) : undefined;
 		const running = !t.result
-			? busy && i > turn
+			? active && i > turn
 			: !t.async
 				? false
 				: jobs
 					? tools.has(t.id) || (!!agentId && ids.has(agentId))
-					: (busy || (!!a && now - a.mtime < FRESH)) && (a ? a.mtime > (end ?? 0) + 2000 : end === undefined);
+					: (active || (!!a && now - a.mtime < FRESH)) && (a ? a.mtime > (end ?? 0) + 2000 : end === undefined);
 		out.set(t.id, { agentId, latest: a?.latest ?? null, running, since: Date.parse(t.ts) });
 	});
 	return out;
