@@ -1,6 +1,7 @@
 // 读一个项目的仓库：文件列表（git 管的 + 没被忽略的新文件）、文件内容、git 状态、改动、最近的提交。只读。
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -26,18 +27,22 @@ const isGit = async (root: string) => (await tryGitAsync(root, ["rev-parse", "--
 
 export async function files(root: string): Promise<string[]> {
 	if (await isGit(root)) return (await gitAsync(root, ["ls-files", "-co", "--exclude-standard"])).split("\n").filter(Boolean).sort();
-	// 不是 git 仓库：自己走一遍，跳过常见的大目录
+	// 不是 git 仓库（家目录这种）：自己走一遍，异步的（不挡别的请求、推送）。跳过隐藏的文件夹、常见的大目录、Library；
+	// 读不了的文件夹（没权限、macOS 保护的）跳过，不让整个列表出错；最多 2 万个
 	const out: string[] = [];
-	const skip = new Set(["node_modules", ".git", "dist", ".venv", "__pycache__"]);
-	const walk = (dir: string) => {
-		for (const d of readdirSync(dir, { withFileTypes: true })) {
-			if (skip.has(d.name) || out.length > 20000) continue;
+	const skip = new Set(["node_modules", "dist", "build", ".venv", "venv", "__pycache__", "Library", "target"]);
+	const walk = async (dir: string) => {
+		let ds: import("node:fs").Dirent[];
+		try { ds = await readdir(dir, { withFileTypes: true }); } catch { return; }
+		for (const d of ds) {
+			if (out.length >= 20000) return;
+			if (skip.has(d.name) || (d.isDirectory() && d.name.startsWith("."))) continue;
 			const f = join(dir, d.name);
-			if (d.isDirectory()) walk(f);
-			else out.push(relative(root, f));
+			if (d.isDirectory()) await walk(f);
+			else if (d.isFile()) out.push(relative(root, f));
 		}
 	};
-	walk(root);
+	await walk(root);
 	return out.sort();
 }
 
@@ -51,6 +56,20 @@ export function file(root: string, rel: string) {
 	const buf = readFileSync(f);
 	if (buf.subarray(0, 8000).includes(0)) return { kind: "binary" as const, size: st.size };
 	return { kind: "text" as const, size: st.size, text: buf.toString("utf8") };
+}
+
+/** 一个新文件有几行：256KB 以内的文本才数 */
+async function newLines(root: string, rel: string) {
+	try {
+		const f = inside(root, rel);
+		if (IMAGE.has(extname(f).toLowerCase()) || (await stat(f)).size > 256 * 1024) return null;
+		const buf = await readFile(f);
+		if (buf.subarray(0, 8000).includes(0)) return null;
+		const text = buf.toString("utf8");
+		return { add: text.split("\n").length - (text.endsWith("\n") ? 1 : 0), del: 0 };
+	} catch {
+		return null;
+	}
 }
 
 // 还没有提交的仓库没有 HEAD，跟空树比
@@ -89,15 +108,13 @@ async function readStatus(root: string) {
 		const code = l.slice(0, 2);
 		const path = l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop() as string;
 		let n = stat.get(path);
-		// 没进 git 的新文件：数它有几行（太多就不数了）
-		if (!n && code === "??" && counted++ < 200) {
-			try {
-				const f = file(root, path);
-				if (f.kind === "text") n = { add: f.text.split("\n").length - (f.text.endsWith("\n") ? 1 : 0), del: 0 };
-			} catch {}
-		}
-		return { code, path, ...n };
+		return { code, path, ...n, count: !n && code === "??" && counted++ < 200 };
 	});
+	// 没进 git 的新文件：数它有几行（异步读，不挡别的请求；太多、太大的不数）
+	await Promise.all(changes.map(async (c) => {
+		if (c.count) Object.assign(c, (await newLines(root, c.path)) ?? {});
+		delete (c as { count?: boolean }).count;
+	}));
 	// 还没推上去的提交
 	const [unpushed, history] = await Promise.all([m?.[2] ? tryGitAsync(root, ["rev-list", "@{u}..HEAD"]) : "", tryGitAsync(root, ["log", "-30", "--pretty=format:%H%x09%h%x09%s%x09%cI%x09%an"])]);
 	const local = new Set(unpushed.split("\n").filter(Boolean));

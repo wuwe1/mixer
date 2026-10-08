@@ -132,19 +132,22 @@ const json = (res: ServerResponse, status: number, v: unknown) => {
 // 最多 20MB（10 张图片也够），再大回 413。解析成 JSON 对象，不是的回 400
 const LIMIT = 20 * 1024 * 1024;
 type Body = Record<string, any>; // biome-ignore lint: 请求体，各个接口自己挑字段
-const body = (req: IncomingMessage) => new Promise<Body>((ok, no) => {
-	if (Number(req.headers["content-length"] ?? 0) > LIMIT) return no(fail(413, "太大了：最多 20MB"));
+/** 登录那几个（谁都能来）用不着大的请求体：64KB 就够，免得没登录的一分钟塞几百 MB 进内存 */
+const SMALL = 64 * 1024;
+const body = (req: IncomingMessage, limit = LIMIT) => new Promise<Body>((ok, no) => {
+	const too = () => fail(413, `太大了：最多 ${limit >= 1024 * 1024 ? `${limit / 1024 / 1024}MB` : `${limit / 1024}KB`}`);
+	if (Number(req.headers["content-length"] ?? 0) > limit) return no(too());
 	const cs: Buffer[] = [];
 	let n = 0;
 	req.on("data", (c: Buffer) => {
-		if (n > LIMIT) return;
+		if (n > limit) return;
 		n += c.length;
-		if (n <= LIMIT) return void cs.push(c);
+		if (n <= limit) return void cs.push(c);
 		cs.length = 0;
-		no(fail(413, "太大了：最多 20MB"));
+		no(too());
 	});
 	req.on("end", () => {
-		if (n > LIMIT) return;
+		if (n > limit) return;
 		let v: unknown;
 		try { v = JSON.parse(Buffer.concat(cs).toString("utf8")); } catch { return no(fail(400, "请求体不是 JSON")); }
 		if (!v || typeof v !== "object" || Array.isArray(v)) return no(fail(400, "请求体要是 JSON 对象"));
@@ -266,12 +269,14 @@ function sendImage(res: ServerResponse, img: { media: string; data: string } | n
 const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][] = [
 	["GET", /^\/api\/auth\/status$/, "open", async (req, res) => json(res, 200, access.status(req, await access.who(req)))],
 	// 推送（sse.ts）：先发 build（页面的版本），再发 hello（全部状态）。连上时也从磁盘重读一次版本：换了先推给已经开着的，这条连接直接拿新的
-	["GET", /^\/api\/events$/, "user", (_q, res) => {
+	["GET", /^\/api\/events$/, "user", (req, res) => {
 		refreshVersion();
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 		res.write(version ? sse.frame("build", { version }) : ": hi\n\n");
-		res.on("close", () => sse.leave(res));
-		res.on("error", () => sse.leave(res));
+		// 连着的时候每 30 秒再认一次：删掉了 passkey、JWT 过期了，开着的这条也断掉，不再收到运行的输出（重连时就被拦下）
+		const check = setInterval(() => void access.who(req).then((u) => { if (!u) res.end(); }, () => res.end()), 30_000).unref();
+		res.on("close", () => { clearInterval(check); sse.leave(res); });
+		res.on("error", () => { clearInterval(check); sse.leave(res); });
 		sse.join(res, workspace.hello).catch((e) => console.error(e));
 	}],
 	["GET", /^\/api\/health$/, "user", (_q, res) => json(res, 200, { app: "mixer", pid: process.pid })],
@@ -337,15 +342,15 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 		json(res, 200, skills.list(m[1], cwd ? dirs.folder(cwd) : projectPath(m[1])));
 	}],
 	// 登录：配对码建 passkey、passkey 登录。登录成功种 cookie
-	["POST", /^\/api\/auth\/register\/options$/, "open", async (req, res) => json(res, 200, await access.registerOptions(req, (await body(req)).code))],
+	["POST", /^\/api\/auth\/register\/options$/, "open", async (req, res) => json(res, 200, await access.registerOptions(req, (await body(req, SMALL)).code))],
 	["POST", /^\/api\/auth\/register$/, "open", async (req, res) => {
-		const b = await body(req);
+		const b = await body(req, SMALL);
 		res.setHeader("set-cookie", await access.register(req, b.code, b.response));
 		json(res, 200, { ok: true });
 	}],
 	["POST", /^\/api\/auth\/login\/options$/, "open", async (req, res) => json(res, 200, await access.loginOptions(req))],
 	["POST", /^\/api\/auth\/login$/, "open", async (req, res) => {
-		const b = await body(req);
+		const b = await body(req, SMALL);
 		res.setHeader("set-cookie", await access.login(req, b.id, b.response));
 		json(res, 200, { ok: true });
 	}],

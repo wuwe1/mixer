@@ -1,6 +1,6 @@
 // repo.ts 的 inside()：路径只许在仓库里面
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -56,4 +56,24 @@ test("仓库路径本身经过软链接：一样认", () => {
 	assert.equal(inside(r, "src/gone.ts"), join(r, "src", "gone.ts"));
 	denied(r, "out/secret");
 	denied(r, "../outside/secret");
+});
+
+test("不是 git 仓库的文件列表：读不了的文件夹跳过（不整个出错），隐藏的文件夹、node_modules 不走，隐藏的文件照列", async () => {
+	const { files } = await import("../server/repo.ts");
+	const plain = join(tmp, "plain");
+	mkdirSync(join(plain, "a"), { recursive: true });
+	mkdirSync(join(plain, ".cache"));
+	mkdirSync(join(plain, "node_modules"));
+	mkdirSync(join(plain, "locked"));
+	writeFileSync(join(plain, "a", "x.txt"), "");
+	writeFileSync(join(plain, ".env"), "");
+	writeFileSync(join(plain, ".cache", "c"), "");
+	writeFileSync(join(plain, "node_modules", "m.js"), "");
+	writeFileSync(join(plain, "locked", "l.txt"), "");
+	chmodSync(join(plain, "locked"), 0o000);
+	try {
+		assert.deepEqual(await files(plain), [".env", "a/x.txt"]);
+	} finally {
+		chmodSync(join(plain, "locked"), 0o755);
+	}
 });

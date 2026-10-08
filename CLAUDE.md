@@ -59,7 +59,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `server/sessions.ts` | 读 `~/.claude/projects/<目录>/<会话>.jsonl`，拼成显示用的节点树。记下读到第几个字节，文件长了只读新写的；节点新建、改过记 `rev`，网页带 `?since=<version>` 只拿之后变了的。工具调用的参数、结果在节点里只是预览，点开时拿 `/tool/<id>`；思考也只给前 120 字（`cut`），展开时拿 `/thinking/<uuid>`。读过的会话按最近使用留在内存，总量超 200MB（按文件大小算）丢最久没用的，一分钟内用过的不丢（比 200MB 还大的会话不会被旁边的子代理挤掉、反复整份重读）。会话信息带 `expires`：修改时间 + `~/.claude/settings.json` 的 `cleanupPeriodDays`（默认 30，文件改了重读）。parent 是直接的原会话：mixer 分叉的看 `state.forkOf`，终端 `/branch` 的看记录里的 `forkedFrom`，都没有（终端 `--fork-session`、老的）才 `guess`（同一个第一句 uuid 的一家里建得最早的，写明是猜）；fresh（分叉后自己问的第一句）= 第一句 uuid 不在原会话里的。标题 `custom-title` 优先，其次 `ai-title`。会话接口带 `leaf`（命令行续接时接着的那条）、`touched`（这个会话连子代理改过的文件）；工具节点的 agent / async / task / file / files 从结构化的 `toolUseResult` 来（`facts()`），不对文字做正则 |
 | 子代理（`sessions.ts` 的 `subs` / `sub` / `agent`） | `/api/sessions/:项目/:会话/agents` 列出 `<会话>/subagents/` 里的子代理：`agent-<id>.meta.json` 的 `toolUseId`（开它的 Agent 工具调用）、类型、描述，`latest`（它在做什么：最后一个工具调用「工具名 摘要」或最后一段回复的第一行，80 字；10 分钟没动的不读记录、给 null），`mtime`。`main.ts` 监视到子代理的记录、meta 变了（每个 0.5 秒一次）推 `agent`（同样的一份带上 project、session）。`/agents/<id>?since=` 和会话一样给增量 |
 | `server/jsonl.ts` | 读记录的办法：按 `\n` 一行一行读；接着上次读（`Cursor` / `resume`：变短、换了 ino 从头读，pi 的用量也用）；截开头（`cut`）；`epoch()` 越晚给的越大，网页用 `reached()` 比两个版本谁新；读过的留多少（`lru`：200MB，一分钟内用过的不丢） |
-| `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库。git 都是异步的（不挡别的请求）；状态同一个仓库同时来的共用一次，缓存 1.5 秒 |
+| `server/repo.ts` | 仓库文件、git 状态、diff、提交；`inside()` 防止路径跑出仓库。git 都是异步的（不挡别的请求）；不是 git 仓库的自己走一遍文件夹，也是异步的（跳过隐藏的文件夹、`node_modules` 这类大目录、`Library`，读不了的文件夹跳过，最多 2 万个）；没进 git 的新文件数行数也异步读（256KB 以内）；状态同一个仓库同时来的共用一次，缓存 1.5 秒 |
 | `server/dirs.ts` | 新会话选文件夹：列子文件夹、新建，只认家目录里面的 |
 | `server/access.ts` | 谁能用：本机直接放行；Cloudflare Access 验 JWT（签名、iss、aud、邮箱）；passkey 登录的签名 cookie。配置 `data/access.json`（不进 git；`data/` 的位置 `MIXER_DATA` 可改，测试用），按修改时间重读 |
 | `server/tunnel.ts` | `access.json` 里有 `cloudflare.tunnel` 就起一个 cloudflared（自己写一份配置，不读 `~/.cloudflared/config.yml`），挂了退避再起（听 `close`：没装 cloudflared 时只有 error、close）。SIGTERM / SIGINT 在 `main.ts` 里先停隧道再退出 |
@@ -147,7 +147,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 
 能在这台 Mac 上执行命令，所以：
 - 服务只听 127.0.0.1；写的接口只认本机或同源 https 的 Origin
-- 每个接口在 `main.ts` 的 `ROUTES` 里写明谁能用：`user` 先过 `access.who()`；`open` 只有登录那几个（远程 POST 每个 IP 一分钟 30 次；Funnel 上 IP 取 x-forwarded-for 最后一段，前面的对方能伪造）。请求体最多 20MB、坏 JSON 回 400，页面本身谁都能拿
+- 每个接口在 `main.ts` 的 `ROUTES` 里写明谁能用：`user` 先过 `access.who()`；`open` 只有登录那几个（远程 POST 每个 IP 一分钟 30 次；Funnel 上 IP 取 x-forwarded-for 最后一段，前面的对方能伪造）。请求体最多 20MB（`open` 的 64KB）、坏 JSON 回 400，页面本身谁都能拿。SSE 连着时每 30 秒再认一次（删掉了 passkey、JWT 过期了就断掉）
 - 「本机」= Host 是 127.0.0.1 / localhost、对方是回环地址、没有任何代理加的头（x-forwarded-for、cf-*、tailscale-*）。隧道转来的都是远程；Host 不对（DNS rebinding）也是远程
 - 放到外网两种：Cloudflare Tunnel + Access（mixer 再验一遍 JWT，隧道配错了漏掉 Access 也进不来）；Tailscale Funnel + passkey（公网，前面没人拦，全靠 mixer 的登录）。配 Funnel 时先写配置再开，开完自检经 Funnel 的请求不会被当成本机
 - `access.json` 什么都没配：远程的一律 401，第一次远程请求时提示去 `pnpm mixer setup …`（团队域名、AUD 从 Access 后台复制，不拿请求里没验过的 JWT 当默认值）
