@@ -63,7 +63,7 @@ function Pending({ kind }: { kind: string | null }) {
 }
 
 /** 画不出来：哪里不对，原文点开看 */
-export function Broken({ kind, issues, v }: { kind: string | null; issues: string[]; v: unknown }) {
+function Broken({ kind, issues, v }: { kind: string | null; issues: string[]; v: unknown }) {
 	const [raw, setRaw] = useState(false);
 	return (
 		<div className="rounded-lg border border-dashed p-3 text-xs">

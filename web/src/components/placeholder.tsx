@@ -31,8 +31,14 @@ export const Loading = ({ className }: { className?: string }) => (
 	</div>
 );
 
-/** 展开收起：左边一个 ›，展开时转 90° */
-export const Chevron = ({ open, className }: { open: boolean; className?: string }) => <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90", className)} />;
+/**
+ * 展开收起：左边一个 ›，展开时转 90°。open 不给：跟着 Radix Collapsible 的 data-state 转（不受控的 Collapsible），
+ * 离它最近的 Collapsible 或 CollapsibleTrigger 上加 CHEVRON。同一个 CHEVRON 别套在另一个里面：外面的开着，里面的也会转
+ */
+export const CHEVRON = "group/chevron";
+export const Chevron = ({ open, className }: { open?: boolean; className?: string }) => (
+	<ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open === undefined ? "group-data-[state=open]/chevron:rotate-90" : open && "rotate-90", className)} />
+);
 
 /** 里面画的时候抛了错：换成「出错了」和刷新。className 给出错时外面那一层（整页的要撑满） */
 export class Boundary extends Component<{ children: ReactNode; className?: string }, { error: Error | null }> {

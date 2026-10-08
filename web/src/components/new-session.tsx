@@ -9,6 +9,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api, type Dirs, type Project } from "@shared/api";
 import { match } from "@/lib/match";
+import { useApi } from "@/lib/use-api";
 import { Loading } from "./placeholder";
 import { PromptBox, usePrompt } from "./prompt";
 
@@ -116,13 +117,12 @@ export function StartBox({ target, autoFocus, lead, onStarted }: { target: { cwd
 export function NewSession({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
 	const [cwd, setCwd] = useState<string | null>(null);
 	const [last, setLast] = useState<string | null>(null);
-	// 最近的项目：有会话记录的文件夹，按最近修改排（不用扫会话，快）
-	const [projects, setProjects] = useState<Project[]>([]);
+	// 最近的项目：有会话记录的文件夹，按最近修改排（不用扫会话，快）。每次打开都重新拿
+	const projects = useApi<Project[]>(open ? "/api/projects" : null).data ?? [];
 	useEffect(() => {
 		if (!open) return;
 		setCwd(null);
 		setLast(null);
-		api<Project[]>("/api/projects").then(setProjects, () => {});
 	}, [open]);
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>

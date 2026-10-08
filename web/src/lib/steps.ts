@@ -17,7 +17,7 @@ export type Line = { mark: "running" | "ok" | "failed"; name: string; summary: s
  */
 export type Row = (Line & { k: "sub"; key: string; latest: string | null }) | (Line & { k: "last"; key: string }) | { k: "more"; key: string; n: number };
 
-export type Exposed = {
+type Exposed = {
 	/** label：「N 次工具调用 名字…」；thinking：只有思考的一组正在想；step：最后那一步当标题（展开了换回 label） */
 	head: { k: "label" } | { k: "thinking"; text: string; since: number } | { k: "step"; line: Line };
 	/** 工具调用几次、用了哪些工具（去重，按先后） */

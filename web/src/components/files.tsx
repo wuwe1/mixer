@@ -7,13 +7,13 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { api, enc, type RepoFile } from "@shared/api";
-import { type FileDiff, parseDiff } from "@/lib/diff";
+import { enc, type RepoFile } from "@shared/api";
 import { go } from "@/lib/route";
+import { useApi } from "@/lib/use-api";
 import { bytes } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Code, langOf } from "./code";
-import { Hunks, Note } from "./diff";
+import { Hunks, Note, useDiff } from "./diff";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
 import { Chevron, Placeholder } from "./placeholder";
@@ -72,13 +72,10 @@ function TreeView({ dir, depth, open, toggle, current }: { dir: Dir; depth: numb
 }
 
 export function Files({ project, file, view }: { project: string; file: string | null; view: "diff" | null }) {
-	const [list, setList] = useState<string[] | null>(null);
+	const got = useApi<{ files: string[] }>(`/api/repo/${enc(project)}/files`);
+	const list = got.data?.files ?? (got.error ? [] : null);
 	const [q, setQ] = useState("");
 	const [open, setOpen] = useState<Set<string>>(new Set());
-	useEffect(() => {
-		setList(null);
-		api<{ files: string[] }>(`/api/repo/${enc(project)}/files`).then((r) => setList(r.files), () => setList([]));
-	}, [project]);
 	// 打开文件时，把它所在的目录都展开
 	useEffect(() => {
 		if (!file) return;
@@ -113,39 +110,20 @@ export function Files({ project, file, view }: { project: string; file: string |
 				{list && <div className="border-t px-3 py-1.5 text-2xs text-muted-foreground tabular-nums">{list.length} 个文件</div>}
 			</div>
 			<div className={cn("flex min-w-0 flex-1 flex-col", !file && "@max-3xl/files:hidden")}>
-				{file ? <Viewer project={project} path={file} view={view} /> : <Placeholder icon={File} text="选择一个文件" />}
+				{file ? <Viewer key={`${file}:${view}`} project={project} path={file} view={view} /> : <Placeholder icon={File} text="选择一个文件" />}
 			</div>
 		</div>
 	);
 }
 
+/** 换了文件、换了看法（view）就换一个（Files 里按它们给 key），mode 从头来 */
 function Viewer({ project, path, view }: { project: string; path: string; view: "diff" | null }) {
-	const [f, setF] = useState<RepoFile | null>(null);
-	const [err, setErr] = useState<string | null>(null);
-	// 改动：和「改动」里展开一个文件一样（changes.tsx 的 WorkFile），取不到写原因
-	const [diff, setDiff] = useState<FileDiff | string | null>(null);
 	const isMd = /\.md$/i.test(path);
-	const initial = view === "diff" ? "diff" : isMd ? "preview" : "source";
-	const [mode, setMode] = useState<"source" | "preview" | "diff">(initial);
-	useEffect(() => {
-		setF(null);
-		setErr(null);
-		setDiff(null);
-		setMode(initial);
-		// 快速换文件时，上一个的回包晚到不能盖掉这个的
-		let live = true;
-		api<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`).then((x) => live && setF(x), (e: Error) => live && setErr(e.message));
-		return () => { live = false; };
-	}, [project, path, initial]);
-	useEffect(() => {
-		if (mode !== "diff" || diff !== null) return;
-		let live = true;
-		api<{ diff: string }>(`/api/repo/${enc(project)}/diff?path=${enc(path)}`).then(
-			(r) => live && setDiff(parseDiff(r.diff)[0] ?? "这个文件没有未提交的改动"),
-			(e: Error) => live && setDiff(e.message),
-		);
-		return () => { live = false; };
-	}, [mode, diff, project, path]);
+	const [mode, setMode] = useState<"source" | "preview" | "diff">(view === "diff" ? "diff" : isMd ? "preview" : "source");
+	const { data: f, error } = useApi<RepoFile>(`/api/repo/${enc(project)}/file?path=${enc(path)}`);
+	const err = error?.message;
+	// 改动：和「改动」里展开一个文件一样（changes.tsx 的 WorkFile），取不到写原因
+	const diff = useDiff(project, mode === "diff" ? path : null, "这个文件没有未提交的改动");
 	const raw = `/api/repo/${enc(project)}/raw?path=${enc(path)}`;
 	return (
 		<>

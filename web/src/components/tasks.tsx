@@ -6,7 +6,7 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api, enc, type Host, type Task } from "@shared/api";
-import { useLive } from "@/lib/live";
+import { useApi } from "@/lib/use-api";
 import { CodeBlock, Elapsed } from "./message";
 import { Chevron } from "./placeholder";
 import { Popsheet } from "./popsheet";
@@ -22,11 +22,10 @@ const kind = (t: Task) => KIND[t.type] ?? (/monitor/i.test(t.type) ? KIND.monito
 
 const HINT = "跑完了会叫醒 Claude 接着做";
 
-/** 输入框那一排：这个会话有后台任务才出现 */
-export function BackgroundTasks({ session }: { session: string }) {
-	const { hosts } = useLive();
+/** 输入框那一排：这个会话的 claude 进程（host）有后台任务才出现 */
+export function BackgroundTasks({ host }: { host: Host | null }) {
 	const [open, setOpen] = useState(false);
-	const h = hosts.find((x) => x.session === session && x.tasks.length);
+	const h = host?.tasks.length ? host : null;
 	useEffect(() => { if (!h) setOpen(false); }, [h]);
 	if (!h) return null;
 	const n = h.tasks.length;
@@ -55,18 +54,10 @@ function TaskList({ h }: { h: Host }) {
 /** 一个后台任务：› 展开输出（后台命令、Monitor 才能展开：问 claude 要最后 8KB）、类型图标、说明、跑了多久、停止 */
 function TaskRow({ host, t }: { host: string; t: Task }) {
 	const [open, setOpen] = useState(false);
-	const [out, setOut] = useState<{ text: string; cut: boolean } | null>(null);
+	const { data: out } = useApi<{ text: string; cut: boolean }>(open ? `/api/hosts/${enc(host)}/tasks/${enc(t.id)}/output` : null, { poll: 2000 });
 	const [stopping, setStopping] = useState(false);
 	const pre = useRef<HTMLPreElement>(null);
 	const k = kind(t);
-	useEffect(() => {
-		if (!open) return;
-		let alive = true;
-		const get = () => api<{ text: string; cut: boolean }>(`/api/hosts/${enc(host)}/tasks/${enc(t.id)}/output`).then((o) => { if (alive) setOut(o); }, () => {});
-		get();
-		const i = setInterval(get, 2000);
-		return () => { alive = false; clearInterval(i); };
-	}, [open, host, t.id]);
 	// 新的输出在最下面：跟着滚到底
 	useEffect(() => {
 		const el = pre.current;

@@ -2,7 +2,7 @@
 // 事件：小结、上下文压缩、系统提示是分隔线；后台任务的通知是一行；子代理的回报是一张卡片。都和人、Claude 说的话分开。
 // 每条消息、每组工具调用后面几个图标按钮：复制、从这里分叉（回复、工具调用）、编辑并分叉（你的消息）。平时收着，指着、点一下那条才出现，
 // 最后一条回复的常驻；手机上工具组的分叉常驻（点工具组是展开）。图片点了在当前页面放大。
-import { Bell, Bot, Brain, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
+import { Bell, Bot, Brain, Check, CircleCheck, CircleStop, CircleX, Copy, FileDiff, FileText, Globe, GitFork, Info, Layers, Pencil, Search, SquareTerminal, Wrench, TriangleAlert } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
@@ -11,11 +11,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Spinner } from "@/components/ui/spinner";
 import type { Spawn } from "@/lib/agents";
 import { api, enc, type Node, type ToolNode } from "@shared/api";
+import { useScope } from "@/lib/scope";
 import { exposed, type Line, type Now, type Row, toolName } from "@/lib/steps";
 import { clock, took } from "@/lib/time";
+import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
+import { CHEVRON, Chevron } from "./placeholder";
 import { StatusIcon } from "./side";
 
 const ICON: Record<string, typeof Wrench> = {
@@ -34,7 +37,14 @@ export function Elapsed({ since, className }: { since: number; className?: strin
 	return <span className={cn("tabular-nums", className)}>{took(now - since)}</span>;
 }
 
-export type { Now };
+/** 在跑，末尾却什么都没在动：留一个 ping 点，知道它还活着。和工具组收着时露出的那一步对齐：同样缩进、同样大小 */
+export function AliveDot() {
+	return (
+		<div className="-mt-3 flex py-1 pl-5.5">
+			<StatusIcon s="running" className="size-3.5" />
+		</div>
+	);
+}
 
 /** 指着、点一下（消息自己能拿焦点）才出现；藏起来时不占地方，时间贴着右边 */
 const reveal = "hidden group-hover:flex group-focus-within:flex";
@@ -72,7 +82,8 @@ export function Bubble({ text, srcs, queued }: { text: string; srcs: string[]; q
 /** 你的消息带的图：第几张一个地址 */
 export const userImages = (project: string, session: string, n: Extract<Node, { k: "user" }>) => Array.from({ length: n.images }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${n.uuid}/${i}`);
 
-export const UserMessage = memo(function UserMessage({ n, project, session, onFork }: { n: Extract<Node, { k: "user" }>; project: string; session: string; onFork?: (n: Extract<Node, { k: "user" }>) => void }) {
+export const UserMessage = memo(function UserMessage({ n, onFork }: { n: Extract<Node, { k: "user" }>; onFork?: (n: Extract<Node, { k: "user" }>) => void }) {
+	const { project, session } = useScope();
 	return (
 		<div id={`n-${n.uuid}`} tabIndex={-1} className="group flex scroll-mt-24 flex-col items-end gap-1.5 outline-none">
 			<Bubble text={n.text} srcs={userImages(project, session, n)} />
@@ -107,19 +118,21 @@ export const AssistantMessage = memo(function AssistantMessage({ n, spent, onFor
 type Ev = Extract<Node, { k: "event" }>;
 const TASK_STATUS: Record<string, string> = { completed: "完成", failed: "失败", killed: "已停止" };
 
-/** 打开子代理的对话：一律这个按钮（或者点那一行） */
-const AgentButton = ({ id, onAgent, className }: { id?: string | null; onAgent?: (id: string) => void; className?: string }) =>
-	id && onAgent ? (
+/** 打开子代理的对话：一律这个按钮（或者点那一行）。子代理的对话里没有 */
+function AgentButton({ id, className }: { id?: string | null; className?: string }) {
+	const { onAgent } = useScope();
+	return id && onAgent ? (
 		<Button variant="outline" size="xs" className={cn("shrink-0", className)} onClick={() => onAgent(id)}>
 			<Bot className="size-3" />
 			子代理对话
 		</Button>
 	) : null;
+}
 
 /** 事件：小结、上下文压缩、系统提示画成分隔线（压缩的能点开看摘要）；后台任务、子代理回报单独画 */
-export const EventLine = memo(function EventLine({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
-	if (n.kind === "task") return <TaskNotice n={n} onAgent={onAgent} />;
-	if (n.kind === "agent") return <AgentReport n={n} onAgent={onAgent} />;
+export const EventLine = memo(function EventLine({ n }: { n: Ev }) {
+	if (n.kind === "task") return <TaskNotice n={n} />;
+	if (n.kind === "agent") return <AgentReport n={n} />;
 	if (n.kind === "error")
 		return (
 			<div id={`n-${n.uuid}`} className="flex items-start gap-2 rounded-md border border-destructive/30 px-3 py-2 text-xs text-destructive">
@@ -139,7 +152,7 @@ export const EventLine = memo(function EventLine({ n, onAgent }: { n: Ev; onAgen
 		<>
 			<span className="h-px flex-1 bg-border" />
 			<span className="flex max-w-[80%] items-center gap-1.5 text-center">
-				{n.detail && <ChevronRight className="size-3 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90" />}
+				{n.detail && <Chevron className="text-current" />}
 				{I && <I className="size-3.5 shrink-0" />}
 				<span>{n.kind === "summary" ? `小结：${n.text}` : n.text}</span>
 			</span>
@@ -148,7 +161,7 @@ export const EventLine = memo(function EventLine({ n, onAgent }: { n: Ev; onAgen
 	);
 	if (!n.detail) return <div id={`n-${n.uuid}`} className="flex items-center gap-3 py-1 text-xs text-muted-foreground">{line}</div>;
 	return (
-		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+		<Collapsible id={`n-${n.uuid}`} className={CHEVRON}>
 			<CollapsibleTrigger className="flex w-full items-center gap-3 py-1 text-xs text-muted-foreground hover:text-foreground" title="点开看摘要">{line}</CollapsibleTrigger>
 			<CollapsibleContent className="mt-2 max-h-96 overflow-auto rounded-lg border bg-muted/30 p-3">
 				<Markdown text={n.detail} />
@@ -158,20 +171,20 @@ export const EventLine = memo(function EventLine({ n, onAgent }: { n: Ev; onAgen
 });
 
 /** 后台任务（子代理、后台命令）的通知：一行，点开看结果。› 在最左边，没有结果的留着空位，图标和工具组的对齐 */
-function TaskNotice({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
+function TaskNotice({ n }: { n: Ev }) {
 	// 红只给出错的；人停掉的（killed）是灰的
 	const failed = n.status === "failed";
 	const I = n.status === "completed" ? CircleCheck : failed ? CircleX : n.status === "killed" ? CircleStop : Bell;
 	return (
-		<Collapsible id={`n-${n.uuid}`} className="group/ev">
+		<Collapsible id={`n-${n.uuid}`} className={CHEVRON}>
 			<div className="flex items-center gap-2 text-xs text-muted-foreground">
 				<CollapsibleTrigger disabled={!n.detail} className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left enabled:hover:text-foreground">
-					<ChevronRight className={cn("size-3.5 shrink-0 transition-transform group-data-[state=open]/ev:rotate-90", !n.detail && "invisible")} />
+					<Chevron className={cn("size-3.5 text-current", !n.detail && "invisible")} />
 					<I className={cn("size-3.5 shrink-0", failed && "text-destructive")} />
 					<span className="shrink-0 font-medium">后台任务{n.status ? ` · ${TASK_STATUS[n.status] ?? n.status}` : ""}</span>
 					<span className="truncate">{n.text}</span>
 				</CollapsibleTrigger>
-				<AgentButton id={n.agent} onAgent={onAgent} />
+				<AgentButton id={n.agent} />
 			</div>
 			{n.detail && (
 				<CollapsibleContent className="mt-1 ml-11 max-h-96 overflow-auto rounded-lg border bg-muted/30 p-3">
@@ -183,7 +196,7 @@ function TaskNotice({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
 }
 
 /** 子代理发回来的回报：一张卡片，标明是子代理说的；长的先收着 */
-function AgentReport({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
+function AgentReport({ n }: { n: Ev }) {
 	const long = n.text.length > 600 || n.text.split("\n").length > 12;
 	const [open, setOpen] = useState(false);
 	return (
@@ -192,7 +205,7 @@ function AgentReport({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) 
 				<Bot className="size-3.5" />
 				<span className="font-medium">子代理回报</span>
 				<span className="tabular-nums">{clock(n.ts)}</span>
-				<AgentButton id={n.agent} onAgent={onAgent} className="ml-auto" />
+				<AgentButton id={n.agent} className="ml-auto" />
 			</div>
 			<div className={cn("relative px-3 py-2", long && !open && "max-h-48 overflow-hidden")}>
 				<Markdown text={n.text} />
@@ -207,12 +220,8 @@ function AgentReport({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) 
 	);
 }
 
-/** 连在一起的工具调用、思考：收成一组，默认只显示一行概览 */
-type OnFile = (path: string, diff: boolean) => void;
-
-/** 工具结果里的图片（读图片文件、截图） */
-const resultImages = (t: ToolNode, project: string, session: string, agent?: string) =>
-	Array.from({ length: t.result?.images ?? 0 }, (_, i) => `/api/sessions/${enc(project)}/${enc(session)}/image/${t.id}/${i}${agent ? `?agent=${agent}` : ""}`);
+/** 工具结果里的图片（读图片文件、截图）；url 是 useScope 的 */
+const resultImages = (t: ToolNode, url: (path: string) => string) => Array.from({ length: t.result?.images ?? 0 }, (_, i) => url(`image/${t.id}/${i}`));
 
 /**
  * React 的 key。正在写的那段（uuid 是 live:…）写进记录后 uuid 就变了，「消息 id : 第几段」不变：按它认，
@@ -220,8 +229,11 @@ const resultImages = (t: ToolNode, project: string, session: string, agent?: str
  */
 export const stable = (n: Node) => ("key" in n && n.key) || n.uuid;
 
-/** spawns：组里有 Agent 调用时才给（别的组不跟着子代理的事件重画），开出来的子代理怎么样了（lib/agents.ts） */
-type StepsProps = { nodes: Node[]; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; onFork?: (nodes: Node[]) => void; now?: Now | null; spawns?: Map<string, Spawn> };
+/**
+ * 连在一起的工具调用、思考：收成一组，默认只显示一行概览。
+ * spawns：组里有 Agent 调用时才给（别的组不跟着子代理的事件重画），开出来的子代理怎么样了（lib/agents.ts）
+ */
+type StepsProps = { nodes: Node[]; onFork?: (nodes: Node[]) => void; now?: Now | null; spawns?: Map<string, Spawn> };
 /** nodes 每次都是重新拼的数组：按里面的节点比；别的按引用比 */
 const sameSteps = (a: StepsProps, b: StepsProps) => {
 	const { nodes: an, ...ar } = a;
@@ -230,9 +242,10 @@ const sameSteps = (a: StepsProps, b: StepsProps) => {
 	const rb = br as Record<string, unknown>;
 	return an.length === bn.length && an.every((n, i) => n === bn[i]) && Object.keys({ ...ra, ...rb }).every((k) => ra[k] === rb[k]);
 };
-export const Steps = memo(function Steps({ nodes, project, session, agent, onAgent, onFile, onFork, now, spawns }: StepsProps) {
+export const Steps = memo(function Steps({ nodes, onFork, now, spawns }: StepsProps) {
+	const { url } = useScope();
 	const bare = !nodes.some((n) => n.k === "tool");
-	const imgs = nodes.flatMap((n) => (n.k === "tool" ? resultImages(n, project, session, agent) : []));
+	const imgs = nodes.flatMap((n) => (n.k === "tool" ? resultImages(n, url) : []));
 	// 收着时露出什么（lib/steps.ts）：在跑的那一步、在跑的子代理，不然最后一步；跑完了最后一步当标题，展开了换回「N 次工具调用」
 	const { head, count, names, errors, rows } = exposed(nodes, now, spawns);
 	const label = (
@@ -244,8 +257,8 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 	return (
 		<Collapsible id={`n-${nodes[0].uuid}`} className="group/stepbox scroll-mt-24">
 			<div className="flex items-center gap-1">
-			<CollapsibleTrigger className="group/steps flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
-				<ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/steps:rotate-90" />
+			<CollapsibleTrigger className="group/chevron flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+				<Chevron className="size-3.5 text-current" />
 				{head.k === "thinking" ? (
 					<>
 						<StatusIcon s="running" className="size-3.5" />
@@ -264,22 +277,22 @@ export const Steps = memo(function Steps({ nodes, project, session, agent, onAge
 				)}
 				{errors > 0 && <span className="flex shrink-0 items-center gap-1 text-destructive"><TriangleAlert className="size-3" />{errors}</span>}
 			</CollapsibleTrigger>
-			{head.k === "step" && <AgentButton id={head.line.agent} onAgent={onAgent} />}
+			{head.k === "step" && <AgentButton id={head.line.agent} />}
 			{onFork && (
 				<span className="md:invisible md:group-hover/stepbox:visible md:group-focus-within/stepbox:visible">
 					<Action icon={GitFork} label="从这里分叉" onClick={() => onFork(nodes)} />
 				</span>
 			)}
 			</div>
-			{rows.map((r) => <RowView key={r.key} r={r} onAgent={onAgent} />)}
+			{rows.map((r) => <RowView key={r.key} r={r} />)}
 			{/* 收着的时候图片也露出来；展开了就跟着各自的工具调用 */}
 			{imgs.length > 0 && <Images srcs={imgs} className="mt-1 mb-1 pl-5.5 group-data-[state=open]/stepbox:hidden" />}
 			<CollapsibleContent className="mt-1 flex flex-col gap-1 border-l pl-4 ml-1.5">
 				{nodes.map((n) =>
 					n.k === "tool" ? (
-						<ToolCall key={stable(n)} t={n} project={project} session={session} agent={agent} onAgent={onAgent} onFile={onFile} since={now?.node === n ? now.since : undefined} spawn={spawns?.get(n.id)} />
+						<ToolCall key={stable(n)} t={n} since={now?.node === n ? now.since : undefined} spawn={spawns?.get(n.id)} />
 					) : n.k === "thinking" ? (
-						<Thought key={stable(n)} n={n} project={project} session={session} agent={agent} live={now?.node === n} bare={bare} />
+						<Thought key={stable(n)} n={n} live={now?.node === n} bare={bare} />
 					) : null,
 				)}
 			</CollapsibleContent>
@@ -295,7 +308,8 @@ const LineView = ({ l, className }: { l: Line; className?: string }) => (
  * 收着的组标题下面露出来的一行（展开了藏起来）。在跑的子代理：开它的那个调用（ping 点、耗时），下面一行它在做什么；
  * 最后一步：在跑是蓝点带耗时，跑完了留着，成功绿点、失败红点（跑完的子代理也留着这一行）。点了看子代理的对话
  */
-function RowView({ r, onAgent }: { r: Row; onAgent?: (id: string) => void }) {
+function RowView({ r }: { r: Row }) {
+	const { onAgent } = useScope();
 	if (r.k === "more") return <div className="py-1 pl-5.5 text-xs text-muted-foreground group-data-[state=open]/stepbox:hidden">还有 {r.n} 个</div>;
 	const id = r.agent;
 	const sub = r.k === "sub";
@@ -333,23 +347,15 @@ const thoughts = new Map<string, string>();
  * 正在写的那段写进记录后换成了开头：流里看到的全文先留着，不缩回去。
  * 只有思考的一组，标题就是「思考」、ping 点也在标题上：这里只放文字
  */
-function Thought({ n, project, session, agent, live, bare }: { n: Extract<Node, { k: "thinking" }>; project: string; session: string; agent?: string; live: boolean; bare: boolean }) {
+function Thought({ n, live, bare }: { n: Extract<Node, { k: "thinking" }>; live: boolean; bare: boolean }) {
+	const { session, url } = useScope();
 	const at = `${session}/${n.uuid}`;
-	const [full, setFull] = useState(() => thoughts.get(at) ?? null);
 	const seen = useRef(n.text);
 	if (!n.cut) seen.current = n.text;
-	useEffect(() => {
-		if (!n.cut) return;
-		const hit = thoughts.get(at);
-		if (hit !== undefined) return void setFull(hit);
-		let gone = false;
-		api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/thinking/${n.uuid}${agent ? `?agent=${agent}` : ""}`).then((r) => {
-			thoughts.set(at, r.text);
-			if (!gone) setFull(r.text);
-		}, () => {});
-		return () => { gone = true; };
-	}, [n.cut, n.uuid, at, project, session, agent]);
-	const text = n.cut ? (full ?? seen.current) : n.text;
+	const hit = thoughts.get(at);
+	const { data } = useApi<{ text: string }>(n.cut && hit === undefined ? url(`thinking/${n.uuid}`) : null);
+	useEffect(() => { if (data) thoughts.set(at, data.text); }, [data, at]);
+	const text = n.cut ? (hit ?? data?.text ?? seen.current) : n.text;
 	const body = <span className="min-w-0 whitespace-pre-wrap break-words">{text.trim() || "思考"}</span>;
 	if (bare) return <div className="py-1 text-md leading-relaxed text-muted-foreground">{body}</div>;
 	return (
@@ -367,7 +373,8 @@ type Detail = { input: string; result: string | null; cut: boolean };
  * since：这一步正在执行（还没结果），从什么时候开始的。节点里的参数、结果只是预览，点开时拿完整的。
  * spawn：Agent 调用开出来的子代理；还在跑就带 ping 点、耗时，下面一行它在做什么，点了看它的对话
  */
-function ToolCall({ t, project, session, agent, onAgent, onFile, since: at, spawn }: { t: ToolNode; project: string; session: string; agent?: string; onAgent?: (id: string) => void; onFile?: OnFile; since?: number; spawn?: Spawn }) {
+function ToolCall({ t, since: at, spawn }: { t: ToolNode; since?: number; spawn?: Spawn }) {
+	const { url, onAgent, onFile } = useScope();
 	const since = at ?? (spawn?.running ? spawn.since : undefined);
 	const sub = t.agent ?? spawn?.agentId ?? null;
 	const I = toolIcon(t.name);
@@ -376,20 +383,13 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since: at, spaw
 	const diff = !!t.files?.length;
 	const [full, setFull] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
-	const [detail, setDetail] = useState<Detail | null>(null);
-	const done = !!t.result;
-	useEffect(() => {
-		// 正在写的（还没进记录）没得拿，就用流里的；点开时还在跑的，有了结果再拿一次
-		if (!open || t.uuid.startsWith("live:")) return;
-		let gone = false;
-		api<Detail>(`/api/sessions/${enc(project)}/${enc(session)}/tool/${t.id}${agent ? `?agent=${agent}` : ""}`).then((d) => { if (!gone) setDetail(d); }, () => {});
-		return () => { gone = true; };
-	}, [open, done, t.id, t.uuid, project, session, agent]);
-	const imgs = resultImages(t, project, session, agent);
+	// 正在写的（还没进记录）没得拿，就用流里的；点开时还在跑的，有了结果再拿一次
+	const { data: detail } = useApi<Detail>(open && !t.uuid.startsWith("live:") ? url(`tool/${t.id}`) : null, { again: !!t.result });
+	const imgs = resultImages(t, url);
 	// 只有图片的结果（读一张图）：文字部分就是「[图片]」，不用再显示
 	const onlyImages = imgs.length > 0 && !t.result?.text.replace(/\[图片\]/g, "").trim();
 	const more = () =>
-		api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/result/${t.id}${agent ? `?agent=${agent}` : ""}`).then(
+		api<{ text: string }>(url(`result/${t.id}`)).then(
 			(r) => setFull(r.text),
 			(e: Error) => toast.error(`没拿到完整结果：${e.message}`),
 		);
@@ -410,7 +410,7 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since: at, spaw
 						{diff ? <FileDiff className="size-3.5" /> : <FileText className="size-3.5" />}
 					</Button>
 				)}
-				<AgentButton id={sub} onAgent={onAgent} />
+				<AgentButton id={sub} />
 			</div>
 			{spawn?.running && spawn.latest && (
 				<button type="button" disabled={!sub || !onAgent} onClick={() => sub && onAgent?.(sub)} className="block w-full truncate pb-1 pl-5.5 text-left text-xs text-muted-foreground enabled:hover:text-foreground" title="看子代理的对话">

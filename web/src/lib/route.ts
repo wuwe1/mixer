@@ -73,6 +73,20 @@ export function useRoute(): Route {
 	return r;
 }
 
+const PANEL = "mixer:panel";
+/** 这台设备上次看的面板 tab：顶栏的开关打开它 */
+export const lastPanel = (): Panel => {
+	const v = localStorage.getItem(PANEL);
+	return v === "files" || v === "changes" ? v : "outline";
+};
+/** 打开面板的一个 tab，记下来下次开它 */
+export const openPanel = (v: Panel) => {
+	try { localStorage.setItem(PANEL, v); } catch {}
+	go({ panel: v });
+};
+/** 现在开着哪个面板：地址里没写时，宽屏开上次看的、窄屏不开 */
+export const panelOf = (r: Route, wide: boolean): Panel | null => (r.panel === "none" ? null : (r.panel ?? (wide ? lastPanel() : null)));
+
 /** 宽屏（≥1280px）：右边的面板常开 */
 export function useWide() {
 	const q = "(min-width: 1280px)";

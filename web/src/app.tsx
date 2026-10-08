@@ -8,11 +8,12 @@ import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/s
 import { FloatingApprovals } from "@/components/approvals";
 import { NewSession, ProjectHome } from "@/components/lazy";
 import { Placeholder } from "@/components/placeholder";
-import { lastPanel, openPanel, panelOf, SessionView } from "@/components/session";
-import { AppSidebar, projectName, sessionTitle, StatusIcon, statusLabel } from "@/components/side";
+import { SessionView } from "@/components/session";
+import { AppSidebar, projectName, StatusIcon, statusLabel } from "@/components/side";
+import { sessionTitle } from "@shared/api";
 import { useLive } from "@/lib/live";
 import { useBadge, usePresence } from "@/lib/push";
-import { go, openProject, openSession, useRoute, useWide } from "@/lib/route";
+import { go, lastPanel, openPanel, openProject, openSession, panelOf, useRoute, useWide } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 

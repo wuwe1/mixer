@@ -5,7 +5,7 @@
 import { closestCenter, DndContext, type DragEndEvent, type Modifier, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
+import { Folder, GitFork, GripVertical, Library, MoreHorizontal, SquarePen, WifiOff, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -26,7 +26,7 @@ import { openProject, openSession, type Route } from "@/lib/route";
 import { since } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Browse } from "./lazy";
-import { Placeholder } from "./placeholder";
+import { Chevron, Placeholder } from "./placeholder";
 import { UsageFooter } from "./usage";
 
 /** ok / failed 是一步工具调用跑完了：成功、失败 */
@@ -41,24 +41,9 @@ const STATUS_LABEL: Record<Exclude<Mark, null>, string> = { waiting: "待确认"
  */
 export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 	const icon =
-		s === "waiting" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full bg-waiting opacity-60" />
-				<span className="relative size-2 rounded-full bg-waiting" />
-			</span>
-		)
-		: s === "running" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full bg-unread opacity-60" />
-				<span className="relative size-2 rounded-full bg-unread" />
-			</span>
-		)
-		: s === "background" ? (
-			<span className="relative flex size-2">
-				<span className="absolute inset-0 animate-ping rounded-full border border-unread opacity-60" />
-				<span className="relative size-2 rounded-full border border-unread" />
-			</span>
-		)
+		s === "waiting" ? <Ping dot="bg-waiting" />
+		: s === "running" ? <Ping dot="bg-unread" />
+		: s === "background" ? <Ping dot="border border-unread" />
 		: s === "done" ? <span className="size-2 rounded-full bg-unread" />
 		: s === "error" || s === "failed" ? <span className="size-2 rounded-full bg-destructive" />
 		: s === "ok" ? <span className="size-2 rounded-full bg-success" />
@@ -70,10 +55,19 @@ export function StatusIcon({ s, className }: { s: Mark; className?: string }) {
 		</span>
 	);
 }
+/** 带一圈扩散的点：dot 是点的样子（实心的底色，或者空心的边框），扩散的那圈照它画 */
+function Ping({ dot }: { dot: string }) {
+	return (
+		<span className="relative flex size-2">
+			<span className={cn("absolute inset-0 animate-ping rounded-full opacity-60", dot)} />
+			<span className={cn("relative size-2 rounded-full", dot)} />
+		</span>
+	);
+}
+
 export const statusLabel = (s: Status) => (s ? STATUS_LABEL[s] : null);
 
 export const projectName = (p: { path: string | null; id: string }) => p.path?.split("/").pop() || p.id;
-export { sessionTitle };
 
 const OPEN_KEY = "mixer.open";
 function useOpenState() {
@@ -190,14 +184,14 @@ function SessionRow({ s, r, project, kid, onDelete }: { s: SessionMeta; r: Route
 
 /** 删掉一个会话：先问一句，说清楚会怎样、怎么找回（挪进废纸篓）。删的正开着就回到项目页 */
 function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route; onClose: () => void }) {
-	const [busy, setBusy] = useState(false);
+	const [deleting, setDeleting] = useState(false);
 	// 关上的动画里还显示刚才那个
 	const last = useRef(doomed);
 	if (doomed) last.current = doomed;
 	const shown = last.current;
 	const remove = async () => {
 		if (!doomed) return;
-		setBusy(true);
+		setDeleting(true);
 		try {
 			await api(`/api/sessions/${enc(doomed.project)}/${enc(doomed.s.id)}/delete`, {});
 			toast("已删除");
@@ -207,11 +201,11 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 			// 在跑、排队、待确认、终端里开着：服务端说明原因（409）
 			toast.error(e instanceof Error ? e.message : String(e));
 		} finally {
-			setBusy(false);
+			setDeleting(false);
 		}
 	};
 	return (
-		<AlertDialog open={!!doomed} onOpenChange={(o) => { if (!o && !busy) onClose(); }}>
+		<AlertDialog open={!!doomed} onOpenChange={(o) => { if (!o && !deleting) onClose(); }}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
 					<AlertDialogTitle>删除会话？</AlertDialogTitle>
@@ -221,10 +215,10 @@ function DeleteSession({ doomed, r, onClose }: { doomed: Doomed | null; r: Route
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+					<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
 					{/* 等删完再关：别让它自己关上 */}
-					<AlertDialogAction variant="destructive" disabled={busy} onClick={(e) => { e.preventDefault(); remove(); }}>
-						{busy && <Spinner />}删除
+					<AlertDialogAction variant="destructive" disabled={deleting} onClick={(e) => { e.preventDefault(); remove(); }}>
+						{deleting && <Spinner />}删除
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
@@ -243,8 +237,9 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	const [all, setAll] = useState(false);
 	const { listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: g.id });
 	const fams = useMemo(() => families(g.sessions), [g.sessions]);
-	const busy = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
-	const shown = all ? fams : fams.filter((f, i) => i < SHOWN || busy(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
+	// 有事的一家（待确认、在跑、后台任务、跑完没看）：不在前 SHOWN 个里也露出来；只是终端里开着的不算
+	const notable = (f: Family) => [f.head, ...f.kids].some((s) => status(s) && status(s) !== "terminal");
+	const shown = all ? fams : fams.filter((f, i) => i < SHOWN || notable(f) || [f.head, ...f.kids].some((s) => s.id === r.session));
 	const counts = useMemo(() => {
 		const c = { waiting: 0, running: 0, background: 0, done: 0, error: 0 };
 		for (const s of g.sessions) {
@@ -255,7 +250,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 	}, [g.sessions, status]);
 	return (
 		<div ref={setNodeRef} style={{ transform: CSS.Translate.toString(transform), transition }} className={cn(isDragging && "relative z-10 rounded-md bg-sidebar opacity-90 shadow-md")}>
-			<Collapsible open={open} onOpenChange={setOpen} className="group/collapsible">
+			<Collapsible open={open} onOpenChange={setOpen}>
 				<SidebarMenuItem>
 					{/* 菜单只挂在文件夹这一行上：挂在整个 item 上，长按里面的会话两个菜单都会开 */}
 					<ContextMenu onOpenChange={menu.onOpenChange}>
@@ -294,7 +289,7 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 					</DropdownMenu>
 					<CollapsibleTrigger asChild>
 						<SidebarMenuAction className={ACTION} aria-label={open ? "收起" : "展开"}>
-							<ChevronRight className="transition-transform group-data-[state=open]/collapsible:rotate-90" />
+							<Chevron open={open} className="text-current" />
 						</SidebarMenuAction>
 					</CollapsibleTrigger>
 					<CollapsibleContent>
@@ -307,12 +302,12 @@ function GroupItem({ g, r, open, setOpen, onDelete }: { g: Group; r: Route; open
 							))}
 							{!all && shown.length < fams.length && (
 								<SidebarMenuSubItem>
-									<SidebarMenuSubButton asChild className="h-7 w-full text-left text-xs text-muted-foreground">
+									<SidebarMenuSubButton asChild className="h-11 w-full text-left text-xs text-muted-foreground md:h-8">
 										<button type="button" onClick={() => setAll(true)}>还有 {fams.length - shown.length} 个</button>
 									</SidebarMenuSubButton>
 								</SidebarMenuSubItem>
 							)}
-							{fams.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">还没有会话：点文件夹开一个</p>}
+							{fams.length === 0 && <Placeholder text="还没有会话：点文件夹开一个" className="px-2 py-3" />}
 						</SidebarMenuSub>
 					</CollapsibleContent>
 				</SidebarMenuItem>
