@@ -8,6 +8,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import type { ModelInfo } from "../shared/model-info.ts";
+import { onLines, requests } from "./claude-io.ts";
 import { say } from "./log.ts";
 import * as state from "./state.ts";
 import * as terminals from "./terminals.ts";
@@ -46,52 +47,30 @@ export function fromInit(models: Raw[], firstSeen: Record<string, string>, now =
  * 它也在 ~/.claude/sessions 登记，记进 terminals.mine，不算「终端中打开」
  */
 export function control<K extends string>(reqs: Record<K, Record<string, unknown>>): Record<K, Promise<unknown>> {
-	const wait = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-	const out = {} as Record<K, Promise<unknown>>;
-	for (const id of Object.keys(reqs) as K[]) {
-		out[id] = new Promise((resolve, reject) => wait.set(id, { resolve, reject }));
-		out[id].catch(() => {}); // 没人等的失败不算没处理
-	}
-	const fail = (why: string) => {
-		for (const w of wait.values()) w.reject(new Error(why));
-		wait.clear();
-	};
 	const child = spawn("claude", ["-p", "--safe-mode", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], { cwd: homedir(), stdio: ["pipe", "pipe", "ignore"] });
 	const pid = child.pid;
 	if (pid) terminals.mine.add(pid);
-	const done = () => {
-		clearTimeout(timer);
+	child.stdin.on("error", () => {});
+	const io = requests((m) => child.stdin.write(`${JSON.stringify(m)}\n`));
+	onLines(child.stdout, (l) => {
+		try { io.reply(JSON.parse(l)); } catch {}
+	});
+	child.on("error", (e) => io.failAll(e));
+	child.on("close", () => {
+		if (pid) terminals.mine.delete(pid);
+		io.failAll(new Error("claude 退出了"));
+	});
+	// request_id 就用给的名字
+	const out = {} as Record<K, Promise<unknown>>;
+	for (const id of Object.keys(reqs) as K[]) {
+		out[id] = io.request(reqs[id], 30_000, id);
+		out[id].catch(() => {}); // 没人等的失败不算没处理
+	}
+	// 都有了回音（或者算失败了）就关
+	void Promise.allSettled(Object.values(out)).then(() => {
 		child.stdin.end();
 		child.kill();
-	};
-	const timer = setTimeout(() => { fail("30 秒没回"); done(); }, 30_000);
-	let buf = "";
-	child.stdout.setEncoding("utf8");
-	child.stdout.on("data", (c: string) => {
-		buf += c;
-		let i: number;
-		while ((i = buf.indexOf("\n")) >= 0) {
-			const l = buf.slice(0, i);
-			buf = buf.slice(i + 1);
-			let ev: { type?: string; response?: { subtype?: string; request_id?: string; error?: unknown; response?: unknown } };
-			try { ev = JSON.parse(l); } catch { continue; }
-			const id = ev.type === "control_response" ? ev.response?.request_id : undefined;
-			const w = id ? wait.get(id) : undefined;
-			if (!id || !w || !ev.response) continue;
-			wait.delete(id);
-			if (ev.response.subtype === "error") w.reject(new Error(String(ev.response.error ?? "出错了")));
-			else w.resolve(ev.response.response);
-			if (!wait.size) done();
-		}
 	});
-	child.stdin.on("error", () => {});
-	child.on("error", (e) => { clearTimeout(timer); fail(e.message); });
-	child.on("close", () => {
-		clearTimeout(timer);
-		if (pid) terminals.mine.delete(pid);
-		fail("claude 退出了");
-	});
-	for (const [id, request] of Object.entries(reqs)) child.stdin.write(`${JSON.stringify({ type: "control_request", request_id: id, request })}\n`);
 	return out;
 }
 

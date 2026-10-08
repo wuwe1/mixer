@@ -16,6 +16,7 @@
 // Claude 闲着、只是后台任务开着进程：不排队，直接写进去马上跑。
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { onLines, requests } from "./claude-io.ts";
 import { say } from "./log.ts";
 import * as models from "./models.ts";
 import { locate, version } from "./sessions.ts";
@@ -72,11 +73,10 @@ type Result = { error: boolean; message: string };
 type Cmd = { uuid: string; run: Live; started: boolean; result?: Result };
 /**
  * 服务端自己用的 claude 进程：permission / model 是现在用的（下一轮不一样就先发 control_request 换掉）；
- * spawns：task_started 记的（任务 id → 开它的工具调用、说明）；replies：发出去等回音的 control_request（request_id → 回调）；
+ * spawns：task_started 记的（任务 id → 开它的工具调用、说明）；io：发出去等回音的 control_request（claude-io.ts）；
  * cmds：写进去还没结束的消息（按写的顺序）；wake：通知叫醒的那一轮（没有消息），没有是 null
  */
-type Proc = Omit<Host, "tasks" | "turn"> & { tasks: Job[]; spawns: Map<string, Spawn>; replies: Map<string, Reply>; child: ChildProcessWithoutNullStreams; cwd: string; permission: string; model: string | null; effort: string | null; cmds: Cmd[]; wake: Live | null; gone?: boolean };
-type Reply = { ok: (r: Record<string, unknown>) => void; fail: (e: Error) => void };
+type Proc = Omit<Host, "tasks" | "turn"> & { tasks: Job[]; spawns: Map<string, Spawn>; io: ReturnType<typeof requests>; child: ChildProcessWithoutNullStreams; cwd: string; permission: string; model: string | null; effort: string | null; cmds: Cmd[]; wake: Live | null; gone?: boolean };
 const hosts = new Map<string, Proc>();
 const approvals = new Map<string, Asking>();
 const queue: Queued[] = [];
@@ -192,30 +192,19 @@ function launch(o: Params): Proc {
 	const child = spawn("claude", args, { cwd: o.cwd, env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" }, stdio: ["pipe", "pipe", "pipe"] });
 	// mixer 自己的 claude：它在 ~/.claude/sessions 的登记不算「在 mixer 外面开着」
 	if (child.pid) terminals.mine.add(child.pid);
-	const h: Proc = { id, project: o.project, session, tasks: [], spawns: new Map(), replies: new Map(), child, cwd: o.cwd, permission: o.permission, model: o.model, effort: o.effort, cmds: [], wake: null };
+	const h: Proc = { id, project: o.project, session, tasks: [], spawns: new Map(), io: requests((m) => write(h, m)), child, cwd: o.cwd, permission: o.permission, model: o.model, effort: o.effort, cmds: [], wake: null };
 	hosts.set(id, h);
 	// claude 一开始就退出了（参数不对、没登录）：stdin 写不进去是 EPIPE，结果看 close
 	child.stdin.on("error", () => {});
-	let buf = "";
-	// 按 utf8 解码再拼：一个汉字可能被切在两块之间
-	child.stdout.setEncoding("utf8");
-	child.stdout.on("data", (chunk: string) => {
-		buf += chunk;
-		let i: number;
-		while ((i = buf.indexOf("\n")) >= 0) {
-			line(h, buf.slice(0, i));
-			buf = buf.slice(i + 1);
-		}
-	});
+	// 输出读完时最后一行没有换行也算（在 close 之前）
+	onLines(child.stdout, (l) => line(h, l));
 	let err = "";
 	child.stderr.setEncoding("utf8");
 	child.stderr.on("data", (c: string) => { err = (err + c).slice(-4000); });
 	// 起不来（找不到 claude）：原因在 error 里
 	child.on("error", (e) => gone(h, `起不来 claude：${e.message}`));
-	// close：输出都读完了才算结束（exit 时 stdout 里可能还有没读的）；最后一行没有换行也算
+	// close：输出都读完了才算结束（exit 时 stdout 里可能还有没读的）
 	child.on("close", (code, signal) => {
-		line(h, buf);
-		buf = "";
 		gone(h, code === 0 ? null : err.trim() || `退出码 ${code ?? signal}`);
 	});
 	// 进程退了，输出却一直没关（被它起的后台进程拿着）：等 5 秒按退出算
@@ -268,7 +257,7 @@ function line(h: Proc, raw: string) {
 		return;
 	}
 	if (ev.type === "command_lifecycle") return lifecycle(h, ev);
-	if (ev.type === "control_response") return reply(h, ev);
+	if (ev.type === "control_response") return void h.io.reply(ev);
 	if (ev.type === "control_request") return asked(h, ev);
 	if (ev.type === "control_cancel_request") return withdrawn(h, ev);
 	// 没有消息在跑却有了主线的输出（子代理的带 parent_tool_use_id）：后台任务的通知叫醒了 Claude，另起一轮
@@ -393,8 +382,7 @@ function gone(h: Proc, error: string | null) {
 	emit("host", { id: h.id, gone: true });
 	// 它的确认请求作废（没人收了，不回）；等回音的 control_request 也不等了
 	for (const a of [...approvals.values()]) if (a.host === h) decide(a.id, { allow: false, message: "claude 退出了", cancelled: true });
-	for (const r of h.replies.values()) r.fail(new Error("claude 退出了"));
-	h.replies.clear();
+	h.io.failAll(new Error("claude 退出了"));
 	const left = [...h.cmds.map((c) => c.run), ...(h.wake ? [h.wake] : [])];
 	h.cmds = [];
 	h.wake = null;
@@ -417,26 +405,14 @@ export async function taskOutput(host: string, task: string) {
 	const h = hosts.get(host);
 	if (!h || h.gone || !(h.tasks.some((t) => t.id === task) || h.spawns.has(task))) return null;
 	try {
-		const r = await request(h, { subtype: "get_task_output", task_id: task });
+		// 10 秒没回、进程退了算问不到
+		const r = await h.io.request({ subtype: "get_task_output", task_id: task }, 10_000);
 		const text = String(r.output ?? "");
 		const cut = r.truncated === true;
 		return { text: cut ? text.slice(text.indexOf("\n") + 1) : text, cut };
 	} catch {
 		return null;
 	}
-}
-
-/** 发一个要回音的 control_request，等它的 control_response（10 秒没回、进程退了算失败） */
-function request(h: Proc, req: Record<string, unknown>) {
-	return new Promise<Record<string, unknown>>((ok, fail) => {
-		const id = randomUUID();
-		const timer = setTimeout(() => {
-			h.replies.delete(id);
-			fail(new Error("claude 10 秒没回"));
-		}, 10_000).unref();
-		h.replies.set(id, { ok: (r) => { clearTimeout(timer); ok(r); }, fail: (e) => { clearTimeout(timer); fail(e); } });
-		write(h, { type: "control_request", request_id: id, request: req });
-	});
 }
 
 /**
@@ -459,16 +435,6 @@ const respond = (h: Proc, req: string, response: Record<string, unknown>) => wri
 /** control_cancel_request：命令行不等这个确认了（这一轮被停了、工具调用取消了）：卡片收掉，不回 */
 function withdrawn(h: Proc, ev: Record<string, unknown>) {
 	for (const a of [...approvals.values()]) if (a.host === h && a.req === ev.request_id) decide(a.id, { allow: false, message: "claude 不等了", cancelled: true });
-}
-
-/** control_response：{response: {subtype: success / error, request_id, response / error}}。没人等的（set_model 这些发了不等的）不管 */
-function reply(h: Proc, ev: Record<string, unknown>) {
-	const r = (ev.response ?? {}) as { subtype?: string; request_id?: string; response?: Record<string, unknown>; error?: unknown };
-	const w = r.request_id ? h.replies.get(r.request_id) : undefined;
-	if (!w || !r.request_id) return;
-	h.replies.delete(r.request_id);
-	if (r.subtype === "success") w.ok(r.response ?? {});
-	else w.fail(new Error(String(r.error ?? "出错了")));
 }
 
 /** 一次运行的样子 */
