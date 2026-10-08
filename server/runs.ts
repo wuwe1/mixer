@@ -544,7 +544,7 @@ function finish(run: Live, status: "done" | "error" | "stopped", error: string |
 	if (run.status === "error" && run.mode !== "resume" && none) {
 		if (state.forget(run.session)) emit("workspace", null);
 	} else {
-		state.finished(run.project, run.session, run.status === "error");
+		state.finished(run.session, run.status === "error");
 		// 侧栏那一行的「跑完没看」变了（main.ts 算好那一行推 session）
 		emit("session", { project: run.project, id: run.session });
 	}

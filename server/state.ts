@@ -1,5 +1,5 @@
-// mixer 自己记的状态（data/state.json，不进 git；MIXER_DATA 可改目录）：每个会话在 mixer 里最后一次跑完的时间、人最后一次打开它的时间。
-// 跑完的时间晚于打开的时间，就是「跑完了，还没看」。还有工作区：侧栏里放了哪些文件夹（按人拖的顺序）、哪些会话。
+// mixer 自己记的状态（data/state.json，不进 git；MIXER_DATA 可改目录）：每个会话一份（sessions）：在 mixer 里最后一次跑完的时间、人最后一次打开它的时间、
+// 选的模型和权限、从哪分叉的。跑完的时间晚于打开的时间，就是「跑完了，还没看」。还有工作区：侧栏里放了哪些文件夹（按人拖的顺序）、哪些会话。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Account } from "../shared/usage.ts";
@@ -7,14 +7,38 @@ import { DATA } from "./access.ts";
 
 const FILE = join(DATA, "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; permissions: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>>; forks: Record<string, Fork> };
-let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, permissions: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {}, forks: {} };
-// 老的 state.json 里的 sizes（以前按 mixer 放手时的文件大小猜「终端中打开」）、Codex 的用量不要了
+/**
+ * 一个会话 mixer 记的：finished 在 mixer 里最后一次跑完（出没出错）、seen 人最后一次打开它；
+ * model / effort / permission 在 mixer 里给它选的（没有是默认、自动）；fork 在 mixer 里从哪分叉出来的。删会话时整份一起忘掉
+ */
+type Session = { finished?: { at: string; error: boolean }; seen?: string; model?: string; effort?: string; permission?: string; fork?: Fork };
+type State = { sessions: Record<string, Session>; windows: Record<string, number>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; modelList: ModelList | null; modelsSeen: Record<string, Record<string, string>> };
+let state: State = { sessions: {}, windows: {}, caps: {}, usage: {}, workspace: null, modelList: null, modelsSeen: {} };
 try {
-	const { sizes: _old, ...saved } = JSON.parse(readFileSync(FILE, "utf8"));
-	state = { ...state, ...saved };
+	state = { ...state, ...migrate(JSON.parse(readFileSync(FILE, "utf8"))) };
+	// Codex 的用量不要了
 	delete state.usage.codex;
 } catch {}
+
+type Old = Record<string, any>; // biome-ignore lint: 读进来的，可能是老样子
+/**
+ * 老的 state.json：每个会话的东西分在几张表里（finished、seen、models、efforts、permissions、forks），并进 sessions；claudeModels 改叫 modelList。
+ * 以前按 mixer 放手时的文件大小猜「终端中打开」的 sizes 不要了。老的键下次存的时候就没了
+ */
+function migrate(o: Old): Partial<State> {
+	const { sizes: _s, finished, seen, models, efforts, permissions, forks, claudeModels, ...rest } = o;
+	const sessions: Record<string, Session> = { ...rest.sessions };
+	const put = (table: Old | undefined, f: (x: Session, v: Old[string]) => void) => {
+		for (const [id, v] of Object.entries(table ?? {})) f((sessions[id] ??= {}), v);
+	};
+	put(finished, (x, v) => { x.finished = { at: v.at, error: !!v.error }; });
+	put(seen, (x, v) => { x.seen = v; });
+	put(models, (x, v) => { x.model = v; });
+	put(efforts, (x, v) => { x.effort = v; });
+	put(permissions, (x, v) => { x.permission = v; });
+	put(forks, (x, v) => { x.fork = v; });
+	return { ...rest, sessions, modelList: rest.modelList ?? claudeModels ?? null };
+}
 
 function save() {
 	mkdirSync(dirname(FILE), { recursive: true });
@@ -22,32 +46,34 @@ function save() {
 	renameSync(`${FILE}.tmp`, FILE);
 }
 
-export function finished(project: string, session: string, error: boolean) {
-	state.finished[session] = { project, at: new Date().toISOString(), error };
+/** 这个会话的那一份，没有就建一份（要往里写的时候用） */
+const of = (session: string) => (state.sessions[session] ??= {});
+
+export function finished(session: string, error: boolean) {
+	of(session).finished = { at: new Date().toISOString(), error };
 	save();
 }
 
 export function seen(session: string) {
-	state.seen[session] = new Date().toISOString();
+	of(session).seen = new Date().toISOString();
 	save();
 }
 
 /** 在 mixer 里分叉出来的会话从哪来：原会话、分叉点（null 是从最新处）。分叉时 mixer 自己定的新会话 id，当场记下 */
 export type Fork = { session: string; at: string | null };
 export function fork(child: string, from: Fork) {
-	const old = state.forks[child];
+	const old = forkOf(child);
 	if (old?.session === from.session && old.at === from.at) return;
-	state.forks[child] = { session: from.session, at: from.at };
+	of(child).fork = { session: from.session, at: from.at };
 	save();
 }
 /** 不是在 mixer 里分叉出来的：null */
-export const forkOf = (id: string): Fork | null => state.forks[id] ?? null;
+export const forkOf = (id: string): Fork | null => state.sessions[id]?.fork ?? null;
 
 /** 跑完了还没看：done / error；看过了或没在 mixer 里跑过：null */
 export function unread(session: string): "done" | "error" | null {
-	const f = state.finished[session];
+	const { finished: f, seen: s } = state.sessions[session] ?? {};
 	if (!f) return null;
-	const s = state.seen[session];
 	if (s && s >= f.at) return null;
 	return f.error ? "error" : "done";
 }
@@ -63,26 +89,27 @@ export const windows = () => state.windows;
 /** 在 mixer 里给会话选过的模型（别名）、思考强度、权限：之后续接都用它，直到再换。选回默认（null、自动）就忘掉 */
 export function chooseModel(session: string, model: string | null, effort: string | null, permission: string) {
 	const p = permission === "auto" ? null : permission;
-	if ((state.models[session] ?? null) === model && (state.efforts[session] ?? null) === effort && (state.permissions[session] ?? null) === p) return;
-	for (const [m, v] of [[state.models, model], [state.efforts, effort], [state.permissions, p]] as const) {
-		if (v) m[session] = v;
-		else delete m[session];
+	if (chosenModel(session) === model && chosenEffort(session) === effort && (state.sessions[session]?.permission ?? null) === p) return;
+	const x = of(session);
+	for (const [k, v] of [["model", model], ["effort", effort], ["permission", p]] as const) {
+		if (v) x[k] = v;
+		else delete x[k];
 	}
 	save();
 }
 /** 只换权限：批准了计划，命令行自己切出了计划模式（runs.ts 看 status 事件的 permissionMode） */
 export function choosePermission(session: string, permission: string) {
-	chooseModel(session, state.models[session] ?? null, state.efforts[session] ?? null, permission);
+	chooseModel(session, chosenModel(session), chosenEffort(session), permission);
 }
-export const chosenModel = (session: string) => state.models[session] ?? null;
-export const chosenEffort = (session: string) => state.efforts[session] ?? null;
-export const chosenPermission = (session: string) => state.permissions[session] ?? "auto";
+export const chosenModel = (session: string) => state.sessions[session]?.model ?? null;
+export const chosenEffort = (session: string) => state.sessions[session]?.effort ?? null;
+export const chosenPermission = (session: string) => state.sessions[session]?.permission ?? "auto";
 
 /** Claude 能选的模型（models.ts 问命令行的原样存着），重启后马上有；version 是读的时候命令行的版本 */
-type ClaudeModels = { at: string; version: string | null; models: unknown[] };
-export const claudeModels = () => state.claudeModels;
-export function setClaudeModels(c: ClaudeModels) {
-	state.claudeModels = c;
+type ModelList = { at: string; version: string | null; models: unknown[] };
+export const modelList = () => state.modelList;
+export function setModelList(c: ModelList) {
+	state.modelList = c;
 	save();
 }
 /** 每个型号第一次见到的时间（按 agent 分开）：头一回读的那批记成很早以前，不算新 */
@@ -149,17 +176,12 @@ export function removeFromWorkspace(project: string, session?: string | null) {
 	setWorkspace(w);
 	return true;
 }
-/** 会话删掉了：移出工作区，跑完没看、看过、选过的模型、从哪分叉的都忘掉。返回工作区变了没有 */
+/** 会话删掉了：移出工作区，mixer 给它记的（跑完没看、看过、选过的模型、从哪分叉的）整份忘掉。返回工作区变了没有 */
 export function forget(session: string) {
 	const w = state.workspace;
 	const inside = !!w && session in w.sessions;
 	if (w && inside) delete w.sessions[session];
-	delete state.finished[session];
-	delete state.seen[session];
-	delete state.models[session];
-	delete state.efforts[session];
-	delete state.permissions[session];
-	delete state.forks[session];
+	delete state.sessions[session];
 	save();
 	return inside;
 }
@@ -173,5 +195,5 @@ export function orderWorkspace(ids: string[]) {
 	setWorkspace(w);
 	return true;
 }
-/** 在 mixer 里跑完过、还没看的会话（建工作区时放进去） */
-export const unreadSessions = () => Object.entries(state.finished).filter(([id]) => unread(id)).sort((a, b) => b[1].at.localeCompare(a[1].at)).map(([id, f]) => ({ id, project: f.project }));
+/** 在 mixer 里跑完过、还没看的会话（主屏幕图标的角标） */
+export const unreadSessions = () => Object.keys(state.sessions).filter((id) => unread(id));

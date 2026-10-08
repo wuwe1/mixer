@@ -104,7 +104,7 @@ export function refresh(): Promise<ModelInfo[]> {
 		const models = ((await r.models) as { models?: unknown } | null)?.models;
 		if (!Array.isArray(models)) throw new Error("回的没有 models");
 		state.sawModels("claude", models.map((m: Raw) => m.resolvedModel).filter((x): x is string => typeof x === "string"));
-		state.setClaudeModels({ at: new Date().toISOString(), version: version ?? state.claudeModels()?.version ?? null, models });
+		state.setModelList({ at: new Date().toISOString(), version: version ?? state.modelList()?.version ?? null, models });
 		return fromInit(models, state.modelsSeen("claude"));
 	})().finally(() => { reading = null; });
 	return reading;
@@ -124,12 +124,12 @@ let version: string | null = null;
 export function sawVersion(v: unknown) {
 	if (typeof v !== "string" || v === version) return;
 	version = v;
-	if (state.claudeModels()?.version !== v) reread();
+	if (state.modelList()?.version !== v) reread();
 }
 
 /** Claude 的：有存着的先给（旧了顺手重读），一次都没读过就等它读完 */
 export async function claude(): Promise<ModelInfo[]> {
-	const c = state.claudeModels();
+	const c = state.modelList();
 	if (!c) return refresh();
 	if (Date.now() - Date.parse(c.at) > 600_000) reread();
 	return fromInit(c.models as Raw[], state.modelsSeen("claude"));

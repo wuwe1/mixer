@@ -86,7 +86,7 @@ export async function notify(m: Message) {
 /** 角标：待确认的 + 工作区里跑完没看的 */
 function badge() {
 	const ws = state.workspace()?.sessions ?? {};
-	return runs.pending().length + state.unreadSessions().filter((s) => ws[s.id]).length;
+	return runs.pending().length + state.unreadSessions().filter((id) => ws[id]).length;
 }
 
 async function title(project: string, session: string) {

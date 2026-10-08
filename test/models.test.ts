@@ -54,7 +54,7 @@ test("第一次：等命令行回，默认在第一个，别名和固定版本�
 	]);
 	assert.deepEqual(list[1].efforts, EFFORTS);
 	assert.deepEqual(list[2].efforts, []);
-	assert.equal(saved().claudeModels.models.length, 4);
+	assert.equal(saved().modelList.models.length, 4);
 	// 旧版命令行（get_usage 回 error）：模型照读，用量不记
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(saved().usage?.claude, undefined);

@@ -36,7 +36,7 @@ test("Claude：jsonl 和旁边的文件夹挪进废纸篓，写下原来的位�
 	const file = claude(id, "改一下: 登录/注册");
 	await parse(file);
 	state.addToWorkspace(PROJECT, "/tmp/demo", id);
-	state.finished(PROJECT, id, false);
+	state.finished(id, false);
 	assert.equal(state.unread(id), "done");
 	await trash.remove(PROJECT, id);
 	assert.equal(existsSync(file), false);
