@@ -55,8 +55,11 @@ export type Node =
 	/** 记录里的思考只给开头（cut 时全文点开再拿 /thinking/<uuid>）；正在写的（流里的）是全文 */
 	| (Base & { k: "thinking"; text: string; cut?: boolean; ctx?: Ctx; key?: string })
 	| ToolNode
-	/** summary 离开时的小结；compact 上下文压缩（detail 是压缩前的摘要）；info 系统提示；task 后台任务的通知（status、detail 是结果）；agent 子代理的回报。agent：对应的子代理（有它的记录才给） */
-	| (Base & { k: "event"; kind: "summary" | "compact" | "info" | "task" | "agent"; text: string; detail?: string; status?: string; agent?: string });
+	/**
+	 * summary 离开时的小结；compact 上下文压缩（detail 是压缩前的摘要）；info 系统提示；task 后台任务的通知（status、detail 是结果）；agent 子代理的回报；
+	 * error 这一轮出错了（命令行合成的「API Error: …」）；retry 连不上、正在重试（第几次，只在它是最后一条、还在跑时显示）。agent：对应的子代理（有它的记录才给）
+	 */
+	| (Base & { k: "event"; kind: "summary" | "compact" | "info" | "task" | "agent" | "error" | "retry"; text: string; detail?: string; status?: string; agent?: string });
 /**
  * windows：各模型的上下文窗口大小（mixer 跑过才知道）。
  * version：下次带着它来拉（?since=），只给之后新建、改过的节点（delta）。

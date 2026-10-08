@@ -8,6 +8,7 @@ import { toast } from "@/lib/toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Spinner } from "@/components/ui/spinner";
 import type { Spawn } from "@/lib/agents";
 import { api, enc, type Node, type ToolNode } from "@shared/api";
 import { exposed, type Line, type Now, type Row, toolName } from "@/lib/steps";
@@ -119,6 +120,20 @@ const AgentButton = ({ id, onAgent, className }: { id?: string | null; onAgent?:
 export const EventLine = memo(function EventLine({ n, onAgent }: { n: Ev; onAgent?: (id: string) => void }) {
 	if (n.kind === "task") return <TaskNotice n={n} onAgent={onAgent} />;
 	if (n.kind === "agent") return <AgentReport n={n} onAgent={onAgent} />;
+	if (n.kind === "error")
+		return (
+			<div id={`n-${n.uuid}`} className="flex items-start gap-2 rounded-md border border-destructive/30 px-3 py-2 text-xs text-destructive">
+				<TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+				<span className="min-w-0 flex-1 break-words">出错了：{n.text}</span>
+			</div>
+		);
+	if (n.kind === "retry")
+		return (
+			<div id={`n-${n.uuid}`} className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+				<Spinner />
+				<span className="min-w-0 flex-1 break-words">{n.text}</span>
+			</div>
+		);
 	const I = n.kind === "compact" ? Layers : n.kind === "info" ? Info : null;
 	const line = (
 		<>

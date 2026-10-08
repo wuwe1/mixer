@@ -410,3 +410,22 @@ test("leaf：并行的工具调用是一体；leafUuid 指着后写的附带记�
 	appendFileSync(file, said("z1", "att9", "推好了") + line({ type: "attachment", uuid: "att9", parentUuid: "r3", timestamp: new Date().toISOString(), attachment: { type: "x" } }) + line({ type: "last-prompt", leafUuid: "att9", sessionId: id }));
 	assert.equal((await session(P, id)).leaf, "z1");
 });
+
+test("命令行自己的出错（isApiErrorMessage）画成出错，不当 Claude 的回复；重试的每一次是 retry（带第几次）", async () => {
+	const P = "-tmp-apierr";
+	const dir = join(tmp, ".claude", "projects", P);
+	mkdirSync(dir, { recursive: true });
+	const id = sid(7);
+	const err = { message: "Connection error.", formatted: "Connection dropped (ECONNRESET)" };
+	writeFileSync(
+		join(dir, `${id}.jsonl`),
+		user("e1", null, "问") +
+			line({ type: "system", subtype: "api_error", level: "error", error: err, retryInMs: 1000, retryAttempt: 1, maxRetries: 10, uuid: "e2", parentUuid: "e1", timestamp: "2026-10-08T07:02:24.433Z", sessionId: id }) +
+			line({ type: "assistant", uuid: "e3", parentUuid: "e2", timestamp: "2026-10-08T07:08:02.575Z", isApiErrorMessage: true, error: "server_error", message: { id: "m-err", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "API Error: Connection dropped (ECONNRESET)" }] }, sessionId: id }),
+	);
+	const s = await session(P, id);
+	const [retry, error] = s.nodes.slice(-2);
+	assert.deepEqual([retry.k, "kind" in retry && retry.kind, "text" in retry && retry.text], ["event", "retry", "Connection dropped (ECONNRESET)，正在重试（第 1 / 10 次）"]);
+	assert.deepEqual([error.k, "kind" in error && error.kind, "text" in error && error.text], ["event", "error", "Connection dropped (ECONNRESET)"]);
+	assert.equal(s.nodes.some((n) => n.k === "assistant"), false);
+});

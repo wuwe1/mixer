@@ -489,7 +489,9 @@ async function read(file: string): Promise<Parsed> {
 		} else if (d.type === "assistant" && Array.isArray(c)) {
 			// 一条 assistant 记录一个内容块
 			const b = c[0];
-			if (b?.type === "text" && b.text?.trim()) n = { k: "assistant", ...base(d), text: b.text };
+			// 命令行自己合成的出错消息（isApiErrorMessage，模型是 <synthetic>）：不是 Claude 的回复，画成出错
+			if (d.isApiErrorMessage && b?.type === "text") n = { k: "event", ...base(d), kind: "error", text: String(b.text ?? "").replace(/^API Error:\s*/, "") || "出错了" };
+			else if (b?.type === "text" && b.text?.trim()) n = { k: "assistant", ...base(d), text: b.text };
 			else if (b?.type === "thinking" && b.thinking?.trim()) {
 				const t = cut(b.thinking, BRIEF_THOUGHT);
 				if (t.cut) s.thoughts.set(d.uuid, b.thinking);
@@ -517,10 +519,10 @@ async function read(file: string): Promise<Parsed> {
 			if (mid) s.mids.set(d.uuid, mid);
 			const no = typeof d.apiBlockIndex === "number" ? d.apiBlockIndex : (s.blockNo.get(mid) ?? 0);
 			s.blockNo.set(mid, no + 1);
-			if (n && mid) n.key = `${mid}:${no}`;
+			if (n && n.k !== "event" && mid) n.key = `${mid}:${no}`;
 			const u = d.message?.usage;
 			const used = (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0);
-			if (n && used > 0 && typeof d.message.model === "string" && d.message.model !== "<synthetic>") n.ctx = { used, model: d.message.model };
+			if (n && n.k !== "event" && used > 0 && typeof d.message.model === "string" && d.message.model !== "<synthetic>") n.ctx = { used, model: d.message.model };
 		} else if (d.type === "system") {
 			if (d.subtype === "away_summary" && d.content) n = { k: "event", ...base(d), kind: "summary", text: String(d.content) };
 			else if (d.subtype === "compact_boundary") {
@@ -528,6 +530,11 @@ async function read(file: string): Promise<Parsed> {
 				const how = m ? `（${m.trigger === "auto" ? "自动" : "手动"}${m.preTokens && m.postTokens ? ` · ${wan(m.preTokens)} → ${wan(m.postTokens)} token` : ""}）` : "";
 				n = s.compact = { k: "event", ...base(d), kind: "compact", text: `上下文已压缩${how}` };
 			} else if (d.subtype === "informational" && d.content) n = { k: "event", ...base(d), kind: "info", text: String(d.content) };
+			// 连不上、过载：命令行自己隔一会儿重试，每次写一条（一轮可能重试十几分钟）
+			else if (d.subtype === "api_error") {
+				const why = String(d.error?.formatted ?? d.error?.message ?? "连不上");
+				n = { k: "event", ...base(d), kind: "retry", text: `${why}，正在重试${typeof d.retryAttempt === "number" ? `（第 ${d.retryAttempt}${typeof d.maxRetries === "number" ? ` / ${d.maxRetries}` : ""} 次）` : ""}` };
+			}
 		} else if (d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.prompt) {
 			// 跑的过程中插进来的：可能是人在终端里打的，也可能是任务通知、子代理的回报
 			const t = String(d.attachment.prompt);

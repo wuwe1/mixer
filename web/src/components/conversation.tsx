@@ -182,14 +182,15 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 						) : b.n.k === "assistant" ? (
 							<AssistantMessage n={b.n} spent={spent.get(b.n.uuid)} onFork={isLive(b.n) ? undefined : forkReply} last={b === tail} />
 						) : b.n.k === "event" ? (
-							<EventLine n={b.n} onAgent={setAgent} />
+							// 正在重试的那行只在它是最后一条、还在跑时显示（重试过去了、跑完了就不用看了）
+							b.n.kind === "retry" && !(b === tail && busy) ? null : <EventLine n={b.n} onAgent={setAgent} />
 						) : null}
 					</div>
 				);
 			})}
 			{idle && <AliveDot />}
 			<QueuedMessages session={session} />
-			<LastError project={project} session={session} />
+			{!busy && <LastError project={project} session={session} last={w.path[w.path.length - 1]} choice={{ permission: chosenPermission, model: chosen, effort: chosenEffort }} />}
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
@@ -274,32 +275,39 @@ function VersionSwitch({ v }: { v: { options: Node[]; index: number; to: (string
 }
 
 /**
- * 这个会话最近一次运行出错了（限流、过载、进程挂了）：对话末尾写明原因，「重试」续接一句「继续」（权限、模型照那一次的）。
- * 之后又跑了（不管成没成）就不显示
+ * 最后出错了：对话末尾「重试」，续接一句「继续」（权限、模型、思考强度照这个会话选的）。两种来路：
+ * 记录里最后一条是出错（命令行合成的 API Error：终端里跑的、服务重启过的也认得），出错那行已经画了，这里只给按钮；
+ * mixer 里最近一次运行出错、记录里没有（命令行没接这条、进程挂了），这里写明原因。之后又写了别的就不显示
  */
-function LastError({ project, session }: { project: string; session: string }) {
+function LastError({ project, session, last, choice }: { project: string; session: string; last: Node | undefined; choice: { permission: string; model: string | null; effort: string | null } }) {
 	const { runs, follow } = useLive();
 	const [busy, setBusy] = useState(false);
-	const last = runs.find((r) => r.session === session);
-	if (!last || last.status !== "error") return null;
+	const run = runs.find((r) => r.session === session);
+	const inRecord = last?.k === "event" && last.kind === "error";
+	const fromRun = run?.status === "error" && run.ended && (!last || Date.parse(run.ended) >= Date.parse(last.ts)) ? run : null;
+	if (!inRecord && !fromRun) return null;
 	const retry = async () => {
 		setBusy(true);
 		try {
-			await start({ project, session, mode: "resume", prompt: "继续", uuid: crypto.randomUUID(), permission: last.permission, model: last.model, effort: last.effort }, follow);
+			await start({ project, session, mode: "resume", prompt: "继续", uuid: crypto.randomUUID(), permission: choice.permission, model: choice.model, effort: choice.effort }, follow);
 		} catch (e) {
 			toast.error(`没发出去：${e instanceof Error ? e.message : String(e)}`);
 		} finally {
 			setBusy(false);
 		}
 	};
+	const button = (
+		<Button variant="outline" size="xs" className="shrink-0" disabled={busy} onClick={retry}>
+			{busy ? <Spinner /> : <RotateCw />}
+			重试
+		</Button>
+	);
+	if (inRecord) return <div className="-mt-2 flex justify-end">{button}</div>;
 	return (
 		<div className="flex items-start gap-2 rounded-md border border-destructive/30 px-3 py-2 text-xs">
 			<TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" />
-			<span className="min-w-0 flex-1 break-words text-destructive">出错了：{last.error || "不知道为什么"}</span>
-			<Button variant="outline" size="xs" className="shrink-0" disabled={busy} onClick={retry}>
-				{busy ? <Spinner /> : <RotateCw />}
-				重试
-			</Button>
+			<span className="min-w-0 flex-1 break-words text-destructive">出错了：{fromRun?.error || "不知道为什么"}</span>
+			{button}
 		</div>
 	);
 }
