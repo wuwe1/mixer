@@ -6,6 +6,7 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api, enc, type Host, type Task } from "@shared/api";
+import { useApi } from "@/lib/use-api";
 import { CodeBlock, Elapsed } from "./message";
 import { Chevron } from "./placeholder";
 import { Popsheet } from "./popsheet";
@@ -53,18 +54,10 @@ function TaskList({ h }: { h: Host }) {
 /** 一个后台任务：› 展开输出（后台命令、Monitor 才能展开：问 claude 要最后 8KB）、类型图标、说明、跑了多久、停止 */
 function TaskRow({ host, t }: { host: string; t: Task }) {
 	const [open, setOpen] = useState(false);
-	const [out, setOut] = useState<{ text: string; cut: boolean } | null>(null);
+	const { data: out } = useApi<{ text: string; cut: boolean }>(open ? `/api/hosts/${enc(host)}/tasks/${enc(t.id)}/output` : null, { poll: 2000 });
 	const [stopping, setStopping] = useState(false);
 	const pre = useRef<HTMLPreElement>(null);
 	const k = kind(t);
-	useEffect(() => {
-		if (!open) return;
-		let alive = true;
-		const get = () => api<{ text: string; cut: boolean }>(`/api/hosts/${enc(host)}/tasks/${enc(t.id)}/output`).then((o) => { if (alive) setOut(o); }, () => {});
-		get();
-		const i = setInterval(get, 2000);
-		return () => { alive = false; clearInterval(i); };
-	}, [open, host, t.id]);
 	// 新的输出在最下面：跟着滚到底
 	useEffect(() => {
 		const el = pre.current;

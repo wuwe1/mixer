@@ -13,6 +13,7 @@ import type { Spawn } from "@/lib/agents";
 import { api, enc, type Node, type ToolNode } from "@shared/api";
 import { exposed, type Line, type Now, type Row, toolName } from "@/lib/steps";
 import { clock, took } from "@/lib/time";
+import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { Images } from "./lightbox";
 import { Markdown } from "./markdown";
@@ -335,21 +336,12 @@ const thoughts = new Map<string, string>();
  */
 function Thought({ n, project, session, agent, live, bare }: { n: Extract<Node, { k: "thinking" }>; project: string; session: string; agent?: string; live: boolean; bare: boolean }) {
 	const at = `${session}/${n.uuid}`;
-	const [full, setFull] = useState(() => thoughts.get(at) ?? null);
 	const seen = useRef(n.text);
 	if (!n.cut) seen.current = n.text;
-	useEffect(() => {
-		if (!n.cut) return;
-		const hit = thoughts.get(at);
-		if (hit !== undefined) return void setFull(hit);
-		let gone = false;
-		api<{ text: string }>(`/api/sessions/${enc(project)}/${enc(session)}/thinking/${n.uuid}${agent ? `?agent=${agent}` : ""}`).then((r) => {
-			thoughts.set(at, r.text);
-			if (!gone) setFull(r.text);
-		}, () => {});
-		return () => { gone = true; };
-	}, [n.cut, n.uuid, at, project, session, agent]);
-	const text = n.cut ? (full ?? seen.current) : n.text;
+	const hit = thoughts.get(at);
+	const { data } = useApi<{ text: string }>(n.cut && hit === undefined ? `/api/sessions/${enc(project)}/${enc(session)}/thinking/${n.uuid}${agent ? `?agent=${agent}` : ""}` : null);
+	useEffect(() => { if (data) thoughts.set(at, data.text); }, [data, at]);
+	const text = n.cut ? (hit ?? data?.text ?? seen.current) : n.text;
 	const body = <span className="min-w-0 whitespace-pre-wrap break-words">{text.trim() || "思考"}</span>;
 	if (bare) return <div className="py-1 text-md leading-relaxed text-muted-foreground">{body}</div>;
 	return (
@@ -376,15 +368,8 @@ function ToolCall({ t, project, session, agent, onAgent, onFile, since: at, spaw
 	const diff = !!t.files?.length;
 	const [full, setFull] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
-	const [detail, setDetail] = useState<Detail | null>(null);
-	const done = !!t.result;
-	useEffect(() => {
-		// 正在写的（还没进记录）没得拿，就用流里的；点开时还在跑的，有了结果再拿一次
-		if (!open || t.uuid.startsWith("live:")) return;
-		let gone = false;
-		api<Detail>(`/api/sessions/${enc(project)}/${enc(session)}/tool/${t.id}${agent ? `?agent=${agent}` : ""}`).then((d) => { if (!gone) setDetail(d); }, () => {});
-		return () => { gone = true; };
-	}, [open, done, t.id, t.uuid, project, session, agent]);
+	// 正在写的（还没进记录）没得拿，就用流里的；点开时还在跑的，有了结果再拿一次
+	const { data: detail } = useApi<Detail>(open && !t.uuid.startsWith("live:") ? `/api/sessions/${enc(project)}/${enc(session)}/tool/${t.id}${agent ? `?agent=${agent}` : ""}` : null, { again: !!t.result });
 	const imgs = resultImages(t, project, session, agent);
 	// 只有图片的结果（读一张图）：文字部分就是「[图片]」，不用再显示
 	const onlyImages = imgs.length > 0 && !t.result?.text.replace(/\[图片\]/g, "").trim();

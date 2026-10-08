@@ -3,16 +3,17 @@
 // 文件那行就是它 diff 的标题（展开时贴在顶上）：状态字母、路径（文件名突出）、加减了几行。提交展开是说明和它改的文件。
 // 第一次打开时，主要那一节改得不多（≤ 5 个文件、每个 ≤ 200 行）就直接把 diff 摊开，不用一个个点。
 import { ChevronsDownUp, ChevronsUpDown, FileText, GitBranch } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, type Change, type Commit, enc, type Status } from "@shared/api";
 import { type FileDiff, parseDiff } from "@/lib/diff";
 import { useEvent } from "@/lib/events";
+import { useApi } from "@/lib/use-api";
 import { go } from "@/lib/route";
 import { clock, since } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { Hunks, Note } from "./diff";
+import { Hunks, Note, useDiff } from "./diff";
 import { Chevron, Placeholder } from "./placeholder";
 
 const KIND: Record<string, { letter: string; label: string; cls: string }> = {
@@ -83,16 +84,7 @@ function FileRow({ code, path, add, del, open, onToggle, indent, children }: { c
 
 /** 未提交的一个文件：展开时取它的 diff；状态里它这一条变了（状态、加减行数）再取一次，取到之前先显示旧的 */
 function WorkFile({ project, c, open, onToggle }: { project: string; c: Change; open: boolean; onToggle: () => void }) {
-	const [d, setD] = useState<FileDiff | string | null>(null);
-	useEffect(() => {
-		if (!open) return;
-		let live = true;
-		api<{ diff: string }>(`/api/repo/${enc(project)}/diff?path=${enc(c.path)}`).then(
-			(r) => live && setD(parseDiff(r.diff)[0] ?? "文件太大，不显示"),
-			(e: Error) => live && setD(e.message),
-		);
-		return () => { live = false; };
-	}, [open, project, c.path, c.code, c.add, c.del]);
+	const d = useDiff(project, open ? c.path : null, "文件太大，不显示", `${c.code} ${c.add} ${c.del}`);
 	return (
 		<FileRow code={c.code} path={c.path} add={c.add} del={c.del} open={open} onToggle={onToggle}>
 			{d === null ? <Skeleton className="m-3 h-16" /> : typeof d === "string" ? <Note>{d}</Note> : <Hunks file={d} />}
@@ -104,14 +96,16 @@ type Detail = { hash: string; author: string; when: string; body: string; files:
 
 /** 一个提交：一行是标题和时间；展开是哈希、作者、说明的正文，和它改的文件（各自再展开看 diff） */
 function CommitRow({ project, c, open, onToggle, isOpen, toggle }: { project: string; c: Commit; open: boolean; onToggle: () => void; isOpen: (k: string) => boolean; toggle: (k: string) => void }) {
-	const [d, setD] = useState<Detail | string | null>(null);
-	useEffect(() => {
-		if (!open || d) return;
-		api<Omit<Detail, "files"> & { diff: string }>(`/api/repo/${enc(project)}/commit/${c.hash}`).then(
-			({ diff, ...r }) => setD({ ...r, files: parseDiff(diff) }),
-			(e: Error) => setD(e.message),
-		);
-	}, [open, d, project, c.hash]);
+	// 第一次展开时拿，之后留着（提交不会变）
+	const [seen, setSeen] = useState(open);
+	if (open && !seen) setSeen(true);
+	const got = useApi<Omit<Detail, "files"> & { diff: string }>(seen ? `/api/repo/${enc(project)}/commit/${c.hash}` : null);
+	const d = useMemo((): Detail | string | null => {
+		if (got.error) return got.error.message;
+		if (!got.data) return null;
+		const { diff, ...r } = got.data;
+		return { ...r, files: parseDiff(diff) };
+	}, [got.data, got.error]);
 	const rest = typeof d === "object" && d ? d.body.split("\n").slice(1).join("\n").trim() : "";
 	return (
 		<div>

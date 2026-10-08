@@ -1,7 +1,9 @@
 // diff 的样子，照 GitHub：左边旧、新两列行号，加的行绿底、删的行红底，代码照常高亮；成对改过的行里，真改了的那几个字底色再深一点。
 // 高亮：旧的一边（没变的 + 删掉的）、新的一边（没变的 + 加上的）各拼成一段交给 Worker，再按行放回去。
 import { type CSSProperties, Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { changed, type FileDiff, type Line } from "@/lib/diff";
+import { enc } from "@shared/api";
+import { changed, type FileDiff, type Line, parseDiff } from "@/lib/diff";
+import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { langOf, type Token, tokenize } from "./code";
 
@@ -85,6 +87,15 @@ const ROW = {
 };
 
 /** diff 那里的一句灰字：不显示内容的原因、出错 */
+/**
+ * 一个文件没提交的改动：「改动」里展开一个文件、「文件」里切到改动，都用它。path 是 null 先不拿；
+ * 拿到之前是 null，拿不到是原因，没有 diff 时是 none。again 变了再拿一次（拿到之前先显示旧的）
+ */
+export function useDiff(project: string, path: string | null, none: string, again?: unknown): FileDiff | string | null {
+	const { data, error } = useApi<{ diff: string }>(path === null ? null : `/api/repo/${enc(project)}/diff?path=${enc(path)}`, { again });
+	return useMemo(() => (error ? error.message : data ? (parseDiff(data.diff)[0] ?? none) : null), [data, error, none]);
+}
+
 export const Note = ({ children }: { children: ReactNode }) => <p className="px-3 py-2 text-xs text-muted-foreground">{children}</p>;
 
 /** 一个文件的 diff（不带文件名那行） */

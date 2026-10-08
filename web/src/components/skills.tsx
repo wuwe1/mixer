@@ -1,11 +1,11 @@
 // 选 skill：输入框里打「/」或点「+」里的 skill（输入框在 prompt.tsx），弹出这个项目能用的 skill，选了在消息开头插入「/名字 」。
 // 筛选按子串（lib/match）。第一次打开时才加载（lazy.tsx）。每次打开都重新拉一遍：会话里刚建的 skill 也在。最近用过的排在前面（存在这台设备上）。
 import { History } from "lucide-react";
-import { useEffect, useState } from "react";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { api, enc } from "@shared/api";
+import { enc } from "@shared/api";
 import { match } from "@/lib/match";
+import { useApi } from "@/lib/use-api";
 import { Loading } from "./placeholder";
 
 type Skill = { name: string; desc: string | null };
@@ -20,11 +20,8 @@ function remember(name: string) {
 
 /** cwd：新会话的文件夹（可能还没开过会话，服务端不认得这个项目） */
 export function SkillPicker({ project, cwd, open, onOpenChange, onPick }: { project: string; cwd?: string; open: boolean; onOpenChange: (o: boolean) => void; onPick: (name: string) => void }) {
-	const [skills, setSkills] = useState<Skill[] | null>(null);
-	useEffect(() => {
-		if (!open) return;
-		api<Skill[]>(`/api/skills/${enc(project)}${cwd ? `?cwd=${enc(cwd)}` : ""}`).then(setSkills, () => setSkills([]));
-	}, [open, project, cwd]);
+	const got = useApi<Skill[]>(open ? `/api/skills/${enc(project)}${cwd ? `?cwd=${enc(cwd)}` : ""}` : null);
+	const skills = got.data ?? (got.error ? [] : null);
 	const pick = (name: string) => {
 		remember(name);
 		onOpenChange(false);

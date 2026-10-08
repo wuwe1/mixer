@@ -99,6 +99,7 @@ token 定义在 `web/src/index.css` 最后一段。界面上只用 token，不�
 | `SessionView`（`session.tsx`） | 会话在内存里留最近 12 个，切回来先画上次的、带 version 拉增量（`use-incremental.ts`：一次只拉一个、带 `?since=`、merge，子代理的对话也用）；失效靠服务端的「epoch:rev」（同一个 epoch 里节点只增不删，测试钉着）。离开时记下最上面那条和偏移，回来用 `Reveal` 的 `offset` 放回去 |
 | `web/src/lib/drawer.ts` | 手机上的两个抽屉：左边的侧栏（`sidebar`）、右边的面板（`panel`），都是 `components/drawer.tsx` 的 `Drawer`（手机上一直挂着，里面调 `useSwipe`，关着时也接手势）。从屏幕边上滑不退回上一页：`guardEdges`（主屏幕 app 里两条边 24px 以内一按下就拦，补 click）。位置是进度 0–1，拖的时候直接改样式跟手（不经过 React），松手按速度或过没过半动画到底；手势 `useSwipe` 两边共用、方向相反，另一边的抽屉开着（`role="dialog"`、`data-drawer`）时不接；在选字时不接（按在选区两头 44px 以内是在拖把手，按着时选区变了是长按选字）。面板拖开时先画上次的 tab，关到底藏起来才卸掉里面的东西 |
 | `web/src/lib/steps.ts` | 工具组收着时露出什么（`exposed`：在跑的那一步、在跑的子代理最多 3 个、不然最后一步；跑完了最后一步当标题）。纯函数，`message.tsx` 的 Steps 照着画，测试钉着 |
+| `web/src/lib/use-api.ts` | 拿一份东西就用 `useApi(url)`：地址变了再拿、晚到的旧回包不要，`null` 先不拿（拿到过的留着），`again` 变了再拿一次，`poll` 定时再拿（后台命令的输出）。思考全文、工具详情、文件、提交、skill、浏览会话都用它；一个文件没提交的改动是 `diff.tsx` 的 `useDiff`（「改动」里展开、「文件」里切到改动共用）。要拉增量的（会话、子代理）是 `use-incremental.ts` |
 | `web/src/lib/match.ts` | cmdk 的筛选：按子串（开头对上的排前面），不用默认的模糊匹配。新会话、浏览会话、skill 共用 |
 | `web/src/lib/outbox.ts` / `arrival.ts` | 草稿随打随存（按 key：会话 / 会话@分叉点 / new.项目，只存文字）。发件箱只管继续：每条带网页给的 uuid（服务端拿它当记录里那条的 uuid），到没到按 uuid 认（`arrival.ts` 的 `fate`，纯函数、测试钉着）：记录里有它（或带着它的那次合并）就是到了；运行结束、数据到了运行的 `version` 还没有它，或者排队的没了，就放回输入框；请求明确被拒（4xx）马上删，请求没回来的等运行和队列说了算 |
 
