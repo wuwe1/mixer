@@ -1,10 +1,11 @@
 // 对话：把节点树走成一条路（默认走到命令行续接时接着的那条，记录里没写就是最新的那片叶子；地址里的 leaf 指定看哪个版本），一条消息改写过的地方放版本切换。
 // 最后是正在跑的那次运行（实时的字）、这个会话排着队的消息、等你确认的请求。输入框在 composer.tsx，分叉的对话框在 fork-dialog.tsx。
-import { ChevronLeft, ChevronRight, Clock, Square, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, RotateCw, Square, TriangleAlert, X } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Spinner } from "@/components/ui/spinner";
 import { type Spawn, spawner } from "@/lib/agents";
 import { type Agent, api, enc, type Node, type Sub } from "@shared/api";
 import { useEvent } from "@/lib/events";
@@ -14,10 +15,10 @@ import { go } from "@/lib/route";
 import { type Block, blocks, headOf, isLive, liveNodes, pointOf, type Tree, type User, type Walk } from "@/lib/thread";
 import { useIncremental } from "@/lib/use-incremental";
 import type { Stream } from "@/lib/use-stream";
-import { ApprovalCard } from "./approvals";
 import { ForkDialog, type ForkTarget } from "./fork-dialog";
 import { AssistantMessage, Bubble, EventLine, Steps, stable, UserMessage } from "./message";
 import { Loading } from "./placeholder";
+import { start } from "./prompt";
 import { StatusIcon } from "./side";
 
 /** 跳到这条（目录里点的）；at 让同一条点两次也算 */
@@ -118,8 +119,7 @@ function AliveDot() {
  * spawned：Agent 调用开出来的子代理怎么样了（lib/agents.ts）；
  * keys：记录里有的段（流里的哪几段已经写进去了，和 useStream 用的同一份）
  */
-export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, stream, status, busy, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
-	const { approvals } = useLive();
+export function Conversation({ project, session, w, t, keys, onFile, chosen, chosenEffort, chosenPermission, stream, status, busy, scroller, reveal, spawned }: { project: string; session: string; w: Walk; t: Tree; keys: Set<string>; onFile: (path: string, diff: boolean) => void; chosen: string | null; chosenEffort: string | null; chosenPermission: string; stream: Stream; status: Status; busy: boolean; scroller: RefObject<HTMLDivElement | null>; reveal: Reveal | null; spawned?: Map<string, Spawn> | null }) {
 	/** 开着看的子代理 */
 	const [agent, setAgent] = useState<string | null>(null);
 	const [fork, setFork] = useState<ForkTarget | null>(null);
@@ -158,7 +158,6 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 		}
 		return { switched, spent };
 	}, [written, w.path]);
-	const mine = approvals.filter((a) => a.session === session);
 
 	const closeAgent = useCallback(() => setAgent(null), []);
 	const agentRunning = !!agent && !!spawned && [...spawned.values()].some((s) => s.agentId === agent && s.running);
@@ -190,11 +189,11 @@ export function Conversation({ project, session, w, t, keys, onFile, chosen, cho
 			})}
 			{idle && <AliveDot />}
 			<QueuedMessages session={session} />
-			{mine.map((a) => <ApprovalCard key={a.id} a={a} />)}
+			<LastError project={project} session={session} />
 
 			<AgentSheet project={project} session={session} id={agent} running={agentRunning} onClose={closeAgent} onFile={onFile} />
 
-			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} target={fork} onClose={() => setFork(null)} />
+			<ForkDialog project={project} session={session} w={w} chosen={chosen} chosenEffort={chosenEffort} chosenPermission={chosenPermission} target={fork} onClose={() => setFork(null)} />
 		</>
 	);
 }
@@ -269,6 +268,37 @@ function VersionSwitch({ v }: { v: { options: Node[]; index: number; to: (string
 			<span className="tabular-nums">第 {v.index + 1} / {v.options.length} 版</span>
 			<Button variant="ghost" size="icon-xs" onClick={() => to(v.index + 1)} aria-label="下一个版本">
 				<ChevronRight className="size-3.5" />
+			</Button>
+		</div>
+	);
+}
+
+/**
+ * 这个会话最近一次运行出错了（限流、过载、进程挂了）：对话末尾写明原因，「重试」续接一句「继续」（权限、模型照那一次的）。
+ * 之后又跑了（不管成没成）就不显示
+ */
+function LastError({ project, session }: { project: string; session: string }) {
+	const { runs, follow } = useLive();
+	const [busy, setBusy] = useState(false);
+	const last = runs.find((r) => r.session === session);
+	if (!last || last.status !== "error") return null;
+	const retry = async () => {
+		setBusy(true);
+		try {
+			await start({ project, session, mode: "resume", prompt: "继续", uuid: crypto.randomUUID(), permission: last.permission, model: last.model, effort: last.effort }, follow);
+		} catch (e) {
+			toast.error(`没发出去：${e instanceof Error ? e.message : String(e)}`);
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<div className="flex items-start gap-2 rounded-md border border-destructive/30 px-3 py-2 text-xs">
+			<TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+			<span className="min-w-0 flex-1 break-words text-destructive">出错了：{last.error || "不知道为什么"}</span>
+			<Button variant="outline" size="xs" className="shrink-0" disabled={busy} onClick={retry}>
+				{busy ? <Spinner /> : <RotateCw />}
+				重试
 			</Button>
 		</div>
 	);

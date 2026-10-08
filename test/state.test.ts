@@ -32,7 +32,7 @@ test("跑完了没看是 done / error，看过了是 null", async () => {
 
 test("删掉会话：跑完没看、看过、选过的模型一起忘掉", () => {
 	state.finished("-p", "s4", false);
-	state.chooseModel("s4", "opus", "high");
+	state.chooseModel("s4", "opus", "high", "plan");
 	state.forget("s4");
 	assert.equal(state.unread("s4"), null);
 	assert.equal(state.chosenModel("s4"), null);

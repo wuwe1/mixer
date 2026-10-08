@@ -46,8 +46,11 @@ export type Queued = { id: string; uuid: string; project: string; cwd: string; s
  */
 type Params = { project: string; cwd: string; from: string | null; session: string; mode: Run["mode"]; at?: string | null; prompt: string; images: Image[]; permission: string; model: string | null; effort: string | null; uuid: string; merged: string[] };
 
-/** cancelled：问的那边不等了（claude 发了 control_cancel_request、进程退了），不用回 */
-type Decision = { allow: boolean; message?: string; cancelled?: boolean };
+/**
+ * cancelled：问的那边不等了（claude 发了 control_cancel_request、进程退了），不用回。
+ * answers：回答 AskUserQuestion（问题原文 → 选的、写的）；mode：批准计划（ExitPlanMode）之后换成什么权限
+ */
+type Decision = { allow: boolean; message?: string; cancelled?: boolean; answers?: Record<string, string>; mode?: string };
 /**
  * by：问的那个 claude 进程的 id，进程退了才作废（这一轮完了，后台子代理还可能在等）。
  * req：claude 的 control_request 的 request_id（control_cancel_request 按它认）。timer：10 分钟没人点就拒绝
@@ -277,6 +280,11 @@ function line(h: Proc, raw: string) {
 		if (Array.isArray(ev.skills)) state.learnCaps(h.project, { skills: ev.skills.map(String), plugins: Array.isArray(ev.plugins) ? (ev.plugins as { name: string; path: string }[]).map((p) => ({ name: String(p.name), path: String(p.path) })) : [] });
 	}
 	if (ev.type === "system" && (ev.subtype === "background_tasks_changed" || ev.subtype === "task_started")) tasks(h, ev);
+	// 权限模式换了（批准了计划，命令行切出计划模式）：记下，下一轮不用再换；网页拉会话时拿到新的
+	if (ev.type === "system" && ev.subtype === "status" && typeof ev.permissionMode === "string" && ev.permissionMode !== h.permission) {
+		h.permission = ev.permissionMode;
+		state.choosePermission(h.session, ev.permissionMode);
+	}
 	if (ev.type === "result") {
 		if (ev.modelUsage && typeof ev.modelUsage === "object")
 			for (const [model, u] of Object.entries(ev.modelUsage as Record<string, { contextWindow?: number }>)) if (u?.contextWindow) state.learnWindow(model, u.contextWindow);
@@ -445,7 +453,9 @@ function asked(h: Proc, ev: Record<string, unknown>) {
 	const description = agent ? (h.spawns.get(agent)?.description || h.tasks.find((t) => t.id === agent)?.description || "") : "";
 	open({ by: h.id, req: id, project: h.project, cwd: h.cwd, session: h.session, toolUse: typeof r.tool_use_id === "string" ? r.tool_use_id : null, agent: agent ? { id: agent, description } : null }, String(r.tool_name ?? ""), input).then((d) => {
 		if (d.cancelled || h.gone) return;
-		respond({ subtype: "success", response: d.allow ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: d.message || "在 mixer 里被拒绝了" } });
+		// 回答提问：答案放进 updatedInput 的 answers（问题原文 → 答案）；批准计划：同时换掉权限模式（setMode，命令行回一个 status 事件）。都试过
+		const allow = { behavior: "allow", updatedInput: d.answers ? { ...input, answers: d.answers } : input, ...(r.tool_name === "ExitPlanMode" ? { updatedPermissions: [{ type: "setMode", mode: d.mode ?? "auto", destination: "session" }] } : {}) };
+		respond({ subtype: "success", response: d.allow ? allow : { behavior: "deny", message: d.message || "在 mixer 里被拒绝了" } });
 	});
 }
 
@@ -499,7 +509,7 @@ function fresh(o: Params): Live {
 
 /** 写进去了：记下选的模型、分叉的来处（state.fork），放进工作区（新会话、分叉的文件夹放到最上面） */
 function known(run: Live) {
-	state.chooseModel(run.session, run.model, run.effort);
+	state.chooseModel(run.session, run.model, run.effort, run.permission);
 	if (run.mode === "fork" && run.from) state.fork(run.session, { session: run.from, at: run.at });
 	if (state.addToWorkspace(run.project, run.cwd, run.session)) emit("workspace", null);
 }
@@ -632,7 +642,7 @@ function open(w: Pick<Asking, "by" | "req" | "project" | "cwd" | "session" | "to
 
 const approvalView = ({ by: _b, req: _q, resolve: _r, timer: _t, ...a }: Asking): Approval => a;
 
-export const answer = (id: string, allow: boolean, message?: string) => decide(id, { allow, message });
+export const answer = (id: string, d: Omit<Decision, "cancelled">) => decide(id, d);
 
 /** 确认请求有了结果（人点了、10 分钟没人点、claude 不等了、claude 退出了）：收掉卡片，回给问的那边（不等了的不回） */
 function decide(id: string, d: Decision) {

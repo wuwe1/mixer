@@ -9,12 +9,12 @@ import { type Of, PromptBox, usePrompt } from "./prompt";
 
 export type ForkTarget = { kind: "edit"; n: User } | { kind: "at"; at: string; what: string };
 
-export function ForkDialog({ project, session, w, chosen, chosenEffort, target, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; target: ForkTarget | null; onClose: () => void }) {
+export function ForkDialog({ project, session, w, chosen, chosenEffort, chosenPermission, target, onClose }: { project: string; session: string; w: Walk; chosen: string | null; chosenEffort: string | null; chosenPermission: string; target: ForkTarget | null; onClose: () => void }) {
 	// 关的时候有动画：那一会儿还画着刚才那个
 	const [shown, setShown] = useState(target);
 	if (target && target !== shown) setShown(target);
 	const t = target ?? shown;
-	const of = { project, session, path: w.path, chosen, chosenEffort };
+	const of = { project, session, path: w.path, chosen, chosenEffort, chosenPermission };
 	return (
 		<Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
 			<DialogContent className="sm:max-w-xl">

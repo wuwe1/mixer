@@ -2,7 +2,7 @@
 // 三处都有：图片（选图、粘贴、点开批注）；草稿随打随存（这台设备上，按发到哪里分开存：继续按会话，分叉按会话和分叉点，新会话按项目）；
 // 权限、模型和思考强度（默认一套：会话的接着用 mixer 里选过的、没选过接着用上一条回复的系列；新会话用默认）；
 // ⌘Enter 发送；skill。继续的另有发件箱（lib/outbox.ts）：发出去的写进记录才算数，没发出去的放回输入框。
-import { ImagePlus, Plus, Send, SquareSlash } from "lucide-react";
+import { ImagePlus, Plus, Send, Square, SquareSlash } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
@@ -34,8 +34,8 @@ export async function start(body: Record<string, unknown>, follow: (r: Run) => v
 	return r;
 }
 
-/** 会话那头：哪个会话、看着的那条路（默认模型、上下文从这里来）、在 mixer 里给它选过的模型和思考强度 */
-export type Of = { project: string; session: string; path: Node[]; chosen: string | null; chosenEffort: string | null };
+/** 会话那头：哪个会话、看着的那条路（默认模型、上下文从这里来）、在 mixer 里给它选过的模型、思考强度、权限 */
+export type Of = { project: string; session: string; path: Node[]; chosen: string | null; chosenEffort: string | null; chosenPermission: string };
 
 /**
  * 发到哪里：
@@ -85,7 +85,10 @@ export function usePrompt(t: Target, onSent?: () => void) {
 	// 发件箱只管继续的：分叉、新会话开的是别的会话
 	const track = useOutbox("resume" in t ? t.resume.session : null, ("resume" in t && t.record) || null, text, setText);
 	const { shots, setShots, add, onPaste, drop } = useShots();
-	const [permission, setPermission] = useState("auto");
+	// 权限按会话记着（服务端的 state）：批准了计划，命令行切出计划模式，这里跟着变
+	const [permission, setPermission] = useState(of?.chosenPermission ?? "auto");
+	const chosenPermission = of?.chosenPermission;
+	useEffect(() => { if (chosenPermission) setPermission(chosenPermission); }, [chosenPermission]);
 	const [choice, setChoice] = useState(() => defaults(of));
 	// 在别处（终端、另一个页面）换了模型：跟着变
 	const model = of && modelOf(of);
@@ -180,9 +183,10 @@ function AddMenu({ onAdd, onSkill }: { onAdd: (s: Shot[]) => void; onSkill: () =
 
 /**
  * 上面是图，中间写字，下面一排：权限、模型、「+」，右边 children（继续的：后台任务、运行中、用量、上下文）和发送。
- * size：sm 是会话底下的（矮，聚焦时描边），lg 是新会话、分叉（高一些，聚焦时一圈光晕）。send：发送按钮的图标、说法
+ * size：sm 是会话底下的（矮，聚焦时描边），lg 是新会话、分叉（高一些，聚焦时一圈光晕）。send：发送按钮的图标、说法；
+ * stop：在跑时给，输入框空着时发送键换成停止（stopping：点过了、还没停下来）
  */
-export function PromptBox({ p, placeholder, size = "lg", autoFocus, send, children }: { p: Prompt; placeholder: string; size?: "sm" | "lg"; autoFocus?: boolean; send: { label: string; icon?: ReactNode; title?: string }; children?: ReactNode }) {
+export function PromptBox({ p, placeholder, size = "lg", autoFocus, send, stop, children }: { p: Prompt; placeholder: string; size?: "sm" | "lg"; autoFocus?: boolean; send: { label: string; icon?: ReactNode; title?: string }; stop?: { onClick: () => void; stopping: boolean }; children?: ReactNode }) {
 	const input = useRef<HTMLTextAreaElement>(null);
 	const sm = size === "sm";
 	const { choice, of } = p;
@@ -210,9 +214,16 @@ export function PromptBox({ p, placeholder, size = "lg", autoFocus, send, childr
 					<AddMenu onAdd={p.add} onSkill={() => p.setPicking(true)} />
 					<span className="ml-auto" />
 					{children}
-					<Button size="icon" className="shrink-0 rounded-lg" disabled={p.empty || p.busy} onClick={p.send} aria-label={send.label} title={send.title}>
-						{p.busy ? <Spinner /> : (send.icon ?? <Send className="size-4" />)}
-					</Button>
+					{stop && p.empty && !p.busy ? (
+						// 运行中、输入框空着：发送键就是停止（打了字又变回发送，发出去排队）
+						<Button size="icon" variant="outline" className="shrink-0 rounded-lg" disabled={stop.stopping} onClick={stop.onClick} aria-label={stop.stopping ? "停止中" : "停止"} title={stop.stopping ? "停止中…" : "停止这一轮（后台任务接着跑）"}>
+							{stop.stopping ? <Spinner /> : <Square className="size-3.5 fill-current" />}
+						</Button>
+					) : (
+						<Button size="icon" className="shrink-0 rounded-lg" disabled={p.empty || p.busy} onClick={p.send} aria-label={send.label} title={send.title}>
+							{p.busy ? <Spinner /> : (send.icon ?? <Send className="size-4" />)}
+						</Button>
+					)}
 				</div>
 			</div>
 			<SkillPicker

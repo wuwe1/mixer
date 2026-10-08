@@ -28,6 +28,8 @@ export function App() {
 	const meta = p?.sessions.find((s) => s.id === r.session);
 	const st = meta ? status(meta) : null;
 	const parent = meta?.parent ? p?.sessions.find((s) => s.id === meta.parent) : undefined;
+	const others = (workspace ?? []).flatMap((g) => g.sessions).filter((s) => s.id !== r.session);
+	const elsewhere = approvals.some((a) => a.session !== r.session) ? "waiting" : others.some((s) => s.unread === "error") ? "error" : others.some((s) => s.unread === "done") ? "done" : null;
 	const title = meta ? sessionTitle(meta) : r.session ? r.session.slice(0, 8) : p ? projectName(p) : "mixer";
 
 	useEffect(() => { document.title = r.project ? `${title} · mixer` : "mixer"; }, [title, r.project]);
@@ -37,7 +39,11 @@ export function App() {
 			<AppSidebar r={r} openNew={() => setNewOpen(true)} />
 			<SidebarInset className="min-w-0 overflow-hidden">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-					<SidebarTrigger className="-ml-1" />
+					{/* 手机上侧栏收着：别的会话有确认在等（琥珀）、跑完没看（蓝）、出错没看（红），按钮角上带个点 */}
+					<span className="relative -ml-1 flex">
+						<SidebarTrigger />
+						{!wide && elsewhere && <StatusIcon s={elsewhere} className="pointer-events-none absolute top-1 right-1" />}
+					</span>
 					<Separator orientation="vertical" className="mr-1 data-vertical:h-4 data-vertical:self-center" />
 					<div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
 						{p && r.session && (

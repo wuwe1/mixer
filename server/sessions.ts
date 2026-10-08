@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Node, Project, SessionMeta, Sub } from "../shared/api.ts";
 import { summarize } from "../shared/tail.ts";
 import { BRIEF_RESULT, BRIEF_THOUGHT, type Cursor, cut, epoch, lines, lru, resume, serial } from "./jsonl.ts";
-import { chosenEffort, chosenModel, forkOf, unread, windows } from "./state.ts";
+import { chosenEffort, chosenModel, chosenPermission, forkOf, unread, windows } from "./state.ts";
 import * as terminals from "./terminals.ts";
 
 export const PROJECTS = join(homedir(), ".claude", "projects");
@@ -584,7 +584,7 @@ export async function session(project: string, id: string, since?: string | null
 	const file = locate(project, id);
 	if (!file) throw Object.assign(new Error("没有这个会话"), { status: 404 });
 	const [p, meta] = await Promise.all([parse(file), metaAt(project, file)]);
-	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id), effort: chosenEffort(id), leaf: leafOf(p), touched: await touchedOf(file, p) };
+	return { meta, ...changes(p, since), windows: windows(), model: chosenModel(id), effort: chosenEffort(id), permission: chosenPermission(id), leaf: leafOf(p), touched: await touchedOf(file, p) };
 }
 
 /** 会话记录现在写到哪了（和 session() 给的 version 一样）：读一遍（接着上次读的）再看。没有这个会话是 null */

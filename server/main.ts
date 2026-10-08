@@ -411,7 +411,10 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	["POST", /^\/api\/queue\/([\w-]+)\/cancel$/, "user", (_q, res, m) => json(res, 200, { ok: runs.unqueue(m[1]) })],
 	["POST", /^\/api\/approvals\/([\w-]+)$/, "user", async (req, res, m) => {
 		const b = await body(req);
-		json(res, 200, { ok: runs.answer(m[1], !!b.allow, b.message) });
+		// answers：回答提问（问题 → 答案，都是字）；mode：批准计划后的权限
+		const answers = b.answers && typeof b.answers === "object" ? Object.fromEntries(Object.entries(b.answers).map(([k, v]) => [k, String(v)])) : undefined;
+		const mode = ["auto", "default", "acceptEdits"].includes(b.mode) ? b.mode : undefined;
+		json(res, 200, { ok: runs.answer(m[1], { allow: !!b.allow, message: typeof b.message === "string" ? b.message.slice(0, 2000) : undefined, answers, mode }) });
 	}],
 ];
 

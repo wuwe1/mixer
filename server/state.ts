@@ -7,8 +7,8 @@ import { DATA } from "./access.ts";
 
 const FILE = join(DATA, "state.json");
 
-type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>>; forks: Record<string, Fork> };
-let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {}, forks: {} };
+type State = { finished: Record<string, { project: string; at: string; error: boolean }>; seen: Record<string, string>; windows: Record<string, number>; models: Record<string, string>; efforts: Record<string, string>; permissions: Record<string, string>; caps: Record<string, Caps>; usage: Record<string, Account>; workspace: Workspace | null; claudeModels: ClaudeModels | null; modelsSeen: Record<string, Record<string, string>>; forks: Record<string, Fork> };
+let state: State = { finished: {}, seen: {}, windows: {}, models: {}, efforts: {}, permissions: {}, caps: {}, usage: {}, workspace: null, claudeModels: null, modelsSeen: {}, forks: {} };
 // 老的 state.json 里的 sizes（以前按 mixer 放手时的文件大小猜「终端中打开」）、Codex 的用量不要了
 try {
 	const { sizes: _old, ...saved } = JSON.parse(readFileSync(FILE, "utf8"));
@@ -60,17 +60,23 @@ export function learnWindow(model: string, size: number) {
 }
 export const windows = () => state.windows;
 
-/** 在 mixer 里给会话选过的模型（别名）、思考强度：之后续接都用它，直到再换。选回默认（null）就忘掉 */
-export function chooseModel(session: string, model: string | null, effort: string | null) {
-	if ((state.models[session] ?? null) === model && (state.efforts[session] ?? null) === effort) return;
-	if (model) state.models[session] = model;
-	else delete state.models[session];
-	if (effort) state.efforts[session] = effort;
-	else delete state.efforts[session];
+/** 在 mixer 里给会话选过的模型（别名）、思考强度、权限：之后续接都用它，直到再换。选回默认（null、自动）就忘掉 */
+export function chooseModel(session: string, model: string | null, effort: string | null, permission: string) {
+	const p = permission === "auto" ? null : permission;
+	if ((state.models[session] ?? null) === model && (state.efforts[session] ?? null) === effort && (state.permissions[session] ?? null) === p) return;
+	for (const [m, v] of [[state.models, model], [state.efforts, effort], [state.permissions, p]] as const) {
+		if (v) m[session] = v;
+		else delete m[session];
+	}
 	save();
+}
+/** 只换权限：批准了计划，命令行自己切出了计划模式（runs.ts 看 status 事件的 permissionMode） */
+export function choosePermission(session: string, permission: string) {
+	chooseModel(session, state.models[session] ?? null, state.efforts[session] ?? null, permission);
 }
 export const chosenModel = (session: string) => state.models[session] ?? null;
 export const chosenEffort = (session: string) => state.efforts[session] ?? null;
+export const chosenPermission = (session: string) => state.permissions[session] ?? "auto";
 
 /** Claude 能选的模型（models.ts 问命令行的原样存着），重启后马上有；version 是读的时候命令行的版本 */
 type ClaudeModels = { at: string; version: string | null; models: unknown[] };
@@ -152,6 +158,7 @@ export function forget(session: string) {
 	delete state.seen[session];
 	delete state.models[session];
 	delete state.efforts[session];
+	delete state.permissions[session];
 	delete state.forks[session];
 	save();
 	return inside;

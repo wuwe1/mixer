@@ -231,14 +231,17 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 		return () => document.removeEventListener("visibilitychange", mark);
 	}, [st, project, session]);
 
-	// 第一次打开：滚到最后，贴上；切回来的（离开时不在底部、那条还在这条路上）放回原处
+	// 第一次打开：滚到最后，贴上；切回来的（离开时不在底部、那条还在这条路上）放回原处；
+	// 跑完了还没看的：停在最后一条回复的开头（长回复不用从结尾往上翻；短的本来就到底了）
 	useEffect(() => {
 		if (!data || !w || !first.current) return;
 		first.current = false;
 		const spot = spots.get(key);
+		const reply = st === "done" || st === "error" ? w.path.findLast((n) => n.k === "assistant") : undefined;
 		if (spot && w.path.some((n) => n.uuid === spot.uuid)) setReveal({ ...spot, at: Date.now() });
+		else if (reply) setReveal({ uuid: reply.uuid, at: Date.now(), offset: 12 });
 		else requestAnimationFrame(() => toBottom());
-	}, [data, w, key, toBottom]);
+	}, [data, w, key, toBottom, st]);
 
 	// 刚发出去（排上队了，或者开始跑了）：不管刚才在哪，滚到最后贴上，让人看见
 	const onSent = useCallback(() => requestAnimationFrame(() => toBottom(true)), [toBottom]);
@@ -301,7 +304,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						<div ref={content} className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4 px-4 py-6 md:px-6">
 							{t && w ? (
 								<Boundary>
-									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} spawned={spawned} />
+									<Conversation project={project} session={session} w={w} t={t} keys={keys} onFile={onFile} chosen={data?.model ?? null} chosenEffort={data?.effort ?? null} chosenPermission={data?.permission ?? "auto"} stream={stream} status={st} busy={st === "running" || st === "waiting" || outside} scroller={scroller} reveal={reveal} spawned={spawned} />
 								</Boundary>
 							) : (
 								[0, 1, 2, 3].map((i) => <Skeleton key={i} className={cn("h-16", i % 2 ? "w-3/4" : "ml-auto w-2/3")} />)
@@ -317,7 +320,7 @@ export function SessionView({ project, root, session, r, meta }: { project: stri
 						</Button>
 					)}
 				</div>
-				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} run={stream.run} onSent={onSent} />}
+				{w && t && data && <Composer project={project} session={session} w={w} ids={t.ids} version={data.version} status={st} windows={data.windows} chosen={data.model} chosenEffort={data.effort ?? null} chosenPermission={data.permission ?? "auto"} run={stream.run} onSent={onSent} />}
 			</div>
 
 			{wide && panel && (

@@ -63,7 +63,7 @@ export type Node =
  * leaf：命令行续接时接着的那个显示节点（记录里最后的 last-prompt 的 leafUuid；终端里回退过也照它），没有是 null（走最新的叶子）；
  * touched：这个会话（连子代理）改过的文件，绝对路径。这两样每次都整个给
  */
-export type Session = { meta: SessionMeta; nodes: Node[]; windows: Record<string, number>; model: string | null; effort: string | null; version: string; delta: boolean; leaf: string | null; touched: string[] };
+export type Session = { meta: SessionMeta; nodes: Node[]; windows: Record<string, number>; model: string | null; effort: string | null; permission: string; version: string; delta: boolean; leaf: string | null; touched: string[] };
 /** 子代理的对话；version / delta 和 Session 一样（开着看它跑的时候带 ?since= 拉增量） */
 export type Agent = { id: string; info: { agentType?: string; description?: string }; nodes: Node[]; version: string; delta: boolean };
 /**
@@ -87,6 +87,8 @@ export type Run = {
 	id: string; project: string; cwd: string; from: string | null; session: string; mode: "new" | "resume" | "fork"; at: string | null;
 	prompt: string; permission: string; model: string | null; effort: string | null; status: "running" | "done" | "error" | "stopped"; started: string; ended: string | null; error: string | null;
 	uuid: string | null; merged: string[]; images: number; version?: string | null;
+	/** 点了停止、还没停下来（最多 10 秒，之后整个进程 SIGINT） */
+	stopping?: boolean;
 };
 export type Dirs = { path: string; home: string; parent: string | null; git: boolean; entries: { name: string; path: string; git: boolean; project: boolean }[] };
 /**

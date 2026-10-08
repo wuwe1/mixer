@@ -7,6 +7,9 @@
 //   elicit：发一个 mixer 答不了的 control_request（r4）
 //   again：问 r5，不管
 //   slow：问 r6，不管（测 10 分钟）
+//   plan：问 r7（ExitPlanMode），批准时带 setMode 就照它发 status（permissionMode），和真的一样
+//   ask：问 r8（AskUserQuestion）
+//   deny：问 r9（Bash）
 //   bye：退出
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,6 +35,8 @@ const ask = (id, tool_name, input, tool_use_id, extra = {}) => out({ type: "cont
 for await (const line of createInterface({ input: process.stdin })) {
 	appendFileSync(${JSON.stringify(stdin)}, line + "\\n");
 	const m = JSON.parse(line);
+	const mode = m.type === "control_response" && m.response.response?.updatedPermissions?.[0]?.mode;
+	if (mode) out({ type: "system", subtype: "status", status: null, permissionMode: mode });
 	if (m.type !== "user") continue;
 	const say = m.message.content;
 	if (say === "bye") process.exit(0);
@@ -52,6 +57,9 @@ for await (const line of createInterface({ input: process.stdin })) {
 	if (say === "elicit") out({ type: "control_request", request_id: "r4", request: { subtype: "elicitation", mcp_server_name: "foo", message: "?" } });
 	if (say === "again") ask("r5", "Bash", { command: "ls" }, "toolu_5");
 	if (say === "slow") ask("r6", "Bash", { command: "make" }, "toolu_6");
+	if (say === "plan") ask("r7", "ExitPlanMode", { plan: "1. 改 a" }, "toolu_7");
+	if (say === "deny") ask("r9", "Bash", { command: "rm -rf build" }, "toolu_9");
+	if (say === "ask") ask("r8", "AskUserQuestion", { questions: [{ question: "哪个颜色？", header: "颜色", options: [{ label: "红" }, { label: "蓝" }], multiSelect: false }] }, "toolu_8");
 	out({ type: "result", is_error: false, result: "ok", user_message_uuids: [m.uuid] });
 	out({ type: "command_lifecycle", command_uuid: m.uuid, state: "completed" });
 	out({ type: "system", subtype: "session_state_changed", state: "idle" });
@@ -62,6 +70,7 @@ chmodSync(join(bin, "claude"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
 const runs = await import("../server/runs.ts");
+const state = await import("../server/state.ts");
 const events: { type: string; data: any }[] = []; // biome-ignore lint: 推出去的事件
 runs.onEvent((type, data) => void events.push({ type, data }));
 
@@ -119,17 +128,17 @@ test("can_use_tool：卡片归会话、带工具调用和子代理；允许原�
 	assert.match(runs.busy(SID) ?? "", /待确认/);
 	assert.equal(runs.idle(), false);
 	// 允许：behavior allow，updatedInput 是原样的参数
-	assert.equal(runs.answer(main.id, true), true);
+	assert.equal(runs.answer(main.id, { allow: true }), true);
 	await until(() => answers().has("r1"), "回 r1");
 	assert.deepEqual(answers().get("r1"), { request_id: "r1", subtype: "success", response: { behavior: "allow", updatedInput: { command: "rm -rf build" } } });
 	assert.ok(events.some((e) => e.type === "approval-done" && e.data.id === main.id && e.data.allow === true));
 	// 拒绝：behavior deny，带原因（没给原因用默认的）
-	assert.equal(runs.answer(sub.id, false), true);
+	assert.equal(runs.answer(sub.id, { allow: false }), true);
 	await until(() => answers().has("r2"), "回 r2");
 	assert.deepEqual(answers().get("r2"), { request_id: "r2", subtype: "success", response: { behavior: "deny", message: "在 mixer 里被拒绝了" } });
 	assert.equal(runs.pending().length, 0);
 	// 答过的再答一次不算
-	assert.equal(runs.answer(sub.id, true), false);
+	assert.equal(runs.answer(sub.id, { allow: true }), false);
 });
 
 test("control_cancel_request：卡片收掉，不回；mixer 答不了的 control_request 回 error", async () => {
@@ -160,6 +169,27 @@ test("10 分钟没人点：拒绝，回 deny", async () => {
 	} finally {
 		mock.timers.reset();
 	}
+});
+
+test("回答提问：答案放进 updatedInput 的 answers；批准计划：带 setMode，命令行报了新的权限就记下（下一轮不再换）；拒绝带上说明", async () => {
+	await runs.start({ project: "-tmp-demo", cwd: tmp, session: SID, mode: "resume", prompt: "ask", permission: "plan" });
+	await until(() => !!asked("AskUserQuestion"), "r8 来了");
+	runs.answer(asked("AskUserQuestion")?.id ?? "", { allow: true, answers: { "哪个颜色？": "蓝" } });
+	await until(() => answers().has("r8"), "回 r8");
+	assert.deepEqual(answers().get("r8")?.response, { behavior: "allow", updatedInput: { questions: [{ question: "哪个颜色？", header: "颜色", options: [{ label: "红" }, { label: "蓝" }], multiSelect: false }], answers: { "哪个颜色？": "蓝" } } });
+	await runs.start({ project: "-tmp-demo", cwd: tmp, session: SID, mode: "resume", prompt: "plan", permission: "plan" });
+	await until(() => !!asked("ExitPlanMode"), "r7 来了");
+	runs.answer(asked("ExitPlanMode")?.id ?? "", { allow: true });
+	await until(() => answers().has("r7"), "回 r7");
+	assert.deepEqual(answers().get("r7")?.response, { behavior: "allow", updatedInput: { plan: "1. 改 a" }, updatedPermissions: [{ type: "setMode", mode: "auto", destination: "session" }] });
+	await until(() => state.chosenPermission(SID) === "auto", "记下新的权限");
+	await runs.start({ project: "-tmp-demo", cwd: tmp, session: SID, mode: "resume", prompt: "deny", permission: "auto" });
+	await until(() => !!asked("Bash"), "r9 来了");
+	const sent = readFileSync(stdin, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+	assert.equal(sent.filter((m) => m.request?.subtype === "set_permission_mode").at(-1)?.request.mode, "plan", "批准计划之后没再发 set_permission_mode auto");
+	runs.answer(asked("Bash")?.id ?? "", { allow: false, message: "先别删，看看 build 里有什么" });
+	await until(() => answers().has("r9"), "回 r9");
+	assert.deepEqual(answers().get("r9")?.response, { behavior: "deny", message: "先别删，看看 build 里有什么" });
 });
 
 test("claude 退出了：没答的作废，不回", async () => {

@@ -2,14 +2,15 @@
 // Claude 正在 mixer 里运行时继续就排队，这次运行结束后一起发送；在看旧版本、终端中打开，只能分叉。
 // 分叉不用另选：从最新处分叉是最后一条回复后面的分叉图标；只能分叉时发送按钮换成分叉的图标。
 // 框本身（图、字、权限、模型、「+」、发送）是 prompt.tsx 的 PromptBox，这里加上右边那几个：后台任务、运行中的停止和时长、订阅快用完的窗口、上下文用了多少。
-import { GitFork, Square } from "lucide-react";
+import { GitFork } from "lucide-react";
 import { memo } from "react";
-import { Button } from "@/components/ui/button";
 import { api, type Node, type Run } from "@shared/api";
 import { type Status, useLive } from "@/lib/live";
+import { toast } from "@/lib/toast";
 import { lastCtx, windowOf } from "@/lib/model";
 import { forkPoint, type Walk } from "@/lib/thread";
 import { nearLimit } from "@shared/usage";
+import { ApprovalCard } from "./approvals";
 import { Elapsed } from "./message";
 import { PromptBox, usePrompt } from "./prompt";
 import { BackgroundTasks } from "./tasks";
@@ -24,13 +25,13 @@ function noContinue(w: Walk, status: Status): { reason: string; hint: string } |
 
 const wan = (n: number) => (n >= 10_000 ? `${Math.round(n / 10_000)} 万` : String(n));
 
-/** 运行中：停止和跑了多久合成一个按钮。在做什么看对话末尾带 ping 点的那一步 */
+/** 运行中跑了多久（停止在发送键上：输入框空着时它就是停止）。在做什么看对话末尾带 ping 点的那一步 */
 function RunStatus({ run }: { run: Run }) {
 	return (
-		<Button variant="ghost" size="xs" className="shrink-0 text-muted-foreground" onClick={() => api(`/api/runs/${run.id}/stop`, {}).catch(() => {})} aria-label="停止" title="停止运行">
-			<Square className="size-2.5 fill-current" />
+		<span className="shrink-0 px-1 text-2xs text-muted-foreground tabular-nums">
+			{run.stopping ? "停止中 · " : ""}
 			<Elapsed since={Date.parse(run.started)} />
-		</Button>
+		</span>
 	);
 }
 
@@ -69,19 +70,23 @@ function QuotaHint() {
  * run：这个会话正在跑的那一次。只拿它不拿整个 stream：回复写着的时候每来一段字，输入框不跟着重画。
  * ids、version：记录里有的消息、拿到的数据到哪了（发件箱看发出去的那条到没到）
  */
-export const Composer = memo(function Composer({ project, session, w, ids, version, status, windows, chosen, chosenEffort, run, onSent }: { project: string; session: string; w: Walk; ids: Set<string>; version: string; status: Status; windows: Record<string, number>; chosen: string | null; chosenEffort: string | null; run: Run | null; onSent?: () => void }) {
+export const Composer = memo(function Composer({ project, session, w, ids, version, status, windows, chosen, chosenEffort, chosenPermission, run, onSent }: { project: string; session: string; w: Walk; ids: Set<string>; version: string; status: Status; windows: Record<string, number>; chosen: string | null; chosenEffort: string | null; chosenPermission: string; run: Run | null; onSent?: () => void }) {
 	const why = noContinue(w, status);
 	const busyRun = status === "running" || status === "waiting";
 	// 只能分叉：在看旧版本就从看到的地方分；否则从最新处（不给分叉点）
 	const fork = why ? { at: w.atLatest ? null : forkPoint(w.path) } : undefined;
-	const p = usePrompt({ resume: { project, session, path: w.path, chosen, chosenEffort }, fork, record: { ids, version } }, onSent);
+	const p = usePrompt({ resume: { project, session, path: w.path, chosen, chosenEffort, chosenPermission }, fork, record: { ids, version } }, onSent);
+	// 这个会话的确认请求挂在输入框上面：不在滚动的对话里，往上翻着也看得见
+	const asks = useLive().approvals.filter((a) => a.session === session);
 	return (
 		<div className="bg-background/80 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur md:px-6">
+			{asks.length > 0 && <div className="mx-auto mb-2 flex max-h-[60svh] w-full max-w-3xl flex-col gap-2 overflow-y-auto">{asks.map((a) => <ApprovalCard key={a.id} a={a} />)}</div>}
 			<PromptBox
 				p={p}
 				size="sm"
-				placeholder={why?.hint ?? (busyRun ? "运行中，发送后排队…" : "继续…")}
+				placeholder={why?.hint ?? (status === "waiting" ? "先回答上面的确认；现在发送会排队…" : busyRun ? "运行中，发送后排队…" : "继续…")}
 				send={why ? { label: "分叉", icon: <GitFork className="size-4" />, title: `${why.reason}，发送后分叉` } : { label: "发送" }}
+				stop={run && !why ? { onClick: () => api(`/api/runs/${run.id}/stop`, {}).catch((e: Error) => toast.error(`没停下来：${e.message}`)), stopping: !!run.stopping } : undefined}
 			>
 				<BackgroundTasks session={session} />
 				{run && <RunStatus run={run} />}

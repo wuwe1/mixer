@@ -9,17 +9,25 @@ import { api } from "@shared/api";
 import { family, MODELS, pretty } from "@/lib/model";
 import { effortLabel, type ModelInfo } from "@shared/model-info";
 
-type Option = { v: string; icon: typeof Send; label: string; desc: string };
+/** short：不是默认时按钮上写的字 */
+type Option = { v: string; icon: typeof Send; label: string; desc: string; short?: string };
 
-/** 输入框下面的小选项：平时只是个图标（不带箭头），点开才写每一项是什么意思 */
+/** 输入框下面的小选项：平时只是个图标（不带箭头），点开才写每一项是什么意思。不是第一项（默认）时图标旁边写上是哪个 */
 function OptionMenu({ title, options, value, onChange }: { title: string; options: Option[]; value: string; onChange: (v: string) => void }) {
 	const cur = options.find((o) => o.v === value) ?? options[0];
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
-					<cur.icon className="size-4" />
-				</Button>
+				{cur === options[0] ? (
+					<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+						<cur.icon className="size-4" />
+					</Button>
+				) : (
+					<Button variant="ghost" size="xs" className="px-1.5 text-muted-foreground" aria-label={`${title}：${cur.label}`} title={`${title}：${cur.label}`}>
+						<cur.icon />
+						{cur.short ?? cur.label}
+					</Button>
+				)}
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start" className="w-72">
 				<DropdownMenuLabel>{title}</DropdownMenuLabel>
@@ -42,8 +50,8 @@ function OptionMenu({ title, options, value, onChange }: { title: string; option
 // auto：Claude Code 的自动模式，由它判断，一般操作直接放行，有风险的才请求确认。「Accept edits」被它盖住了，不再单列
 const PERMISSIONS: Option[] = [
 	{ v: "auto", icon: Sparkles, label: "自动", desc: "直接执行，有风险的才请求确认" },
-	{ v: "default", icon: Hand, label: "每次询问", desc: "改文件、跑命令前都请求确认" },
-	{ v: "plan", icon: ListChecks, label: "计划模式", desc: "只读不改，先出计划" },
+	{ v: "default", icon: Hand, label: "每次询问", short: "询问", desc: "改文件、跑命令前都请求确认" },
+	{ v: "plan", icon: ListChecks, label: "计划模式", short: "计划", desc: "只读不改，先出计划" },
 ];
 
 /** 能选的模型：整个页面共用一份，菜单打开时超过 1 分钟就重新拿（Claude 出了新模型能马上看到）。拿不到时用 MODELS 顶一下 */
