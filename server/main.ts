@@ -12,7 +12,7 @@ import { brotliCompress, constants, gzip } from "node:zlib";
 import * as access from "./access.ts";
 import * as dirs from "./dirs.ts";
 import { PORT } from "./env.ts";
-import { say } from "./log.ts";
+import { httpError, say } from "./log.ts";
 import * as models from "./models.ts";
 import * as repo from "./repo.ts";
 import * as push from "./push.ts";
@@ -76,7 +76,7 @@ type Body = Record<string, any>; // biome-ignore lint: 请求体，各个接口�
 /** 登录那几个（谁都能来）用不着大的请求体：64KB 就够，免得没登录的一分钟塞几百 MB 进内存 */
 const SMALL = 64 * 1024;
 const body = (req: IncomingMessage, limit = LIMIT) => new Promise<Body>((ok, no) => {
-	const too = () => fail(413, `太大了：最多 ${limit >= 1024 * 1024 ? `${limit / 1024 / 1024}MB` : `${limit / 1024}KB`}`);
+	const too = () => httpError(413, `太大了：最多 ${limit >= 1024 * 1024 ? `${limit / 1024 / 1024}MB` : `${limit / 1024}KB`}`);
 	if (Number(req.headers["content-length"] ?? 0) > limit) return no(too());
 	const cs: Buffer[] = [];
 	let n = 0;
@@ -90,8 +90,8 @@ const body = (req: IncomingMessage, limit = LIMIT) => new Promise<Body>((ok, no)
 	req.on("end", () => {
 		if (n > limit) return;
 		let v: unknown;
-		try { v = JSON.parse(Buffer.concat(cs).toString("utf8")); } catch { return no(fail(400, "请求体不是 JSON")); }
-		if (!v || typeof v !== "object" || Array.isArray(v)) return no(fail(400, "请求体要是 JSON 对象"));
+		try { v = JSON.parse(Buffer.concat(cs).toString("utf8")); } catch { return no(httpError(400, "请求体不是 JSON")); }
+		if (!v || typeof v !== "object" || Array.isArray(v)) return no(httpError(400, "请求体要是 JSON 对象"));
 		ok(v as Body);
 	});
 	req.on("error", no);
@@ -106,7 +106,7 @@ function ours(req: IncomingMessage) {
 // 项目 id → 路径（projectOf 先看上次列的，没有再列一遍）
 const projectPath = (id: string) => {
 	const p = projectOf(id);
-	if (!p?.path || !existsSync(p.path)) throw Object.assign(new Error("找不到这个项目的目录"), { status: 404 });
+	if (!p?.path || !existsSync(p.path)) throw httpError(404, "找不到这个项目的目录");
 	return p.path;
 };
 
@@ -180,7 +180,6 @@ terminals.start((id, cwd) => {
 });
 
 type Handler = (req: IncomingMessage, res: ServerResponse, m: string[], url: URL) => unknown;
-function fail(status: number, msg: string) { return Object.assign(new Error(msg), { status }); }
 
 /**
  * 接口谁能用：
@@ -328,7 +327,7 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 			: b.op === "remove" && project ? state.removeFromWorkspace(project, session)
 			: b.op === "order" && Array.isArray(b.order) ? state.orderWorkspace(b.order.flatMap((x: unknown) => id(x) ?? []))
 			: null;
-		if (changed === null) throw fail(400, "不认识的操作");
+		if (changed === null) throw httpError(400, "不认识的操作");
 		if (changed) void workspace.push();
 		json(res, 200, { ok: true });
 	}],

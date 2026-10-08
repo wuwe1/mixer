@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import webpush from "web-push";
 import { type Approval, type Run, sessionTitle } from "../shared/api.ts";
 import { DATA } from "./env.ts";
-import { say } from "./log.ts";
+import { httpError, say } from "./log.ts";
 import * as runs from "./runs.ts";
 import * as sessions from "./sessions.ts";
 import * as state from "./state.ts";
@@ -43,7 +43,7 @@ export function key() {
  */
 export function subscribe(s: unknown, origin: string | null) {
 	const o = (s ?? {}) as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
-	if (typeof o.endpoint !== "string" || !o.endpoint.startsWith("https://") || typeof o.keys?.p256dh !== "string" || typeof o.keys?.auth !== "string") throw Object.assign(new Error("订阅不对"), { status: 400 });
+	if (typeof o.endpoint !== "string" || !o.endpoint.startsWith("https://") || typeof o.keys?.p256dh !== "string" || typeof o.keys?.auth !== "string") throw httpError(400, "订阅不对");
 	const sub: Sub = { endpoint: o.endpoint, keys: { p256dh: o.keys.p256dh, auth: o.keys.auth }, subject: origin?.startsWith("https://") ? origin : "mailto:mixer@localhost", at: new Date().toISOString() };
 	store.subs = [...store.subs.filter((x) => x.endpoint !== sub.endpoint), sub];
 	save();

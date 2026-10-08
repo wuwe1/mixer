@@ -3,19 +3,19 @@
 import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
+import { httpError } from "./log.ts";
 import { PROJECTS } from "./sessions.ts";
 
 export const HOME = realpathSync(homedir());
 export const projectId = (path: string) => path.replace(/[^a-zA-Z0-9]/g, "-");
 
-const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
 /** 家目录里的一个文件夹（解析掉符号链接）；不在家目录里、不存在、不是文件夹都报错 */
 export function folder(path: string): string {
 	let real: string;
-	try { real = realpathSync(path || HOME); } catch { throw fail(404, "没有这个文件夹"); }
-	if (real !== HOME && !real.startsWith(HOME + sep)) throw fail(403, "只能用家目录里面的文件夹");
-	if (!statSync(real).isDirectory()) throw fail(400, "这不是文件夹");
+	try { real = realpathSync(path || HOME); } catch { throw httpError(404, "没有这个文件夹"); }
+	if (real !== HOME && !real.startsWith(HOME + sep)) throw httpError(403, "只能用家目录里面的文件夹");
+	if (!statSync(real).isDirectory()) throw httpError(400, "这不是文件夹");
 	return real;
 }
 
@@ -35,9 +35,9 @@ const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch {
 
 export function create(parent: string, name: string) {
 	const dir = folder(parent);
-	if (!name || name.startsWith(".") || /[/\\\0]/.test(name)) throw fail(400, "文件夹名不能以 . 开头，也不能有 /");
+	if (!name || name.startsWith(".") || /[/\\\0]/.test(name)) throw httpError(400, "文件夹名不能以 . 开头，也不能有 /");
 	const p = join(dir, name);
-	if (existsSync(p)) throw fail(409, "已经有了");
+	if (existsSync(p)) throw httpError(409, "已经有了");
 	mkdirSync(p);
 	return { path: p };
 }

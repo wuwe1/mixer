@@ -11,7 +11,7 @@ import type { IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import { DATA, PORT } from "./env.ts";
-import { say } from "./log.ts";
+import { httpError, say } from "./log.ts";
 
 export const FILE = join(DATA, "access.json");
 
@@ -172,7 +172,7 @@ function rp(req: IncomingMessage) {
 	const c = config();
 	const host = hostOf(req);
 	const ok = [c.funnel?.hostname, c.cloudflare?.tunnel?.hostname].filter(Boolean).includes(host);
-	if (!ok) throw Object.assign(new Error("这个地址不能用 passkey 登录"), { status: 403 });
+	if (!ok) throw httpError(403, "这个地址不能用 passkey 登录");
 	return { rpID: host, origin: `https://${host}` };
 }
 
@@ -182,7 +182,7 @@ const ttl = <T extends { until: number }>(m: Map<string, T>) => { for (const [k,
 export function pair() {
 	const c = config();
 	const host = c.funnel?.hostname ?? c.cloudflare?.tunnel?.hostname;
-	if (!host) throw Object.assign(new Error("还没配置手机访问的地址：先跑 pnpm mixer setup funnel"), { status: 400 });
+	if (!host) throw httpError(400, "还没配置手机访问的地址：先跑 pnpm mixer setup funnel");
 	ttl(pairs);
 	const code = randomBytes(16).toString("base64url");
 	pairs.set(code, { until: Date.now() + 600_000, challenge: null });
@@ -191,7 +191,7 @@ export function pair() {
 const pairing = (code: unknown) => {
 	ttl(pairs);
 	const p = typeof code === "string" ? pairs.get(code) : undefined;
-	if (!p) throw Object.assign(new Error("配对码不对或过期了：在 Mac 上再跑一次 pnpm mixer pair"), { status: 403 });
+	if (!p) throw httpError(403, "配对码不对或过期了：在 Mac 上再跑一次 pnpm mixer pair");
 	return p;
 };
 
@@ -201,7 +201,7 @@ const deviceName = (req: IncomingMessage) => {
 };
 
 /** 验证没过（库对来源、挑战不对是直接抛错的）：一律 403，不当成服务出错 */
-const rejected = (e?: unknown): never => { throw Object.assign(new Error(`passkey 没通过验证${e instanceof Error ? `：${e.message}` : ""}`), { status: 403 }); };
+const rejected = (e?: unknown): never => { throw httpError(403, `passkey 没通过验证${e instanceof Error ? `：${e.message}` : ""}`); };
 
 export async function registerOptions(req: IncomingMessage, code: unknown) {
 	const p = pairing(code);
@@ -220,7 +220,7 @@ export async function registerOptions(req: IncomingMessage, code: unknown) {
 }
 export async function register(req: IncomingMessage, code: unknown, response: unknown) {
 	const p = pairing(code);
-	if (!p.challenge) throw Object.assign(new Error("先拿注册参数"), { status: 400 });
+	if (!p.challenge) throw httpError(400, "先拿注册参数");
 	const { rpID, origin } = rp(req);
 	const v = await verifyRegistrationResponse({ response: response as Parameters<typeof verifyRegistrationResponse>[0]["response"], expectedChallenge: p.challenge, expectedOrigin: origin, expectedRPID: rpID, requireUserVerification: true }).catch(rejected);
 	if (!v.verified) throw rejected();
@@ -245,11 +245,11 @@ export async function loginOptions(req: IncomingMessage) {
 export async function login(req: IncomingMessage, id: unknown, response: unknown) {
 	ttl(challenges);
 	const ch = typeof id === "string" ? challenges.get(id) : undefined;
-	if (!ch) throw Object.assign(new Error("登录超时了，再试一次"), { status: 403 });
+	if (!ch) throw httpError(403, "登录超时了，再试一次");
 	challenges.delete(id as string);
 	const res = response as Parameters<typeof verifyAuthenticationResponse>[0]["response"];
 	const k = config().passkeys.find((x) => x.id === res?.id);
-	if (!k) throw Object.assign(new Error("这个 passkey 不认识（可能被删了）：在 Mac 上 pnpm mixer pair 重新配对"), { status: 403 });
+	if (!k) throw httpError(403, "这个 passkey 不认识（可能被删了）：在 Mac 上 pnpm mixer pair 重新配对");
 	const { rpID, origin } = rp(req);
 	const v = await verifyAuthenticationResponse({
 		response: res,

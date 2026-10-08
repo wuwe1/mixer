@@ -17,7 +17,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { onLines, requests } from "./claude-io.ts";
-import { say } from "./log.ts";
+import { httpError, say } from "./log.ts";
 import * as models from "./models.ts";
 import { locate, version } from "./sessions.ts";
 import * as state from "./state.ts";
@@ -129,7 +129,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 	const uuid = o.uuid || randomUUID();
 	// 要写进命令行的 stdin、记录里：只认 UUID。同一条发两遍（页面重试）不认
 	if (!UUID.test(uuid)) throw new Error("消息的 uuid 不对");
-	if ([...runs.values()].some((r) => r.merged.includes(uuid) || r.uuid === uuid) || queue.some((q) => q.uuid === uuid && !o.from?.includes(q))) throw Object.assign(new Error("这条已经发过了"), { status: 409 });
+	if ([...runs.values()].some((r) => r.merged.includes(uuid) || r.uuid === uuid) || queue.some((q) => q.uuid === uuid && !o.from?.includes(q))) throw httpError(409, "这条已经发过了");
 	if (!o.prompt.trim() && !images.length) throw new Error("说点什么");
 	if (images.length > 10 || images.some((i) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(i.media) || typeof i.data !== "string")) throw new Error("图片不对：最多 10 张，png / jpeg / gif / webp");
 	if (!["auto", "default", "acceptEdits", "plan", "manual"].includes(o.permission)) throw new Error("不支持的权限模式");
@@ -148,7 +148,7 @@ export async function start(o: { project: string; cwd: string; session: string |
 	if (o.mode === "resume" && resume) {
 		// 在 mixer 外面开着（当场查）就挡，不看 mixer 里有没有它的运行、进程：mixer 里跑完之后在终端里接着聊的、两边都开着的一样。
 		// 查完到起进程之间不能再 await：不然同时来的两条续接会都起一个进程
-		if (await terminals.held(resume)) throw Object.assign(new Error("这个会话在终端里开着：现在只能分叉"), { status: 409 });
+		if (await terminals.held(resume)) throw httpError(409, "这个会话在终端里开着：现在只能分叉");
 		if (o.from) {
 			// 等的时候取消了几条：按现在的队列重来；又开始跑了（这期间发的、叫醒的）：接着排，那一轮结束时再发
 			const still = { queued: queueView(o.from[o.from.length - 1]) };

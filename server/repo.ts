@@ -4,6 +4,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
+import { httpError } from "./log.ts";
 
 // quotePath=false：中文文件名原样给，不转成 "\346\226…"。stderr 收着不打出来（「not a git repository」这种会刷满日志）
 const GIT = (root: string, args: string[]) => ["-C", root, "-c", "core.quotePath=false", ...args];
@@ -19,7 +20,7 @@ export function inside(root: string, rel: string): string {
 	const f = join(root, rel);
 	const p = real(f);
 	const r = realpathSync(root);
-	if (p !== r && !p.startsWith(r + sep)) throw Object.assign(new Error("路径不在仓库里"), { status: 403 });
+	if (p !== r && !p.startsWith(r + sep)) throw httpError(403, "路径不在仓库里");
 	return f;
 }
 
@@ -145,7 +146,7 @@ export async function diff(root: string, rel: string) {
 }
 
 export async function commit(root: string, hash: string) {
-	if (!/^[0-9a-f]{4,40}$/.test(hash)) throw Object.assign(new Error("不合法的提交"), { status: 400 });
+	if (!/^[0-9a-f]{4,40}$/.test(hash)) throw httpError(400, "不合法的提交");
 	// 合并提交只和第一个父提交比，不出 combined diff
 	const [head, diff] = await Promise.all([gitAsync(root, ["show", "-s", "--format=%H%x00%an%x00%aI%x00%B", hash]), gitAsync(root, ["show", "--format=", "--patch", "--diff-merges=first-parent", hash])]);
 	const [full, author, when, ...body] = head.split("\0");
