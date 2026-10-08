@@ -81,6 +81,7 @@ const hosts = new Map<string, Proc>();
 const approvals = new Map<string, Asking>();
 const queue: Queued[] = [];
 
+/** 推给页面的事件（main.ts 接着）。workspace（data 是 null）、session（{project, id}）只说哪里变了，main.ts 算好整个工作区、侧栏那一行再推 */
 type Emit = (type: string, data: unknown) => void;
 let emit: Emit = () => {};
 export const onEvent = (f: Emit) => { emit = f; };
@@ -542,7 +543,11 @@ function finish(run: Live, status: "done" | "error" | "stopped", error: string |
 	const none = !locate(run.project, run.session);
 	if (run.status === "error" && run.mode !== "resume" && none) {
 		if (state.forget(run.session)) emit("workspace", null);
-	} else state.finished(run.project, run.session, run.status === "error");
+	} else {
+		state.finished(run.project, run.session, run.status === "error");
+		// 侧栏那一行的「跑完没看」变了（main.ts 算好那一行推 session）
+		emit("session", { project: run.project, id: run.session });
+	}
 	// 没有记录：没什么可等的，当场给 null
 	if (none) run.version = null;
 	emit("run", view(run));

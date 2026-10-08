@@ -184,8 +184,14 @@ const pack = (f: string) => {
 
 // SSE（sse.ts）。连上先发 build（页面的版本）、再发 hello（全部状态），之后每 25 秒一个 ping：页面靠它知道连接还活着（手机睡醒、切网络后连接常常已经断了却没报错）
 const { emit } = sse;
-// 推给页面的同时看要不要推通知（push.ts：来了确认请求、跑完了、出错了）
+// 推给页面的同时看要不要推通知（push.ts：来了确认请求、跑完了、出错了）。
+// runs.ts 的 workspace、session 只说哪里变了：整个工作区、侧栏那一行在这里算好再推
 runs.onEvent((type, data) => {
+	if (type === "workspace") return void workspace.push();
+	if (type === "session") {
+		const s = data as { project: string; id: string };
+		return changed(s.project, s.id);
+	}
 	emit(type, data);
 	void push.watch(type, data);
 });
@@ -381,13 +387,13 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 			: b.op === "order" && Array.isArray(b.order) ? state.orderWorkspace(b.order.flatMap((x: unknown) => id(x) ?? []))
 			: null;
 		if (changed === null) throw fail(400, "不认识的操作");
-		if (changed) emit("workspace", null);
+		if (changed) void workspace.push();
 		json(res, 200, { ok: true });
 	}],
 	// 删掉一个会话（trash.ts）：移到废纸篓。在跑、排队、待确认、终端里开着的回 409
 	["POST", /^\/api\/sessions\/([\w.-]+)\/([\w-]+)\/delete$/, "user", async (_q, res, m) => {
 		await trash.remove(m[1], m[2]);
-		emit("workspace", null);
+		void workspace.push();
 		json(res, 200, { ok: true });
 	}],
 	// 推送通知（push.ts）：公钥、存订阅、删订阅；页面在前台时报一声（有页面看着就不推）
@@ -408,7 +414,8 @@ const ROUTES: [method: "GET" | "POST", re: RegExp, policy: Policy, h: Handler][]
 	["POST", /^\/api\/seen$/, "user", async (req, res) => {
 		const b = await body(req);
 		state.seen(String(b.session ?? ""));
-		emit("state", { project: b.project, session: b.session });
+		// 侧栏那一行的「跑完没看」变了
+		if (typeof b.project === "string" && typeof b.session === "string") changed(b.project, b.session);
 		json(res, 200, { ok: true });
 	}],
 	["POST", /^\/api\/runs\/([\w-]+)\/stop$/, "user", (_q, res, m) => json(res, 200, { stopped: runs.stop(m[1]) })],
